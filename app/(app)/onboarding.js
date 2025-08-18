@@ -1,5 +1,5 @@
 // app/(app)/onboarding.js
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TextInput, Switch, TouchableOpacity,
   StyleSheet, Alert, ScrollView, Image, KeyboardAvoidingView, Platform
@@ -29,6 +29,7 @@ export default function Onboarding() {
   const [hourlyRate, setHourlyRate] = useState('');
   const [markup, setMarkup] = useState('');
   const [travelRate, setTravelRate] = useState(''); // £/mile
+  const [hoursPerDay, setHoursPerDay] = useState(''); // hours/day
 
   const [terms, setTerms] = useState('');
   const [warranty, setWarranty] = useState('');
@@ -38,7 +39,6 @@ export default function Onboarding() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    console.log('[TMQ][ONBOARD] mounted');
     (async () => {
       const { data } = await supabase.auth.getUser();
       const u = data?.user;
@@ -49,6 +49,19 @@ export default function Onboarding() {
       setEmail(u.email ?? '');
     })();
   }, [router]);
+
+  const toNumber = (v, fallback = 0) => {
+    if (v === '' || v === null || v === undefined) return fallback;
+    const n = Number(String(v).replace(/[^0-9.]/g, ''));
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  // 🔹 Live calculated Day Rate (read-only)
+  const dayRate = useMemo(() => {
+    const hr = toNumber(hourlyRate, 0);
+    const hpd = toNumber(hoursPerDay, 10); // default 10
+    return +(hr * hpd).toFixed(2);
+  }, [hourlyRate, hoursPerDay]);
 
   const pickLogo = async () => {
     try {
@@ -68,17 +81,16 @@ export default function Onboarding() {
 
       setLogoUploading(true);
       const { data: userData } = await supabase.auth.getUser();
-      const currentUser = userData?.user;
-      if (!currentUser) throw new Error('Not signed in');
+      const logoUserData = userData?.user;
+      if (!logoUserData) throw new Error('Not signed in');
 
-      // Decide extension & contentType (PNG or JPG both ok)
       const ext =
         (asset.mimeType?.split('/')[1] ??
          asset.fileName?.split('.').pop() ??
          'png').toLowerCase();
       const contentType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
       const safeExt = contentType === 'image/jpeg' ? 'jpg' : 'png';
-      const path = `${currentUser.id}/logo.${safeExt}`;
+      const path = `${logoUserData.id}/logo.${safeExt}`;
 
       const bytes = await (await fetch(asset.uri)).blob();
 
@@ -106,12 +118,6 @@ export default function Onboarding() {
       const user = userData?.user;
       if (!user) throw new Error('Not signed in.');
 
-      const toNumber = (v) => {
-        if (v === '' || v === null || v === undefined) return 0;
-        const n = Number(String(v).replace(/[^0-9.]/g, ''));
-        return Number.isFinite(n) ? n : 0;
-        };
-
       const payload = {
         id: user.id,
         email,
@@ -126,10 +132,13 @@ export default function Onboarding() {
         vat_number: vatNumber.trim(),
         hourly_rate: toNumber(hourlyRate),
         materials_markup_pct: toNumber(markup),
-        travel_rate_per_mile: toNumber(travelRate), // NEW
+        travel_rate_per_mile: toNumber(travelRate),
+        hours_per_day: toNumber(hoursPerDay, 10), // ✅ saved
         payment_terms: terms.trim(),
         warranty_text: warranty.trim(),
         custom_logo_url: logoUri || null,
+        plan: 'free', // 👈 default everyone to free tier
+        // ❗ day_rate is derived; no need to save.
       };
 
       if (!payload.business_name) {
@@ -143,7 +152,6 @@ export default function Onboarding() {
         return;
       }
 
-      console.log('[TMQ][ONBOARD] upsert profile', payload);
       const { error } = await supabase.from('profiles').upsert(payload);
       if (error) throw error;
 
@@ -206,10 +214,53 @@ export default function Onboarding() {
 
         {/* Pricing */}
         <View style={styles.row2}>
-          <TextInput style={[styles.input, styles.flex1]} placeholder="Hourly Rate (£)" keyboardType="decimal-pad" placeholderTextColor="#999" value={hourlyRate} onChangeText={setHourlyRate} />
-          <TextInput style={[styles.input, styles.flex1, { marginLeft: 8 }]} placeholder="Materials Markup (%)" keyboardType="decimal-pad" placeholderTextColor="#999" value={markup} onChangeText={setMarkup} />
+          <TextInput
+            style={[styles.input, styles.flex1]}
+            placeholder="Hourly Rate (£)"
+            keyboardType="decimal-pad"
+            placeholderTextColor="#999"
+            value={hourlyRate}
+            onChangeText={setHourlyRate}
+          />
+          <TextInput
+            style={[styles.input, styles.flex1, { marginLeft: 8 }]}
+            placeholder="Materials Markup (%)"
+            keyboardType="decimal-pad"
+            placeholderTextColor="#999"
+            value={markup}
+            onChangeText={setMarkup}
+          />
         </View>
-        <TextInput style={styles.input} placeholder="Travel Fee (£/mile)" keyboardType="decimal-pad" placeholderTextColor="#999" value={travelRate} onChangeText={setTravelRate} />
+
+        <View style={styles.row2}>
+          <TextInput
+            style={[styles.input, styles.flex1]}
+            placeholder="Travel Fee (£/mile)"
+            keyboardType="decimal-pad"
+            placeholderTextColor="#999"
+            value={travelRate}
+            onChangeText={setTravelRate}
+          />
+          <TextInput
+            style={[styles.input, styles.flex1, { marginLeft: 8 }]}
+            placeholder="Hours worked per day (e.g. 10)"
+            keyboardType="decimal-pad"
+            placeholderTextColor="#999"
+            value={hoursPerDay}
+            onChangeText={setHoursPerDay}
+          />
+        </View>
+
+        {/* 🔹 Day Rate (auto-calculated) */}
+        <View style={styles.calcRow}>
+          <Text style={styles.calcLabel}>Day Rate (auto)</Text>
+          <Text style={styles.calcValue}>
+            £{dayRate.toFixed(2)}
+          </Text>
+        </View>
+        <Text style={styles.hint}>
+          Day rate = Hourly × Hours/Day. Used by the AI when a job spans multiple days.
+        </Text>
 
         {/* Terms */}
         <TextInput style={styles.input} placeholder="Payment Terms" placeholderTextColor="#999" value={terms} onChangeText={setTerms} />
@@ -233,9 +284,22 @@ const styles = StyleSheet.create({
   flex1: { flex: 1 },
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   label: { color: 'white', fontSize: 16, fontWeight: '600' },
-  hint: { color: '#9a9a9a', fontSize: 12, marginTop: 2, maxWidth: 220 },
+  hint: { color: '#9a9a9a', fontSize: 12, marginTop: 2, maxWidth: 260 },
+
+  // Calc row (Day Rate)
+  calcRow: {
+    backgroundColor: '#151517',
+    borderWidth: 1, borderColor: '#2b2c2f',
+    paddingVertical: 12, paddingHorizontal: 14,
+    borderRadius: 12, marginBottom: 10,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'
+  },
+  calcLabel: { color: '#cfcfd2', fontWeight: '600' },
+  calcValue: { color: 'white', fontWeight: '800', fontSize: 16 },
+
   button: { backgroundColor: '#2a86ff', borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 8 },
   buttonText: { color: 'white', fontWeight: '700' },
+
   logo: { width: 48, height: 48, borderRadius: 8, backgroundColor: '#222' },
   logoPlaceholder: { borderWidth: 1, borderColor: '#333' },
   logoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
