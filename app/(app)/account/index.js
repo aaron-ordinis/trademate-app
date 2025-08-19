@@ -1,19 +1,15 @@
 // app/(app)/account/index.js
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../../lib/supabase';
 
-// --- Set your live/ test price IDs from Stripe Dashboard ---
-const STRIPE_PRICE_IDS = {
-  monthly: 'price_XXXX_monthly', // TODO: replace
-  yearly:  'price_YYYY_yearly',  // TODO: replace
-};
-
+// Display pricing (GBP)
 const PRICING = {
-  monthly: '£6.99/mo',
-  yearly:  '£59.99/yr',
+  monthly: '£4.99/mo',
+  yearly:  '£47.99/yr',
 };
 
 const PREMIUM_FEATURES = [
@@ -34,43 +30,52 @@ export default function AccountScreen() {
   const [billingEmail, setBillingEmail] = useState('');
   const [profile, setProfile] = useState(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) { router.replace('/(auth)/login'); return; }
-        setBillingEmail(user.email || '');
+  const loadProfile = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { router.replace('/(auth)/login'); return; }
+      setBillingEmail(user.email || '');
 
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('branding, billing_email, stripe_customer_id, premium_since')
-          .eq('id', user.id)
-          .maybeSingle();
-        if (error) throw error;
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('branding, billing_email, stripe_customer_id, premium_since')
+        .eq('id', user.id)
+        .maybeSingle();
+      if (error) throw error;
 
-        setProfile(data || {});
-        const tier = String(data?.branding ?? 'free').toLowerCase();
-        setPlan(tier === 'premium' ? 'premium' : 'free');
-        if (data?.billing_email) setBillingEmail(data.billing_email);
-      } catch (e) {
-        Alert.alert('Error', e?.message ?? 'Could not load billing info.');
-      } finally {
-        setLoading(false);
-      }
-    })();
+      setProfile(data || {});
+      const tier = String(data?.branding ?? 'free').toLowerCase();
+      setPlan(tier === 'premium' ? 'premium' : 'free');
+      if (data?.billing_email) setBillingEmail(data.billing_email);
+    } catch (e) {
+      Alert.alert('Error', e?.message ?? 'Could not load billing info.');
+    } finally {
+      setLoading(false);
+    }
   }, [router]);
+
+  useEffect(() => { loadProfile(); }, [loadProfile]);
+
+  // Refresh when returning from Stripe
+  useFocusEffect(
+    useCallback(() => {
+      loadProfile();
+    }, [loadProfile])
+  );
 
   const isPremium = plan === 'premium';
 
-  const startCheckout = async (priceId) => {
+  // Start Stripe Checkout using your edge function that accepts { plan, email, user_id }
+  const startCheckout = async (planKey /* 'monthly' | 'yearly' */) => {
     try {
       setBusy(true);
-      // Where to return after Stripe:
-      const successUrl = 'tradematequotes://billing/success'; // optional deep link
-      const cancelUrl  = 'tradematequotes://billing/cancel';
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const email = user?.email || billingEmail || undefined;
+      const user_id = user?.id || '';
 
       const { data, error } = await supabase.functions.invoke('stripe-checkout', {
-        body: { priceId, successUrl, cancelUrl },
+        body: { plan: planKey, email, user_id },
       });
       if (error) throw error;
       if (!data?.url) throw new Error('No checkout URL returned');
@@ -82,6 +87,7 @@ export default function AccountScreen() {
     }
   };
 
+  // Customer billing portal (requires your stripe-portal function)
   const openPortal = async () => {
     try {
       setBusy(true);
@@ -121,10 +127,19 @@ export default function AccountScreen() {
             </TouchableOpacity>
           ) : (
             <View style={{ gap: 8 }}>
-              <TouchableOpacity style={[styles.btn, styles.btnUpgrade]} onPress={() => startCheckout(STRIPE_PRICE_IDS.monthly)} disabled={busy}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnUpgrade]}
+                onPress={() => startCheckout('monthly')}
+                disabled={busy}
+              >
                 <Text style={styles.btnText}>{busy ? 'Please wait…' : `Upgrade • ${PRICING.monthly}`}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnDark]} onPress={() => startCheckout(STRIPE_PRICE_IDS.yearly)} disabled={busy}>
+
+              <TouchableOpacity
+                style={[styles.btn, styles.btnDark]}
+                onPress={() => startCheckout('yearly')}
+                disabled={busy}
+              >
                 <Text style={styles.btnText}>{busy ? 'Please wait…' : `Upgrade • ${PRICING.yearly}`}</Text>
               </TouchableOpacity>
             </View>
@@ -156,7 +171,11 @@ export default function AccountScreen() {
             )}
           </View>
 
-          <TouchableOpacity style={[styles.smallBtn, styles.btnDark]} onPress={isPremium ? openPortal : () => startCheckout(STRIPE_PRICE_IDS.monthly)} disabled={busy}>
+          <TouchableOpacity
+            style={[styles.smallBtn, styles.btnDark]}
+            onPress={isPremium ? openPortal : () => startCheckout('monthly')}
+            disabled={busy}
+          >
             <Text style={styles.smallBtnText}>{isPremium ? 'Open billing portal' : 'Upgrade now'}</Text>
           </TouchableOpacity>
         </View>

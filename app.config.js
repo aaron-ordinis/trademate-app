@@ -1,33 +1,53 @@
+// app.config.js
 import 'dotenv/config';
 
 export default {
   expo: {
     name: 'TradeMate Quotes',
     slug: 'trademate-quotes',
-    scheme: 'tradematequotes', // deep link scheme (e.g., tradematequotes://billing/success)
-    version: '1.0.0',          // marketing version
+    scheme: 'tradematequotes',
+    version: '1.0.0',
     orientation: 'portrait',
     userInterfaceStyle: 'automatic',
     platforms: ['android', 'ios'],
 
     assetBundlePatterns: ['/*'],
 
-    plugins: ['expo-router', 'expo-dev-client'],
+    // ✅ App icon (JPG)
+    icon: './assets/images/app-icon.jpg',
 
+    // ✅ Splash (dark + light modes)
+    splash: {
+      image: './assets/images/trademate-login-logo.png',
+      resizeMode: 'contain',
+      backgroundColor: '#ffffff', // Light mode fallback
+      dark: {
+        image: './assets/images/login-logo.png',
+        resizeMode: 'contain',
+        backgroundColor: '#0b0b0c', // Dark mode fallback
+      },
+    },
+
+    plugins: ['expo-router'],
     experiments: { typedRoutes: false },
 
     extra: {
+      SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL,
+      SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
       EXPO_PUBLIC_GOOGLE_MAPS_KEY: process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY,
-      APP_SCHEME: 'tradematequotes',
       eas: { projectId: '57f55544-8d0b-4f50-b45e-57948ba02dfc' },
     },
 
     android: {
       package: 'com.trademate.quotes',
-      versionCode: 1, // 🔁 bump to 2, 3, 4… for each Play Store upload
       softwareKeyboardLayoutMode: 'resize',
 
-      // Allow Android to open deep links like tradematequotes://billing/success
+      // ✅ Adaptive icon (foreground must match main icon, background color required)
+      adaptiveIcon: {
+        foregroundImage: './assets/images/app-icon.jpg',
+        backgroundColor: '#0b0b0c',
+      },
+
       intentFilters: [
         {
           action: 'VIEW',
@@ -39,7 +59,6 @@ export default {
 
     ios: {
       bundleIdentifier: 'com.trademate.quotes',
-      buildNumber: '1', // 🔁 bump '2', '3'… for each App Store upload
     },
 
     updates: {

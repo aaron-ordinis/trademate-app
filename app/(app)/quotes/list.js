@@ -131,7 +131,7 @@ export default function QuotesList() {
         const { data: { user } } = await supabase.auth.getUser();
         userRef.current = user;
         if (!user) {
-          router.replace('/login'); // correct path (no /(app))
+          router.replace('/(auth)/login'); // fixed path
           return;
         }
         fetchBranding(user.id);
@@ -155,6 +155,40 @@ export default function QuotesList() {
   useEffect(() => { fetchQuotes(); }, [fetchQuotes]);
   useFocusEffect(useCallback(() => { fetchQuotes(); }, [fetchQuotes]));
 
+  // 🔁 Refetch branding when we come back to this screen (e.g., after Stripe)
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) await fetchBranding(user.id);
+      })();
+    }, [fetchBranding])
+  );
+
+  // 🔔 Realtime: watch profile branding for this user and update immediately
+  useEffect(() => {
+    let profileChannel;
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      profileChannel = supabase
+        .channel('profiles-premium-watch')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
+          (payload) => {
+            const branding = (payload.new?.branding ?? payload.old?.branding) || 'free';
+            setIsPremium(String(branding).toLowerCase() === 'premium');
+          }
+        )
+        .subscribe();
+    })();
+
+    return () => { if (profileChannel) supabase.removeChannel(profileChannel); };
+  }, []);
+
+  // Existing quotes realtime subscription
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -288,7 +322,7 @@ export default function QuotesList() {
   const duplicateQuote = async (q, idForSpinner = null) => {
     if (!isPremium) {
       Alert.alert('Premium feature', 'Duplicating quotes is available on Premium.',
-        [{ text: 'Cancel', style: 'cancel' }, { text: 'Upgrade', onPress: () => router.push('/settings/upgrade') }]);
+        [{ text: 'Cancel', style: 'cancel' }, { text: 'Upgrade', onPress: () => router.push('/account') }]);
       return;
     }
 
@@ -375,7 +409,6 @@ export default function QuotesList() {
     const q = query.trim().toLowerCase();
     let list = quotes;
 
-    // Search (quote number, client name, email, phone)
     if (q) {
       list = list.filter((it) => {
         const hay =
@@ -389,12 +422,10 @@ export default function QuotesList() {
       });
     }
 
-    // Filter by status
     if (statusFilter !== 'all') {
       list = list.filter((it) => String(it.status || '').toLowerCase() === statusFilter);
     }
 
-    // Sort
     list = [...list];
     switch (sortBy) {
       case 'oldest':
@@ -416,8 +447,8 @@ export default function QuotesList() {
 
   // ---------- render ----------
   const renderItem = ({ item }) => {
-    const quoteCreatedAtDate = new Date(item.created_at);
-    const dateStr = `${quoteCreatedAtDate.toLocaleDateString()} ${quoteCreatedAtDate.toLocaleTimeString()}`;
+    const createdAtDate = new Date(item.created_at);
+    const dateStr = `${createdAtDate.toLocaleDateString()} ${createdAtDate.toLocaleTimeString()}`;
     const badge = statusStyle(item.status);
     const expanded = expandedId === item.id;
 
@@ -470,8 +501,11 @@ export default function QuotesList() {
               style={[styles.btn, isPremium ? styles.btnDark : styles.btnLocked]}
               onPress={() => {
                 if (!isPremium) {
-                  Alert.alert('Premium feature', 'Editing generated quotes is available on Premium.',
-                    [{ text: 'Cancel', style: 'cancel' }, { text: 'Upgrade', onPress: () => router.push('/settings/upgrade') }]);
+                  Alert.alert(
+                    'Premium feature',
+                    'Editing generated quotes is available on Premium.',
+                    [{ text: 'Cancel', style: 'cancel' }, { text: 'Upgrade', onPress: () => router.push('/account') }]
+                  );
                   return;
                 }
                 router.push({ pathname: '/quotes/[id]', params: { id: item.id } });
@@ -512,7 +546,7 @@ export default function QuotesList() {
 
   return (
     <View style={styles.wrap}>
-      {/* Safe top/left/right: header never overlaps status bar or notches */}
+      {/* Safe top/left/right */}
       <SafeAreaView edges={['top', 'left', 'right']} style={{ backgroundColor: '#0b0b0c' }}>
         <View style={styles.headerRow}>
           <TouchableOpacity
@@ -585,7 +619,7 @@ export default function QuotesList() {
         </View>
       </SafeAreaView>
 
-      {/* Safe bottom: keeps list clear of the home/gesture bar */}
+      {/* Safe bottom */}
       <SafeAreaView edges={['bottom']} style={{ flex: 1 }}>
         <FlatList
           data={visibleQuotes}
@@ -598,7 +632,7 @@ export default function QuotesList() {
               No quotes match your filters.
             </Text>
           }
-          extraData={{ expandedId, sortBy, statusFilter, query }}
+          extraData={{ expandedId, sortBy, statusFilter, query, isPremium }}
         />
       </SafeAreaView>
 
