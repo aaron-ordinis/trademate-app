@@ -2,50 +2,105 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TextInput, Switch, TouchableOpacity,
-  StyleSheet, Alert, ScrollView, Image, KeyboardAvoidingView, Platform
+  StyleSheet, Alert, ScrollView, Image, KeyboardAvoidingView, Platform,
+  ActivityIndicator, Modal, Pressable, Linking
 } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 
+// Theme (aligned with Settings/Profile light UI)
+const BRAND  = '#2a86ff';
+const TEXT   = '#0b1220';
+const MUTED  = '#6b7280';
+const CARD   = '#ffffff';
+const BG     = '#f5f7fb';
+const BORDER = '#e6e9ee';
+
+const BUCKET = 'logos';
+
+/* ---------- helpers (MATCH PROFILE) ---------- */
+// Pure-JS base64 → Uint8Array (no atob/Buffer)
+function base64ToBytes(b64) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const lookup = new Uint8Array(256);
+  for (let i = 0; i < alphabet.length; i++) lookup[alphabet.charCodeAt(i)] = i;
+  const clean = b64.replace(/[^A-Za-z0-9+/=]/g, '');
+  const len = clean.length;
+  const pads = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+  const bytesLen = ((len * 3) >> 2) - pads;
+  const out = new Uint8Array(bytesLen);
+  let p = 0, i = 0;
+  while (i < len) {
+    const a = lookup[clean.charCodeAt(i++)];
+    const b = lookup[clean.charCodeAt(i++)];
+    const c = lookup[clean.charCodeAt(i++)];
+    const d = lookup[clean.charCodeAt(i++)];
+    const trip = (a << 18) | (b << 12) | (c << 6) | d;
+    if (p < bytesLen) out[p++] = (trip >> 16) & 0xff;
+    if (p < bytesLen) out[p++] = (trip >> 8) & 0xff;
+    if (p < bytesLen) out[p++] = trip & 0xff;
+  }
+  return out;
+}
+
+// Resolve a usable file URL (public bucket or signed URL fallback)
+async function resolveStorageUrl(pathInBucket) {
+  const { data: pub, error: pubErr } = supabase.storage.from(BUCKET).getPublicUrl(pathInBucket);
+  if (!pubErr && pub?.publicUrl) return pub.publicUrl;
+
+  // long-lived signed fallback
+  const expiresIn = 60 * 60 * 24 * 365 * 5;
+  const { data: signed, error: sErr } = await supabase
+    .storage
+    .from(BUCKET)
+    .createSignedUrl(pathInBucket, expiresIn);
+  if (!sErr && signed?.signedUrl) return signed.signedUrl;
+
+  throw new Error(pubErr?.message || sErr?.message || 'Could not get logo URL');
+}
+
 export default function Onboarding() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
-  // Only email starts prefilled
+  // Prefill email only
   const [email, setEmail] = useState('');
 
-  // Everything else empty
-  const [businessName, setBusinessName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [address1, setAddress1] = useState('');
-  const [city, setCity] = useState('');
-  const [postcode, setPostcode] = useState('');
-  const [tradeType, setTradeType] = useState('');
+  // Basics
+  const [businessName, setBusinessName]   = useState('');
+  const [phone, setPhone]                 = useState('');
+  const [address1, setAddress1]           = useState('');
+  const [city, setCity]                   = useState('');
+  const [postcode, setPostcode]           = useState('');
+  const [tradeType, setTradeType]         = useState('');
 
   const [vatRegistered, setVatRegistered] = useState(false);
-  const [companyReg, setCompanyReg] = useState('');
-  const [vatNumber, setVatNumber] = useState('');
+  const [companyReg, setCompanyReg]       = useState('');
+  const [vatNumber, setVatNumber]         = useState('');
 
-  const [hourlyRate, setHourlyRate] = useState('');
-  const [markup, setMarkup] = useState('');
-  const [travelRate, setTravelRate] = useState(''); // £/mile
-  const [hoursPerDay, setHoursPerDay] = useState(''); // hours/day
+  const [hourlyRate, setHourlyRate]       = useState('');
+  const [markup, setMarkup]               = useState('');
+  const [travelRate, setTravelRate]       = useState(''); // £/mile
+  const [hoursPerDay, setHoursPerDay]     = useState(''); // hours/day
 
-  const [terms, setTerms] = useState('');
-  const [warranty, setWarranty] = useState('');
+  const [terms, setTerms]                 = useState('');
+  const [warranty, setWarranty]           = useState('');
 
-  const [logoUri, setLogoUri] = useState(null);
-  const [logoUploading, setLogoUploading] = useState(false);
-  const [saving, setSaving] = useState(false);
+  // Logo (mirror Profile)
+  const [logoUrl, setLogoUrl]             = useState(null);
+  const [logoWorking, setLogoWorking]     = useState(false);
+  const [logoModalOpen, setLogoModalOpen] = useState(false);
+
+  const [saving, setSaving]               = useState(false);
 
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getUser();
       const u = data?.user;
-      if (!u) {
-        router.replace('/(auth)/login');
-        return;
-      }
+      if (!u) { router.replace('/(auth)/login'); return; }
       setEmail(u.email ?? '');
     })();
   }, [router]);
@@ -56,61 +111,114 @@ export default function Onboarding() {
     return Number.isFinite(n) ? n : fallback;
   };
 
-  // 🔹 Live calculated Day Rate (read-only)
+  // Live calculated Day Rate (read-only)
   const dayRate = useMemo(() => {
-    const hr = toNumber(hourlyRate, 0);
-    const hpd = toNumber(hoursPerDay, 10); // default 10
+    const hr  = toNumber(hourlyRate, 0);
+    const hpd = toNumber(hoursPerDay, 10); // sensible default
     return +(hr * hpd).toFixed(2);
   }, [hourlyRate, hoursPerDay]);
 
-  const pickLogo = async () => {
+  const initials = useMemo(() => {
+    const src = String(businessName || '').replace(/[^a-zA-Z ]/g, ' ').trim();
+    if (!src) return 'U';
+    const parts = src.split(/\s+/).slice(0, 2);
+    return parts.map(p => p.charAt(0).toUpperCase()).join('') || 'U';
+  }, [businessName]);
+
+  /* ---------- LOGO ACTIONS (MATCH PROFILE) ---------- */
+  const pickAndUploadLogo = async () => {
     try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please allow photo library access to upload a logo.');
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        quality: 0.9
+      setLogoWorking(true);
+
+      const result = await DocumentPicker.getDocumentAsync({
+        multiple: false,
+        copyToCacheDirectory: true,
+        type: ['image/*', 'application/pdf'],
       });
       if (result.canceled) return;
-      const asset = result.assets?.[0];
-      if (!asset?.uri) return;
 
-      setLogoUploading(true);
+      const file = result.assets[0];
+      const uri = file.uri;
+      const name = file.name || (Platform.OS === 'ios' ? uri.split('/').pop() : `upload_${Date.now()}`);
+      const ext = (name?.split('.').pop() || '').toLowerCase();
+
+      // Choose content-type
+      let contentType = 'application/octet-stream';
+      if (ext === 'pdf') contentType = 'application/pdf';
+      else if (ext === 'jpg' || ext === 'jpeg') contentType = 'image/jpeg';
+      else if (ext === 'png') contentType = 'image/png';
+      else if (ext === 'webp') contentType = 'image/webp';
+      else if (file.mimeType) contentType = file.mimeType;
+
       const { data: userData } = await supabase.auth.getUser();
-      const logoUserData = userData?.user;
-      if (!logoUserData) throw new Error('Not signed in');
+      const currentUser = userData?.user;
+      if (!currentUser) throw new Error('Not signed in');
 
-      const ext =
-        (asset.mimeType?.split('/')[1] ??
-         asset.fileName?.split('.').pop() ??
-         'png').toLowerCase();
-      const contentType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png';
-      const safeExt = contentType === 'image/jpeg' ? 'jpg' : 'png';
-      const path = `${logoUserData.id}/logo.${safeExt}`;
+      // Read file as base64 (safe for content:// and ph://)
+      const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      if (!base64) throw new Error('Could not read file data');
 
-      const bytes = await (await fetch(asset.uri)).blob();
+      // Convert to bytes and upload
+      const bytes = base64ToBytes(base64);
+      const pathInBucket = `${currentUser.id}/${Date.now()}.${ext || 'bin'}`;
 
       const { error: upErr } = await supabase
         .storage
-        .from('logos')
-        .upload(path, bytes, { upsert: true, contentType });
+        .from(BUCKET)
+        .upload(pathInBucket, bytes, { contentType, upsert: true });
       if (upErr) throw upErr;
 
-      const { data: pub } = supabase.storage.from('logos').getPublicUrl(path);
-      setLogoUri(pub.publicUrl);
-      Alert.alert('Logo uploaded', `Logo saved as ${safeExt.toUpperCase()}.`);
+      // URL (public or signed)
+      const publicishUrl = await resolveStorageUrl(pathInBucket);
+
+      // Upsert a minimal row so the logo appears even before finishing onboarding
+      await supabase.from('profiles').upsert({ id: currentUser.id, custom_logo_url: publicishUrl }).catch(() => {});
+
+      setLogoUrl(publicishUrl);
     } catch (e) {
-      console.error('[TMQ][ONBOARD] logo upload error', e);
-      Alert.alert('Logo upload failed', e.message ?? 'Please try again.');
+      Alert.alert('Upload failed', e?.message || 'Could not upload logo.');
     } finally {
-      setLogoUploading(false);
+      setLogoWorking(false);
+      setLogoModalOpen(false);
     }
   };
 
+  const removeLogo = async () => {
+    try {
+      if (!logoUrl) { setLogoModalOpen(false); return; }
+      setLogoWorking(true);
+
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData?.user;
+      if (!user) throw new Error('Not signed in');
+
+      // Best-effort delete from storage (path inference)
+      const url = String(logoUrl || '');
+      let storagePath = null;
+      const markers = [
+        '/storage/v1/object/public/logos/',
+        '/object/public/logos/',
+        '/logos/',
+      ];
+      for (const m of markers) {
+        const i = url.indexOf(m);
+        if (i !== -1) { storagePath = url.substring(i + m.length).split('?')[0]; break; }
+      }
+      if (storagePath) {
+        await supabase.storage.from(BUCKET).remove([storagePath]).catch(() => {});
+      }
+
+      await supabase.from('profiles').upsert({ id: user.id, custom_logo_url: null }).catch(() => {});
+      setLogoUrl(null);
+    } catch (e) {
+      Alert.alert('Error', e?.message || 'Could not remove logo.');
+    } finally {
+      setLogoWorking(false);
+      setLogoModalOpen(false);
+    }
+  };
+
+  /* ---------- SAVE PROFILE ---------- */
   const saveProfile = async () => {
     try {
       setSaving(true);
@@ -133,23 +241,20 @@ export default function Onboarding() {
         hourly_rate: toNumber(hourlyRate),
         materials_markup_pct: toNumber(markup),
         travel_rate_per_mile: toNumber(travelRate),
-        hours_per_day: toNumber(hoursPerDay, 10), // ✅ saved
+        hours_per_day: toNumber(hoursPerDay, 10),
         payment_terms: terms.trim(),
         warranty_text: warranty.trim(),
-        custom_logo_url: logoUri || null,
-        plan: 'free', // 👈 default everyone to free tier
-        // ❗ day_rate is derived; no need to save.
+        custom_logo_url: logoUrl || null,
+        branding: 'free',
       };
 
       if (!payload.business_name) {
         Alert.alert('Missing info', 'Please enter your Business Name.');
-        setSaving(false);
-        return;
+        setSaving(false); return;
       }
       if (!hourlyRate) {
         Alert.alert('Missing info', 'Please enter your Hourly Rate.');
-        setSaving(false);
-        return;
+        setSaving(false); return;
       }
 
       const { error } = await supabase.from('profiles').upsert(payload);
@@ -158,151 +263,309 @@ export default function Onboarding() {
       Alert.alert('Saved', 'Your business profile is set up.');
       router.replace('/(app)/quotes/list');
     } catch (e) {
-      console.error('[TMQ][ONBOARD] save error', e);
-      Alert.alert('Error', e.message ?? 'Could not save profile.');
+      console.error('[ONBOARD] save error', e);
+      Alert.alert('Error', e?.message ?? 'Could not save profile.');
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: '#0b0b0c' }}
-      behavior={Platform.select({ ios: 'padding', android: undefined })}
-      keyboardVerticalOffset={Platform.select({ ios: 0, android: 0 })}
-    >
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
-        <Text style={styles.title}>Business Profile</Text>
-        <Text style={styles.subtitle}>Set this once. Used on every quote.</Text>
+    <SafeAreaView edges={['top','left','right','bottom']} style={{ flex: 1, backgroundColor: BG }}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: Math.max(insets.bottom, 24) }} keyboardShouldPersistTaps="handled">
+          {/* Header */}
+          <View style={{ alignItems: 'center', marginBottom: 8 }}>
+            <Text style={styles.h1}>Business Profile</Text>
+            <Text style={styles.hintHeader}>Set this once. Used on every quote.</Text>
+          </View>
 
-        {/* Logo picker */}
-        <View style={styles.logoRow}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            {logoUri ? <Image source={{ uri: logoUri }} style={styles.logo} /> : <View style={[styles.logo, styles.logoPlaceholder]} />}
-            <View>
-              <Text style={styles.label}>Logo (PNG or JPG)</Text>
-              <Text style={styles.hint}>Shown on your PDFs. Free tier keeps TradeMate footer.</Text>
+          {/* Logo card (MIRRORS PROFILE UI) */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Company Logo</Text>
+            <View style={{ alignItems: 'center', marginTop: 10 }}>
+              <TouchableOpacity style={styles.avatarWrap} onPress={() => setLogoModalOpen(true)} activeOpacity={0.9}>
+                {logoUrl ? (
+                  <Image source={{ uri: logoUrl }} style={styles.avatarImg} resizeMode="cover" />
+                ) : (
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>{initials}</Text>
+                  </View>
+                )}
+                <View style={styles.editBadge}>
+                  <Text style={styles.editBadgeText}>✎</Text>
+                </View>
+              </TouchableOpacity>
+
+              {logoUrl ? (
+                <TouchableOpacity onPress={() => Linking.openURL(logoUrl)} style={{ marginTop: 8 }}>
+                  <Text style={{ color: MUTED }}>Open current logo</Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={styles.hint}>PNG/JPEG (or PDF). Square works best.</Text>
+              )}
             </View>
           </View>
-          <TouchableOpacity style={[styles.smallBtn, { opacity: logoUploading ? 0.6 : 1 }]} onPress={pickLogo} disabled={logoUploading}>
-            <Text style={styles.smallBtnText}>{logoUploading ? 'Uploading…' : (logoUri ? 'Replace' : 'Upload')}</Text>
+
+          {/* Contact / basics */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Contact & Basics</Text>
+            <TextInput style={[styles.input, styles.inputDisabled]} editable={false} value={email} placeholder="Email" placeholderTextColor={MUTED} />
+            <Text style={styles.labelSmall}>Business Name</Text>
+            <TextInput style={styles.input} placeholder="e.g. Aaron Electrical" placeholderTextColor={MUTED} value={businessName} onChangeText={setBusinessName} />
+            <Text style={styles.labelSmall}>Phone</Text>
+            <TextInput style={styles.input} placeholder="e.g. 07123 456789" placeholderTextColor={MUTED} value={phone} onChangeText={setPhone} />
+          </View>
+
+          {/* Address */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Business Address</Text>
+            <Text style={styles.labelSmall}>Address line 1</Text>
+            <TextInput style={styles.input} placeholder="Flat 21" placeholderTextColor={MUTED} value={address1} onChangeText={setAddress1} />
+            <View style={styles.row2}>
+              <View style={styles.flex1}>
+                <Text style={styles.labelSmall}>City</Text>
+                <TextInput style={styles.input} placeholder="Tamworth" placeholderTextColor={MUTED} value={city} onChangeText={setCity} />
+              </View>
+              <View style={styles.flex1}>
+                <Text style={styles.labelSmall}>Postcode</Text>
+                <TextInput style={styles.input} placeholder="B77 2AR" placeholderTextColor={MUTED} value={postcode} onChangeText={setPostcode} />
+              </View>
+            </View>
+            <Text style={styles.labelSmall}>Trade</Text>
+            <TextInput style={styles.input} placeholder="e.g. plumber, electrician" placeholderTextColor={MUTED} value={tradeType} onChangeText={setTradeType} />
+          </View>
+
+          {/* VAT & company */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Company Details</Text>
+            <View style={[styles.switchRow, { marginBottom: 10 }]}>
+              <View>
+                <Text style={styles.label}>VAT Registered</Text>
+                <Text style={styles.hint}>Toggle on if you’re VAT registered.</Text>
+              </View>
+              <Switch value={vatRegistered} onValueChange={setVatRegistered} />
+            </View>
+            <Text style={styles.labelSmall}>Company Reg No. (optional)</Text>
+            <TextInput style={styles.input} placeholder="12344757" placeholderTextColor={MUTED} value={companyReg} onChangeText={setCompanyReg} />
+            <Text style={styles.labelSmall}>VAT No. (optional)</Text>
+            <TextInput style={styles.input} placeholder="12746473" placeholderTextColor={MUTED} value={vatNumber} onChangeText={setVatNumber} />
+          </View>
+
+          {/* Pricing */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Rates & Markup</Text>
+
+            <View style={styles.row2}>
+              <View style={styles.flex1}>
+                <Text style={styles.labelSmall}>Hourly Rate (£)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 25"
+                  keyboardType="decimal-pad"
+                  placeholderTextColor={MUTED}
+                  value={hourlyRate}
+                  onChangeText={setHourlyRate}
+                />
+              </View>
+              <View style={styles.flex1}>
+                <Text style={styles.labelSmall}>Materials Markup (%)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 15"
+                  keyboardType="decimal-pad"
+                  placeholderTextColor={MUTED}
+                  value={markup}
+                  onChangeText={setMarkup}
+                />
+              </View>
+            </View>
+
+            <View style={styles.row2}>
+              <View className="flex-1" style={styles.flex1}>
+                <Text style={styles.labelSmall}>Travel Fee (£/mile)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 0.45"
+                  keyboardType="decimal-pad"
+                  placeholderTextColor={MUTED}
+                  value={travelRate}
+                  onChangeText={setTravelRate}
+                />
+              </View>
+              <View style={styles.flex1}>
+                <Text style={styles.labelSmall}>Hours per day</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 10"
+                  keyboardType="decimal-pad"
+                  placeholderTextColor={MUTED}
+                  value={hoursPerDay}
+                  onChangeText={setHoursPerDay}
+                />
+              </View>
+            </View>
+
+            {/* Day Rate (auto) */}
+            <View style={styles.calcRow}>
+              <Text style={styles.calcLabel}>Day Rate (auto)</Text>
+              <Text style={styles.calcValue}>£{dayRate.toFixed(2)}</Text>
+            </View>
+            <Text style={styles.hint}>Day rate = Hourly × Hours/Day. Used when a job spans multiple days.</Text>
+          </View>
+
+          {/* Terms */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Terms</Text>
+            <Text style={styles.labelSmall}>Payment Terms</Text>
+            <TextInput style={styles.input} placeholder="e.g. Payment due within 7 days" placeholderTextColor={MUTED} value={terms} onChangeText={setTerms} />
+            <Text style={styles.labelSmall}>Warranty</Text>
+            <TextInput style={styles.input} placeholder="e.g. 12 months workmanship warranty" placeholderTextColor={MUTED} value={warranty} onChangeText={setWarranty} />
+          </View>
+
+          <TouchableOpacity style={[styles.btnSave, saving && { opacity: 0.7 }]} onPress={saveProfile} disabled={saving} activeOpacity={0.9}>
+            {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnSaveText}>Save & Continue</Text>}
+          </TouchableOpacity>
+
+          <View style={{ height: Math.max(insets.bottom, 16) }} />
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      {/* Upload / Replace / Remove logo (IDENTICAL UX TO PROFILE) */}
+      <Modal visible={logoModalOpen} animationType="fade" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={() => !logoWorking && setLogoModalOpen(false)} />
+        <View style={styles.sheet}>
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetTitle}>{logoUrl ? 'Update your logo' : 'Upload a logo'}</Text>
+          <Text style={styles.sheetSub}>Supported: JPG, PNG, or PDF.</Text>
+
+          <TouchableOpacity
+            style={[styles.primaryBtn, logoWorking && { opacity: 0.6 }]}
+            disabled={logoWorking}
+            onPress={pickAndUploadLogo}
+            activeOpacity={0.9}
+          >
+            {logoWorking ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.primaryBtnText}>{logoUrl ? 'Choose new logo' : 'Choose logo'}</Text>
+            )}
+          </TouchableOpacity>
+
+          {logoUrl && (
+            <TouchableOpacity style={styles.dangerBtn} onPress={removeLogo} disabled={logoWorking} activeOpacity={0.9}>
+              <Text style={styles.dangerBtnText}>Remove logo</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={() => setLogoModalOpen(false)}
+            disabled={logoWorking}
+            activeOpacity={0.9}
+          >
+            <Text style={styles.secondaryBtnText}>Cancel</Text>
           </TouchableOpacity>
         </View>
-
-        {/* Contact / basics */}
-        <TextInput style={styles.input} editable={false} value={email} placeholder="Email" placeholderTextColor="#999" />
-        <TextInput style={styles.input} placeholder="Business Name" placeholderTextColor="#999" value={businessName} onChangeText={setBusinessName} />
-        <TextInput style={styles.input} placeholder="Phone" placeholderTextColor="#999" value={phone} onChangeText={setPhone} />
-
-        {/* Address */}
-        <TextInput style={styles.input} placeholder="Address line 1" placeholderTextColor="#999" value={address1} onChangeText={setAddress1} />
-        <View style={styles.row2}>
-          <TextInput style={[styles.input, styles.flex1]} placeholder="City" placeholderTextColor="#999" value={city} onChangeText={setCity} />
-          <TextInput style={[styles.input, styles.flex1, { marginLeft: 8 }]} placeholder="Postcode" placeholderTextColor="#999" value={postcode} onChangeText={setPostcode} />
-        </View>
-
-        {/* Trade */}
-        <TextInput style={styles.input} placeholder="Trade (e.g. plumber, electrician)" placeholderTextColor="#999" value={tradeType} onChangeText={setTradeType} />
-
-        {/* VAT & company */}
-        <View style={styles.switchRow}>
-          <Text style={styles.label}>VAT Registered</Text>
-          <Switch value={vatRegistered} onValueChange={setVatRegistered} />
-        </View>
-        <TextInput style={styles.input} placeholder="Company Reg No. (optional)" placeholderTextColor="#999" value={companyReg} onChangeText={setCompanyReg} />
-        <TextInput style={styles.input} placeholder="VAT No. (optional)" placeholderTextColor="#999" value={vatNumber} onChangeText={setVatNumber} />
-
-        {/* Pricing */}
-        <View style={styles.row2}>
-          <TextInput
-            style={[styles.input, styles.flex1]}
-            placeholder="Hourly Rate (£)"
-            keyboardType="decimal-pad"
-            placeholderTextColor="#999"
-            value={hourlyRate}
-            onChangeText={setHourlyRate}
-          />
-          <TextInput
-            style={[styles.input, styles.flex1, { marginLeft: 8 }]}
-            placeholder="Materials Markup (%)"
-            keyboardType="decimal-pad"
-            placeholderTextColor="#999"
-            value={markup}
-            onChangeText={setMarkup}
-          />
-        </View>
-
-        <View style={styles.row2}>
-          <TextInput
-            style={[styles.input, styles.flex1]}
-            placeholder="Travel Fee (£/mile)"
-            keyboardType="decimal-pad"
-            placeholderTextColor="#999"
-            value={travelRate}
-            onChangeText={setTravelRate}
-          />
-          <TextInput
-            style={[styles.input, styles.flex1, { marginLeft: 8 }]}
-            placeholder="Hours worked per day (e.g. 10)"
-            keyboardType="decimal-pad"
-            placeholderTextColor="#999"
-            value={hoursPerDay}
-            onChangeText={setHoursPerDay}
-          />
-        </View>
-
-        {/* 🔹 Day Rate (auto-calculated) */}
-        <View style={styles.calcRow}>
-          <Text style={styles.calcLabel}>Day Rate (auto)</Text>
-          <Text style={styles.calcValue}>
-            £{dayRate.toFixed(2)}
-          </Text>
-        </View>
-        <Text style={styles.hint}>
-          Day rate = Hourly × Hours/Day. Used by the AI when a job spans multiple days.
-        </Text>
-
-        {/* Terms */}
-        <TextInput style={styles.input} placeholder="Payment Terms" placeholderTextColor="#999" value={terms} onChangeText={setTerms} />
-        <TextInput style={styles.input} placeholder="Warranty" placeholderTextColor="#999" value={warranty} onChangeText={setWarranty} />
-
-        <TouchableOpacity style={[styles.button, { opacity: saving ? 0.7 : 1 }]} onPress={saveProfile} disabled={saving}>
-          <Text style={styles.buttonText}>{saving ? 'Saving…' : 'Save & Continue'}</Text>
-        </TouchableOpacity>
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 20, backgroundColor: '#0b0b0c', flexGrow: 1 },
-  title: { color: 'white', fontSize: 24, fontWeight: '700', marginBottom: 4 },
-  subtitle: { color: '#c7c7c7', marginBottom: 16 },
-  input: { backgroundColor: '#1a1a1b', color: 'white', borderRadius: 12, padding: 14, marginBottom: 12 },
-  row2: { flexDirection: 'row', marginBottom: 12 },
-  flex1: { flex: 1 },
-  switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  label: { color: 'white', fontSize: 16, fontWeight: '600' },
-  hint: { color: '#9a9a9a', fontSize: 12, marginTop: 2, maxWidth: 260 },
+  h1: { color: TEXT, fontSize: 24, fontWeight: '800' },
+  hintHeader: { color: MUTED, marginTop: 4, textAlign: 'center' },
 
-  // Calc row (Day Rate)
+  card: {
+    backgroundColor: CARD, borderRadius: 16, padding: 16,
+    borderWidth: 1, borderColor: BORDER, marginBottom: 14,
+    shadowColor: '#0b1220', shadowOpacity: 0.05, shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 }, elevation: 2,
+  },
+  cardTitle: { color: TEXT, fontWeight: '800', marginBottom: 6 },
+
+  input: {
+    backgroundColor: '#f9fafb',
+    color: TEXT,
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    marginBottom: 10,
+  },
+  inputDisabled: { opacity: 0.7 },
+
+  label: { color: TEXT, fontWeight: '700' },
+  labelSmall: { color: MUTED, fontSize: 12, marginBottom: 6, fontWeight: '700' },
+  hint: { color: MUTED, fontSize: 12, marginTop: 4 },
+
+  row2: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  flex1: { flex: 1 },
+
+  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+
+  // Avatar-style logo (mirror Profile)
+  avatarWrap: { position: 'relative', alignItems: 'center', justifyContent: 'center' },
+  avatar: {
+    width: 64, height: 64, borderRadius: 32, backgroundColor: BRAND + '15',
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: BORDER, marginBottom: 10,
+  },
+  avatarImg: {
+    width: 64, height: 64, borderRadius: 32, borderWidth: 1, borderColor: BORDER, marginBottom: 10,
+  },
+  avatarText: { color: BRAND, fontWeight: '900', fontSize: 20 },
+  editBadge: {
+    position: 'absolute', right: -2, bottom: 6, height: 22, width: 22, borderRadius: 11,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: BRAND, borderWidth: 1, borderColor: '#ffffff',
+  },
+  editBadgeText: { color: '#fff', fontWeight: '900', fontSize: 12 },
+
+  // Day-rate calc
   calcRow: {
-    backgroundColor: '#151517',
-    borderWidth: 1, borderColor: '#2b2c2f',
+    backgroundColor: '#eef2f7',
+    borderWidth: 1, borderColor: BORDER,
     paddingVertical: 12, paddingHorizontal: 14,
-    borderRadius: 12, marginBottom: 10,
+    borderRadius: 12, marginBottom: 8,
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'
   },
-  calcLabel: { color: '#cfcfd2', fontWeight: '600' },
-  calcValue: { color: 'white', fontWeight: '800', fontSize: 16 },
+  calcLabel: { color: MUTED, fontWeight: '700' },
+  calcValue: { color: TEXT, fontWeight: '900' },
 
-  button: { backgroundColor: '#2a86ff', borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 8 },
-  buttonText: { color: 'white', fontWeight: '700' },
+  // Save CTA
+  btnSave: {
+    backgroundColor: BRAND, borderRadius: 14, padding: 14, alignItems: 'center',
+    shadowColor: BRAND, shadowOpacity: 0.2, shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 }, elevation: 3,
+  },
+  btnSaveText: { color: '#fff', fontWeight: '900' },
 
-  logo: { width: 48, height: 48, borderRadius: 8, backgroundColor: '#222' },
-  logoPlaceholder: { borderWidth: 1, borderColor: '#333' },
-  logoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  smallBtn: { backgroundColor: '#2a86ff', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10 },
-  smallBtnText: { color: 'white', fontWeight: '700' },
+  // Modal / bottom sheet (same as Profile)
+  modalBackdrop: { flex: 1, backgroundColor: '#0008' },
+  sheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: CARD, borderTopLeftRadius: 18, borderTopRightRadius: 18,
+    padding: 16, borderTopWidth: 1, borderColor: BORDER,
+  },
+  sheetHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 999, backgroundColor: BORDER, marginBottom: 10 },
+  sheetTitle: { color: TEXT, fontWeight: '900', fontSize: 18 },
+  sheetSub: { color: MUTED, marginTop: 6, marginBottom: 12 },
+
+  primaryBtn: {
+    backgroundColor: BRAND, borderRadius: 12, paddingVertical: 12,
+    alignItems: 'center', flexDirection: 'row', justifyContent: 'center',
+  },
+  primaryBtnText: { color: '#fff', fontWeight: '800' },
+
+  dangerBtn: {
+    marginTop: 10, backgroundColor: '#ef4444', borderRadius: 12,
+    paddingVertical: 12, alignItems: 'center', flexDirection: 'row', justifyContent: 'center',
+  },
+  dangerBtnText: { color: '#fff', fontWeight: '800' },
+
+  secondaryBtn: {
+    marginTop: 10, backgroundColor: '#eef2f7', borderRadius: 12, paddingVertical: 12, alignItems: 'center',
+  },
+  secondaryBtnText: { color: TEXT, fontWeight: '800' },
 });

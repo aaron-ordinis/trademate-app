@@ -1,724 +1,813 @@
 // app/(app)/quotes/list.js
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, RefreshControl, StyleSheet,
-  ActivityIndicator, Alert, Platform, ToastAndroid, Animated,
-  LayoutAnimation, UIManager, TextInput,
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  FlatList,
+  TextInput,
+  Modal,
+  Pressable,
+  ActivityIndicator,
+  Platform,
 } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../lib/supabase';
+
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-import * as IntentLauncher from 'expo-intent-launcher';
 
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
+import {
+  Filter,
+  Search,
+  Plus,
+  ChevronRight,
+  CalendarDays,
+  PoundSterling,
+  Settings,
+  X as XIcon,
+  Download,
+  Share2,
+  Trash2,
+  Eye,
+  Pencil,
+  Copy,
+  MapPin,
+  ChevronRight as Arrow,
+} from 'lucide-react-native';
 
-// ---- tiny toast ----
-function useToast() {
-  const [msg, setMsg] = useState('');
-  const [visible, setVisible] = useState(false);
-  const opacity = useRef(new Animated.Value(0)).current;
+const BRAND = '#2a86ff';
+const TEXT = '#0b1220';
+const MUTED = '#6b7280';
+const CARD = '#ffffff';
+const BG = '#f5f7fb';
+const BORDER = '#e6e9ee';
 
-  const show = (text) => {
-    if (!text) return;
-    if (Platform.OS === 'android') {
-      ToastAndroid.show(text, ToastAndroid.SHORT);
-      return;
-    }
-    setMsg(text);
-    setVisible(true);
-    Animated.timing(opacity, { toValue: 1, duration: 150, useNativeDriver: true }).start(() => {
-      setTimeout(() => {
-        Animated.timing(opacity, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => {
-          setVisible(false);
-          setMsg('');
-        });
-      }, 1400);
-    });
-  };
+const money = (v = 0) => '£' + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
-  const ToastView = () =>
-    visible ? (
-      <Animated.View style={[styles.toast, { opacity }]}>
-        <Text style={styles.toastText}>{msg}</Text>
-      </Animated.View>
-    ) : null;
-
-  return { show, ToastView };
-}
-
-// ---------- helpers ----------
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function probeUrl(url) {
-  const bust = `cb=${Date.now()}&r=${Math.random().toString(36).slice(2)}`;
-  const u = url?.includes('?') ? url + '&' + bust : url + '?' + bust;
-  try {
-    let res = await fetch(u, { method: 'HEAD' });
-    if (res.ok || res.status === 206 || res.status === 304) return true;
-    res = await fetch(u, { method: 'GET', headers: { Range: 'bytes=0-1' } });
-    if (res.status === 200 || res.status === 206 || res.status === 304) return true;
-    res = await fetch(u, { method: 'GET' });
-    return res.ok;
-  } catch { return false; }
-}
-async function pollSignedUrlReady(
-  path,
-  { tries = 40, baseDelay = 250, step = 250, maxDelay = 1200, signedUrlTtl = 60 * 60 * 24 * 7 } = {}
-) {
-  const storage = supabase.storage.from('quotes');
-  for (let i = 0; i < tries; i++) {
-    const { data, error } = await storage.createSignedUrl(path, signedUrlTtl);
-    const url = data?.signedUrl;
-    if (!error && url) {
-      const ok = await probeUrl(url);
-      if (ok) return url;
-    }
-    const delay = Math.min(baseDelay + i * step, maxDelay);
-    await sleep(delay);
-  }
-  return null;
-}
-
-const gbp = (v) => typeof v === 'number' ? `£${v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}` : '£0.00';
-const statusStyle = (status) => {
-  const s = String(status || '').toLowerCase();
-  if (s === 'draft') return { bg: '#6b7280' };
-  if (s === 'generated' || s === 'sent' || s === 'accepted') return { bg: '#3ecf8e' };
-  return { bg: '#3ecf8e' };
+const pad = (n) => (n < 10 ? `0${n}` : String(n));
+const toYMD = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseYMD = (s) => {
+  if (!s) return null;
+  const [y, m, d] = s.split('-').map((x) => parseInt(x, 10));
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
 };
 
-export default function QuotesList() {
+export default function QuoteList() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { show, ToastView } = useToast();
 
-  const [quotes, setQuotes] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [busyId, setBusyId] = useState(null);
-  const [isPremium, setIsPremium] = useState(false);
-  const [expandedId, setExpandedId] = useState(null);
+  const [quotes, setQuotes] = useState([]);
 
-  // Search / Filter / Sort
+  // tabs: all | draft | sent | accepted
+  const [tab, setTab] = useState('all');
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'draft' | 'generated' | 'sent' | 'accepted'
-  const [sortBy, setSortBy] = useState('newest');          // 'newest' | 'oldest' | 'totalAsc' | 'totalDesc'
 
-  const userRef = useRef(null);
-  const channelRef = useRef(null);
+  // filter drawer
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [sortBy, setSortBy] = useState('created_at_desc');
+  const [minTotal, setMinTotal] = useState('');
+  const [maxTotal, setMaxTotal] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  // date pickers
+  const [showFromPicker, setShowFromPicker] = useState(false);
+  const [showToPicker, setShowToPicker] = useState(false);
 
-  const fetchBranding = useCallback(async (userId) => {
+  // action sheet
+  const [actionOpen, setActionOpen] = useState(false);
+  const [selectedQuote, setSelectedQuote] = useState(null);
+
+  // confirm
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmConfig, setConfirmConfig] = useState({ title: '', message: '', onConfirm: null });
+
+  // toast
+  const [toast, setToast] = useState('');
+
+  // premium (branding only)
+  const [isPremium, setIsPremium] = useState(false);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 2200);
+  };
+
+  const load = useCallback(async () => {
     try {
-      const { data, error } = await supabase
+      setLoading(true);
+
+      const { data: auth } = await supabase.auth.getUser();
+      const user = auth?.user;
+      if (!user) { router.replace('/(auth)/login'); return; }
+
+      // BRANDING ONLY: lock Edit/Duplicate on Free
+      const { data: profile } = await supabase
         .from('profiles')
         .select('branding')
-        .eq('id', userId)
-        .single();
-      if (!error && data?.branding) setIsPremium(String(data.branding).toLowerCase() === 'premium');
-      else setIsPremium(false);
-    } catch {
-      setIsPremium(false);
-    }
-  }, []);
+        .eq('id', user.id)
+        .maybeSingle();
 
-  const fetchQuotes = useCallback(async () => {
-    try {
-      if (!userRef.current) {
-        const { data: { user } } = await supabase.auth.getUser();
-        userRef.current = user;
-        if (!user) {
-          router.replace('/(auth)/login'); // fixed path
-          return;
-        }
-        fetchBranding(user.id);
-      }
-      const { data, error } = await supabase
+      setIsPremium(String(profile?.branding || '').toLowerCase() === 'premium');
+
+      // quotes query
+      let q = supabase
         .from('quotes')
-        .select('id, user_id, quote_number, client_name, created_at, status, pdf_url, total, client_email, client_phone, client_address, site_address, job_summary, job_details, line_items, subtotal, vat_amount')
-        .eq('user_id', userRef.current.id)
-        .order('created_at', { ascending: false });
+        .select('id, quote_number, client_name, total, created_at, pdf_url, client_address, status')
+        .eq('user_id', user.id);
 
+      if (tab !== 'all') q = q.eq('status', tab);
+
+      if (query.trim()) {
+        const t = query.trim();
+        q = q.or(`client_name.ilike.%${t}%,quote_number.ilike.%${t}%`);
+      }
+
+      if (minTotal) q = q.gte('total', Number(minTotal || 0));
+      if (maxTotal) q = q.lte('total', Number(maxTotal || 0));
+      if (fromDate) q = q.gte('created_at', new Date(fromDate).toISOString());
+      if (toDate) q = q.lte('created_at', new Date(toDate).toISOString());
+
+      if (sortBy === 'created_at_desc') q = q.order('created_at', { ascending: false });
+      if (sortBy === 'created_at_asc') q = q.order('created_at', { ascending: true });
+      if (sortBy === 'total_desc') q = q.order('total', { ascending: false });
+      if (sortBy === 'total_asc') q = q.order('total', { ascending: true });
+
+      const { data, error } = await q.limit(400);
       if (error) throw error;
-      setQuotes(data || []);
+
+      setQuotes(data ?? []);
     } catch (e) {
-      console.error('[TMQ][LIST] fetchQuotes error', e);
+      console.error('[TMQ][LIST] load error', e);
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
-  }, [router, fetchBranding]);
+  }, [router, tab, query, minTotal, maxTotal, fromDate, toDate, sortBy]);
 
-  useEffect(() => { fetchQuotes(); }, [fetchQuotes]);
-  useFocusEffect(useCallback(() => { fetchQuotes(); }, [fetchQuotes]));
+  // initial + on focus refresh
+  useEffect(() => { load(); }, [load]);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  // 🔁 Refetch branding when we come back to this screen (e.g., after Stripe)
-  useFocusEffect(
-    useCallback(() => {
-      (async () => {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) await fetchBranding(user.id);
-      })();
-    }, [fetchBranding])
-  );
-
-  // 🔔 Realtime: watch profile branding for this user and update immediately
-  useEffect(() => {
-    let profileChannel;
-    (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      profileChannel = supabase
-        .channel('profiles-premium-watch')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
-          (payload) => {
-            const branding = (payload.new?.branding ?? payload.old?.branding) || 'free';
-            setIsPremium(String(branding).toLowerCase() === 'premium');
-          }
-        )
-        .subscribe();
-    })();
-
-    return () => { if (profileChannel) supabase.removeChannel(profileChannel); };
-  }, []);
-
-  // Existing quotes realtime subscription
-  useEffect(() => {
-    (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      userRef.current = user;
-
-      if (channelRef.current) {
-        supabase.removeChannel(channelRef.current);
-        channelRef.current = null;
-      }
-
-      channelRef.current = supabase
-        .channel('quotes-list-realtime')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'quotes', filter: `user_id=eq.${user.id}` },
-          () => fetchQuotes()
-        )
-        .subscribe();
-    })();
-
-    return () => { if (channelRef.current) supabase.removeChannel(channelRef.current); };
-  }, [fetchQuotes]);
-
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    fetchQuotes();
-  }, [fetchQuotes]);
-
-  // ---------- file helpers ----------
-  const downloadToCache = async (url, filename) => {
-    const safe = (filename || 'quote.pdf').replace(/[^\w.-]/g, '_');
-    const target = FileSystem.cacheDirectory + safe;
-    const { uri, status } = await FileSystem.downloadAsync(url, target);
-    if (status !== 200) throw new Error(`Download failed with status ${status}`);
-    return { uri, safeName: safe };
+  const clearFilters = () => {
+    setMinTotal(''); setMaxTotal(''); setFromDate(''); setToDate(''); setSortBy('created_at_desc');
   };
 
-  const ensureReadyUrl = async (maybeUrl, quote) => {
-    if (maybeUrl) {
-      const ok = await probeUrl(maybeUrl);
-      if (ok) return maybeUrl;
-    }
-    if (userRef.current && quote?.quote_number) {
-      const path = `${userRef.current.id}/${quote.quote_number}.pdf`;
-      const ready = await pollSignedUrlReady(path);
-      if (ready) return ready;
-    }
-    return null;
-  };
-
-  // ---------- actions ----------
-  const previewPDF = async (url, filename = 'quote.pdf', idForSpinner = null, quote = null) => {
+  /* ---------------- helpers: file actions ---------------- */
+  const saveToDevice = async (q) => {
     try {
-      setBusyId(idForSpinner);
-      const readyUrl = await ensureReadyUrl(url, quote);
-      if (!readyUrl) {
-        Alert.alert('No PDF yet', 'This quote has no ready PDF. Do you want to finish it now?',
-          [{ text: 'Not now', style: 'cancel' }, { text: 'Finish quote', onPress: () => router.push({ pathname: '/quotes/create', params: { quoteId: quote?.id } }) }]);
-        return;
-      }
-      router.push({ pathname: '/quotes/preview', params: { url: encodeURIComponent(readyUrl), name: filename, id: quote.id } });
-    } catch (e) {
-      console.error('[TMQ][LIST] previewPDF error', e);
-      Alert.alert('Error', e?.message ?? 'Could not preview PDF.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const openPDF = async (url, filename = 'quote.pdf', idForSpinner = null, quote = null) => {
-    try {
-      setBusyId(idForSpinner);
-      const readyUrl = await ensureReadyUrl(url, quote);
-      if (!readyUrl) return Alert.alert('No PDF yet', 'Please generate the PDF first.');
-      const { uri, safeName } = await downloadToCache(readyUrl, filename);
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: safeName });
-        show('PDF ready to share');
-        return;
-      }
-      if (Platform.OS === 'android') {
-        const contentUri = await FileSystem.getContentUriAsync(uri);
-        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', { data: contentUri, flags: 1, type: 'application/pdf' });
-        show('Opened with PDF app');
-        return;
-      }
-      show('PDF downloaded to cache');
-    } catch (e) {
-      console.error('[TMQ][LIST] openPDF error', e);
-      Alert.alert('Error', e?.message ?? 'Could not open PDF.');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const saveToDevice = async (url, filename = 'quote.pdf', idForSpinner = null, quote = null) => {
-    try {
-      setBusyId(idForSpinner);
-      const readyUrl = await ensureReadyUrl(url, quote);
-      if (!readyUrl) return Alert.alert('No PDF yet', 'Please generate the PDF first.');
-      const { uri, safeName } = await downloadToCache(readyUrl, filename);
+      if (!q?.pdf_url) { showToast('Generate the PDF first'); return; }
+      const filename = `${q.quote_number || 'quote'}.pdf`;
 
       if (Platform.OS === 'android') {
         const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-        if (!perm.granted) {
-          Alert.alert('Permission needed', 'Please choose a folder to save the PDF.');
-          return;
-        }
-        const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(perm.directoryUri, safeName, 'application/pdf');
+        if (!perm.granted) { showToast('Storage permission declined'); return; }
+
+        const tmp = FileSystem.cacheDirectory + filename;
+        const dl = FileSystem.createDownloadResumable(q.pdf_url, tmp);
+        const { uri } = await dl.downloadAsync();
+
         const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-        await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
-        show('Saved to device');
-        return;
-      }
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: safeName });
-        show('Use “Save to Files”');
+        const targetUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          perm.directoryUri,
+          filename,
+          'application/pdf'
+        );
+        await FileSystem.writeAsStringAsync(targetUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+        showToast('Saved to selected folder');
       } else {
-        show('PDF downloaded to cache');
+        const tmp = FileSystem.cacheDirectory + filename;
+        const dl = FileSystem.createDownloadResumable(q.pdf_url, tmp);
+        const { uri } = await dl.downloadAsync();
+        await Sharing.shareAsync(uri, { UTI: 'com.adobe.pdf', mimeType: 'application/pdf', dialogTitle: 'Save to Files' });
       }
     } catch (e) {
       console.error('[TMQ][LIST] saveToDevice error', e);
-      Alert.alert('Error', e?.message ?? 'Could not save PDF.');
-    } finally {
-      setBusyId(null);
+      showToast('Save failed');
     }
   };
 
-  const duplicateQuote = async (q, idForSpinner = null) => {
-    if (!isPremium) {
-      Alert.alert('Premium feature', 'Duplicating quotes is available on Premium.',
-        [{ text: 'Cancel', style: 'cancel' }, { text: 'Upgrade', onPress: () => router.push('/account') }]);
-      return;
-    }
-
+  const shareQuote = async (q) => {
     try {
-      setBusyId(idForSpinner);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not signed in');
-
-      try {
-        const { data: rpcData, error: rpcErr } = await supabase.rpc('duplicate_quote', {
-          p_user: user.id, p_source_id: q.id,
-        });
-        if (rpcErr) throw rpcErr;
-        const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-        if (!row?.id || !row?.quote_number) throw new Error('Duplicate RPC returned no id');
-        show(`Duplicated as ${row.quote_number}`);
-        router.push({ pathname: '/quotes/create', params: { quoteId: row.id } });
-        return;
-      } catch {
-        const { data: nextNo, error: nErr } = await supabase.rpc('next_quote_number', { p_user_id: user.id });
-        if (nErr) throw nErr;
-
-        const { data: inserted, error: insErr } = await supabase
-          .from('quotes')
-          .insert({
-            user_id: user.id, quote_number: nextNo, status: 'draft',
-            client_name: q.client_name || 'Client', client_email: q.client_email || null,
-            client_phone: q.client_phone || null, client_address: q.client_address || null,
-            site_address: q.site_address || null, job_summary: q.job_summary || 'New job',
-            job_details: q.job_details || null, line_items: q.line_items || null,
-            subtotal: q.subtotal ?? null, vat_amount: q.vat_amount ?? null,
-            total: q.total ?? null, pdf_url: null,
-          })
-          .select('id, quote_number')
-          .single();
-        if (insErr) throw insErr;
-
-        show(`Duplicated as ${inserted.quote_number}`);
-        router.push({ pathname: '/quotes/create', params: { quoteId: inserted.id } });
+      if (!q?.pdf_url) { showToast('Generate the PDF first'); return; }
+      const tmp = FileSystem.cacheDirectory + `${q.quote_number || 'quote'}.pdf`;
+      const dl = FileSystem.createDownloadResumable(q.pdf_url, tmp);
+      const { uri } = await dl.downloadAsync();
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: q.quote_number || 'Quote', UTI: 'com.adobe.pdf' });
+      } else {
+        showToast('Sharing not available');
       }
     } catch (e) {
-      console.error('[TMQ][LIST] duplicateQuote error', e);
-      Alert.alert('Error', e?.message ?? 'Could not duplicate quote.');
-    } finally {
-      setBusyId(null);
+      console.error('[TMQ][LIST] share error', e);
+      showToast('Share failed');
     }
   };
 
-  const deleteQuote = async (quote, idForSpinner = null) => {
-    Alert.alert('Delete quote', `Are you sure you want to delete ${quote.quote_number}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete', style: 'destructive', onPress: async () => {
-          try {
-            setBusyId(idForSpinner);
-            const { error: delErr } = await supabase.from('quotes').delete().eq('id', quote.id);
-            if (delErr) throw delErr;
+  /* ---------------- helpers: duplicate ---------------- */
+  const duplicateQuote = async (q) => {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const user = auth?.user;
+      if (!user) { router.replace('/(auth)/login'); return; }
 
-            if (userRef.current) {
-              const path = `${userRef.current.id}/${quote.quote_number}.pdf`;
-              await supabase.storage.from('quotes').remove([path]).catch(() => {});
-            }
+      // new quote number from server
+      const { data: nextNo, error: nErr } = await supabase.rpc('next_quote_number', { p_user_id: user.id });
+      if (nErr || !nextNo) throw new Error(nErr?.message || 'Could not allocate a quote number');
 
-            setQuotes((prev) => prev.filter((q) => q.id !== quote.id));
-            show('Quote deleted');
-          } catch (e) {
-            console.error('[TMQ][LIST] deleteQuote error', e);
-            Alert.alert('Error', e?.message ?? 'Could not delete quote.');
-          } finally {
-            setBusyId(null);
-          }
-        }
-      },
-    ]);
+      // fetch full row to be safe
+      const { data: full, error: qErr } = await supabase
+        .from('quotes')
+        .select('*')
+        .eq('id', q.id)
+        .single();
+      if (qErr) throw qErr;
+
+      const copy = {
+        ...full,
+        id: undefined,
+        quote_number: nextNo,
+        status: 'draft',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      // ensure only columns that exist get sent
+      delete copy.id;
+      delete copy.pdf_path; // in case it exists in your schema
+      // keep pdf_url if you want, but draft probably shouldn't point to old file
+      copy.pdf_url = null;
+
+      const { error: insErr } = await supabase.from('quotes').insert(copy);
+      if (insErr) throw insErr;
+
+      await load();
+      showToast(`Duplicated as ${nextNo}`);
+    } catch (e) {
+      console.error('[TMQ][LIST] duplicate error', e);
+      showToast('Duplicate failed');
+    }
   };
 
-  const toggleExpand = (id) => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setExpandedId((prev) => (prev === id ? null : id));
-  };
-
-  // ---------- search / filter / sort ----------
-  const visibleQuotes = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = quotes;
-
-    if (q) {
-      list = list.filter((it) => {
-        const hay =
-          (
-            (it.quote_number || '') + ' ' +
-            (it.client_name || '') + ' ' +
-            (it.client_email || '') + ' ' +
-            (it.client_phone || '')
-          ).toLowerCase();
-        return hay.includes(q);
-      });
-    }
-
-    if (statusFilter !== 'all') {
-      list = list.filter((it) => String(it.status || '').toLowerCase() === statusFilter);
-    }
-
-    list = [...list];
-    switch (sortBy) {
-      case 'oldest':
-        list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-        break;
-      case 'totalAsc':
-        list.sort((a, b) => (a.total ?? 0) - (b.total ?? 0));
-        break;
-      case 'totalDesc':
-        list.sort((a, b) => (b.total ?? 0) - (a.total ?? 0));
-        break;
-      default: // newest
-        list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        break;
-    }
-
-    return list;
-  }, [quotes, query, statusFilter, sortBy]);
-
-  // ---------- render ----------
-  const renderItem = ({ item }) => {
-    const createdAtDate = new Date(item.created_at);
-    const dateStr = `${createdAtDate.toLocaleDateString()} ${createdAtDate.toLocaleTimeString()}`;
-    const badge = statusStyle(item.status);
-    const expanded = expandedId === item.id;
-
-    return (
-      <View style={styles.card}>
-        <TouchableOpacity activeOpacity={0.7} onPress={() => toggleExpand(item.id)}>
-          <View style={styles.row}>
-            <Text style={styles.quoteNo}>{item.quote_number}</Text>
-            <View style={[styles.badge, { backgroundColor: badge.bg }]}>
-              <Text style={styles.badgeText}>
-                {(item.status || '').charAt(0).toUpperCase() + (item.status || '').slice(1)}
-              </Text>
-            </View>
-          </View>
-          <Text style={styles.client}>{item.client_name}</Text>
-          <Text style={styles.sub}>{dateStr}</Text>
-          <View style={styles.rowBetween}>
-            <Text style={styles.sub}>Total: {gbp(item.total ?? 0)}</Text>
-            <Text style={[styles.sub, { opacity: 0.8 }]}>{expanded ? 'Hide options ▲' : 'Show options ▼'}</Text>
-          </View>
-        </TouchableOpacity>
-
-        {expanded && (
-          <View style={styles.btnRow}>
-            <TouchableOpacity
-              style={[styles.btn, styles.btnPrimary]}
-              onPress={() => previewPDF(item.pdf_url, item.quote_number + '.pdf', item.id, item)}
-              disabled={busyId === item.id}
-            >
-              <Text style={styles.btnText}>Preview</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.btn, styles.btnSecondary]}
-              onPress={() => openPDF(item.pdf_url, item.quote_number + '.pdf', item.id, item)}
-              disabled={busyId === item.id}
-            >
-              <Text style={styles.btnTextAlt}>Open/Share</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.btn, styles.btnAccent]}
-              onPress={() => saveToDevice(item.pdf_url, item.quote_number + '.pdf', item.id, item)}
-              disabled={busyId === item.id}
-            >
-              <Text style={styles.btnTextAlt}>Save</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.btn, isPremium ? styles.btnDark : styles.btnLocked]}
-              onPress={() => {
-                if (!isPremium) {
-                  Alert.alert(
-                    'Premium feature',
-                    'Editing generated quotes is available on Premium.',
-                    [{ text: 'Cancel', style: 'cancel' }, { text: 'Upgrade', onPress: () => router.push('/account') }]
-                  );
-                  return;
-                }
-                router.push({ pathname: '/quotes/[id]', params: { id: item.id } });
-              }}
-              disabled={busyId === item.id}
-            >
-              <Text style={styles.btnTextAlt}>{isPremium ? 'Edit' : 'Edit (Premium)'}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.btn, isPremium ? styles.btnDark : styles.btnLocked]}
-              onPress={() => duplicateQuote(item, item.id)}
-              disabled={busyId === item.id}
-            >
-              <Text style={styles.btnTextAlt}>{isPremium ? 'Duplicate' : 'Duplicate (Premium)'}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.btn, styles.btnDanger]}
-              onPress={() => deleteQuote(item, item.id)}
-              disabled={busyId === item.id}
-            >
-              <Text style={styles.btnTextAlt}>Delete</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
-    );
-  };
-
+  /* ---------------- UI gates ---------------- */
   if (loading) {
     return (
-      <View style={styles.loadingWrap}>
-        <ActivityIndicator color="#9aa0a6" />
+      <View style={[styles.screen, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator color={BRAND} />
       </View>
     );
   }
 
-  return (
-    <View style={styles.wrap}>
-      {/* Safe top/left/right */}
-      <SafeAreaView edges={['top', 'left', 'right']} style={{ backgroundColor: '#0b0b0c' }}>
-        <View style={styles.headerRow}>
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel="Open settings"
-            onPress={() => router.push('/settings')}
-            style={styles.iconBtn}
-          >
-            <Ionicons name="settings-outline" size={24} color="#fff" />
-          </TouchableOpacity>
+  /* ---------------- renderers ---------------- */
+  const renderCard = ({ item }) => {
+    const address = item.client_address || '';
 
-          <Text style={styles.title}>Quotes</Text>
+    return (
+      <Pressable
+        onPress={() => { setSelectedQuote(item); setActionOpen(true); }}
+        style={({ pressed }) => [styles.card, pressed && { transform: [{ scale: 0.995 }] }]}
+      >
+        {!!item.quote_number && (
+          <Text style={styles.quoteTiny} numberOfLines={1}>{item.quote_number}</Text>
+        )}
 
-          <TouchableOpacity style={styles.newBtn} onPress={() => router.push('/quotes/create')}>
-            <Text style={styles.newBtnText}>+ New</Text>
-          </TouchableOpacity>
-        </View>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          {/* reserve space on the right so long addresses can't flow under the absolute-priced total */}
+          <View style={{ flexShrink: 1, paddingRight: 110 }}>
+            <Text style={styles.clientName} numberOfLines={1}>
+              {item.client_name || '—'}
+            </Text>
 
-        {/* Search / Filter / Sort row */}
-        <View style={styles.controlsWrap}>
-          <View style={styles.searchBox}>
-            <Ionicons name="search" size={16} color="#9aa0a6" />
-            <TextInput
-              placeholder="Search quotes or clients…"
-              placeholderTextColor="#8a8b90"
-              value={query}
-              onChangeText={setQuery}
-              style={styles.searchInput}
-              returnKeyType="search"
-            />
-            {!!query && (
-              <TouchableOpacity onPress={() => setQuery('')}>
-                <Ionicons name="close-circle" size={16} color="#9aa0a6" />
-              </TouchableOpacity>
+            <View style={styles.rowMini}>
+              <CalendarDays size={16} color={MUTED} />
+              <Text style={styles.rowMiniText}>{'  '}{new Date(item.created_at).toLocaleDateString()}</Text>
+            </View>
+
+            {!!address && (
+              <View style={styles.rowMini}>
+                <MapPin size={16} color={MUTED} />
+                <Text style={[styles.rowMiniText, { flexShrink: 1 }]} numberOfLines={1}>{'  '}{address}</Text>
+              </View>
             )}
           </View>
+        </View>
 
-          {/* Status filter chips */}
-          <View style={styles.chipsRow}>
-            {['all','draft','generated','sent','accepted'].map((k) => (
-              <TouchableOpacity
-                key={k}
-                style={[styles.chip, statusFilter === k && styles.chipActive]}
-                onPress={() => setStatusFilter(k)}
-              >
-                <Text style={[styles.chipText, statusFilter === k && styles.chipTextActive]}>
-                  {k === 'all' ? 'All' : k.charAt(0).toUpperCase() + k.slice(1)}
-                </Text>
-              </TouchableOpacity>
-            ))}
+        <Text style={styles.totalBottom}>{money(item.total || 0)}</Text>
+        <ChevronRight size={18} color={MUTED} style={{ position: 'absolute', right: 12, top: 12, opacity: 0.6 }} />
+      </Pressable>
+    );
+  };
+
+  const TabChip = ({ label, value }) => {
+    const active = tab === value;
+    return (
+      <TouchableOpacity onPress={() => setTab(value)} style={[styles.chip, active && styles.chipActive]}>
+        <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
+          {label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const FilterRow = ({ label, right }) => (
+    <View style={styles.filterRow}>
+      <Text style={styles.filterLabel}>{label}</Text>
+      <View style={{ flex: 1 }} />
+      {right}
+    </View>
+  );
+
+  /* ---------------- render ---------------- */
+  return (
+    <View style={styles.screen}>
+      {/* Top bar */}
+      <View style={styles.topbar}>
+        <Text style={styles.h1}>Quotes</Text>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => setFiltersOpen(true)}>
+            <Filter size={20} color={MUTED} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push('/(app)/settings')}>
+            <Settings size={20} color={MUTED} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Search */}
+      <View style={styles.searchRow}>
+        <Search size={18} color={MUTED} style={{ marginRight: 8 }} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search client or quote number"
+          placeholderTextColor={MUTED}
+          style={styles.searchInput}
+          returnKeyType="search"
+          onSubmitEditing={load}
+        />
+      </View>
+
+      {/* Tabs – whole chip is clickable */}
+      <View style={styles.tabsRow}>
+        <TabChip label="All" value="all" />
+        <TabChip label="Draft" value="draft" />
+        <TabChip label="Sent" value="sent" />
+        <TabChip label="Accepted" value="accepted" />
+      </View>
+
+      {/* List */}
+      <FlatList
+        data={quotes}
+        keyExtractor={(it) => String(it.id)}
+        renderItem={renderCard}
+        contentContainerStyle={{ paddingBottom: 120 }}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+        ListEmptyComponent={
+          <View style={{ paddingTop: 40, alignItems: 'center' }}>
+            <PoundSterling size={28} color={MUTED} />
+            <Text style={{ color: MUTED, marginTop: 8 }}>No quotes match your filters.</Text>
+          </View>
+        }
+        refreshing={loading}
+        onRefresh={load}
+      />
+
+      {/* FAB */}
+      <TouchableOpacity onPress={() => router.push('/(app)/quotes/create')} style={styles.fab} activeOpacity={0.9}>
+        <Plus size={24} color="#fff" />
+      </TouchableOpacity>
+
+      {/* Filter / Sort Modal */}
+      <Modal visible={filtersOpen} animationType="slide" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={() => setFiltersOpen(false)} />
+        <View style={styles.sheet}>
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetTitle}>Filter & sort</Text>
+
+          <FilterRow
+            label="Sort by"
+            right={
+              <View style={styles.segment}>
+                {[
+                  ['Newest', 'created_at_desc'],
+                  ['Oldest', 'created_at_asc'],
+                  ['Total↑', 'total_asc'],
+                  ['Total↓', 'total_desc'],
+                ].map(([label, val]) => (
+                  <Pressable key={val} onPress={() => setSortBy(val)} style={[styles.segmentBtn, sortBy === val && styles.segmentBtnActive]}>
+                    <Text style={[styles.segmentText, sortBy === val && styles.segmentTextActive]}>{label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            }
+          />
+
+          <FilterRow
+            label="Totals"
+            right={
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TextInput
+                  style={[styles.smallInput, { width: 100 }]}
+                  placeholder="Min £"
+                  keyboardType="decimal-pad"
+                  value={minTotal}
+                  onChangeText={setMinTotal}
+                  placeholderTextColor={MUTED}
+                />
+                <TextInput
+                  style={[styles.smallInput, { width: 100 }]}
+                  placeholder="Max £"
+                  keyboardType="decimal-pad"
+                  value={maxTotal}
+                  onChangeText={setMaxTotal}
+                  placeholderTextColor={MUTED}
+                />
+              </View>
+            }
+          />
+
+          <FilterRow
+            label="Dates"
+            right={
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                {/* From */}
+                <View style={{ position: 'relative' }}>
+                  <TextInput
+                    style={[styles.smallInput, { width: 150, paddingRight: 38 }]}
+                    placeholder="From (YYYY-MM-DD)"
+                    value={fromDate}
+                    onChangeText={setFromDate}
+                    placeholderTextColor={MUTED}
+                  />
+                  <TouchableOpacity onPress={() => setShowFromPicker(true)} style={styles.inputIconBtn}>
+                    <CalendarDays size={18} color={MUTED} />
+                  </TouchableOpacity>
+                  {!!fromDate && (
+                    <TouchableOpacity onPress={() => setFromDate('')} style={[styles.clearBadge, { right: 34 }]}>
+                      <XIcon size={14} color="#667085" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* To */}
+                <View style={{ position: 'relative' }}>
+                  <TextInput
+                    style={[styles.smallInput, { width: 150, paddingRight: 38 }]}
+                    placeholder="To (YYYY-MM-DD)"
+                    value={toDate}
+                    onChangeText={setToDate}
+                    placeholderTextColor={MUTED}
+                  />
+                  <TouchableOpacity onPress={() => setShowToPicker(true)} style={styles.inputIconBtn}>
+                    <CalendarDays size={18} color={MUTED} />
+                  </TouchableOpacity>
+                  {!!toDate && (
+                    <TouchableOpacity onPress={() => setToDate('')} style={[styles.clearBadge, { right: 34 }]}>
+                      <XIcon size={14} color="#667085" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            }
+          />
+
+          {/* Native pickers */}
+          {showFromPicker && (
+            <DateTimePicker
+              value={parseYMD(fromDate) || new Date()}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'inline' : 'default'}
+              onChange={(e, d) => {
+                if (Platform.OS === 'android') setShowFromPicker(false);
+                if (d) setFromDate(toYMD(d));
+              }}
+              maximumDate={parseYMD(toDate) || undefined}
+            />
+          )}
+          {showToPicker && (
+            <DateTimePicker
+              value={parseYMD(toDate) || new Date()}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'inline' : 'default'}
+              onChange={(e, d) => {
+                if (Platform.OS === 'android') setShowToPicker(false);
+                if (d) setToDate(toYMD(d));
+              }}
+              minimumDate={parseYMD(fromDate) || undefined}
+            />
+          )}
+
+          <View style={{ height: 12 }} />
+
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <TouchableOpacity style={[styles.sheetBtn, { backgroundColor: '#eef2f7' }]} onPress={clearFilters}>
+              <Text style={[styles.sheetBtnText, { color: TEXT }]}>Clear</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.sheetBtn, { backgroundColor: BRAND, flex: 1 }]} onPress={() => { setFiltersOpen(false); load(); }}>
+              <Text style={[styles.sheetBtnText, { color: '#fff' }]}>Apply</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Sort buttons */}
-          <View style={styles.sortRow}>
-            {[
-              ['newest','Newest'],
-              ['oldest','Oldest'],
-              ['totalDesc','Total ↓'],
-              ['totalAsc','Total ↑'],
-            ].map(([key,label]) => (
-              <TouchableOpacity
-                key={key}
-                style={[styles.sortBtn, sortBy === key && styles.sortBtnActive]}
-                onPress={() => setSortBy(key)}
-              >
-                <Text style={[styles.sortText, sortBy === key && styles.sortTextActive]}>{label}</Text>
-              </TouchableOpacity>
-            ))}
+          <View style={{ height: Platform.OS === 'ios' ? 24 : 10 }} />
+        </View>
+      </Modal>
+
+      {/* Action Sheet */}
+      <Modal visible={actionOpen} animationType="fade" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={() => setActionOpen(false)} />
+        <View style={styles.sheet}>
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetTitle}>{selectedQuote?.quote_number || 'Quote Actions'}</Text>
+
+          {/* View */}
+          <Pressable
+            style={styles.rowAction}
+            onPress={() => {
+              setActionOpen(false);
+              router.push({
+                pathname: '/(app)/quotes/preview',
+                params: {
+                  id: selectedQuote.id,
+                  url: encodeURIComponent(selectedQuote?.pdf_url || ''),
+                  name: `${selectedQuote?.quote_number || 'quote'}.pdf`,
+                },
+              });
+            }}
+          >
+            <View style={styles.rowLeft}>
+              <Eye size={18} color={MUTED} />
+              <Text style={styles.rowText}>View</Text>
+            </View>
+            <Arrow size={18} color={MUTED} />
+          </Pressable>
+
+          {/* Edit (locked on Free branding) */}
+          <Pressable
+            style={styles.rowAction}
+            onPress={() => {
+              setActionOpen(false);
+              if (!isPremium) {
+                router.push('/(app)/account');
+              } else {
+                router.push({ pathname: '/(app)/quotes/[id]', params: { id: selectedQuote.id, mode: 'edit' } });
+              }
+            }}
+          >
+            <View style={styles.rowLeft}>
+              <Pencil size={18} color={MUTED} />
+              <Text style={styles.rowText}>Edit</Text>
+            </View>
+            <Arrow size={18} color={MUTED} />
+          </Pressable>
+
+          {/* Duplicate (locked on Free branding) */}
+          <Pressable
+            style={styles.rowAction}
+            onPress={async () => {
+              setActionOpen(false);
+              if (!isPremium) {
+                router.push('/(app)/account');
+              } else {
+                await duplicateQuote(selectedQuote);
+              }
+            }}
+          >
+            <View style={styles.rowLeft}>
+              <Copy size={18} color={MUTED} />
+              <Text style={styles.rowText}>Duplicate</Text>
+            </View>
+            <Arrow size={18} color={MUTED} />
+          </Pressable>
+
+          {/* Save / Share */}
+          <Pressable
+            style={styles.rowAction}
+            onPress={async () => { setActionOpen(false); await saveToDevice(selectedQuote); }}
+          >
+            <View style={styles.rowLeft}>
+              <Download size={18} color={MUTED} />
+              <Text style={styles.rowText}>Save PDF</Text>
+            </View>
+            <Arrow size={18} color={MUTED} />
+          </Pressable>
+
+          <Pressable
+            style={styles.rowAction}
+            onPress={async () => { setActionOpen(false); await shareQuote(selectedQuote); }}
+          >
+            <View style={styles.rowLeft}>
+              <Share2 size={18} color={MUTED} />
+              <Text style={styles.rowText}>Share PDF</Text>
+            </View>
+            <Arrow size={18} color={MUTED} />
+          </Pressable>
+
+          {/* Delete */}
+          <Pressable
+            style={styles.rowAction}
+            onPress={() => {
+              setActionOpen(false);
+              setConfirmConfig({
+                title: 'Delete quote',
+                message: `Are you sure you want to delete ${selectedQuote?.quote_number || 'this quote'}?`,
+                onConfirm: async () => {
+                  try {
+                    const { error } = await supabase.from('quotes').delete().eq('id', selectedQuote.id);
+                    if (error) throw error;
+                    await load();
+                    showToast('Quote deleted');
+                  } catch (e) {
+                    console.error('[TMQ][LIST] delete error', e);
+                    showToast('Delete failed');
+                  } finally {
+                    setConfirmOpen(false);
+                  }
+                },
+              });
+              setConfirmOpen(true);
+            }}
+          >
+            <View style={styles.rowLeft}>
+              <Trash2 size={18} color="#e11d48" />
+              <Text style={[styles.rowText, { color: '#e11d48' }]}>Delete</Text>
+            </View>
+            <Arrow size={18} color={MUTED} />
+          </Pressable>
+        </View>
+      </Modal>
+
+      {/* Confirm Dialog */}
+      <Modal visible={confirmOpen} animationType="fade" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={() => setConfirmOpen(false)} />
+        <View style={styles.confirmBox}>
+          <Text style={styles.confirmTitle}>{confirmConfig.title}</Text>
+          <Text style={styles.confirmMessage}>{confirmConfig.message}</Text>
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+            <TouchableOpacity style={[styles.sheetBtn, { backgroundColor: '#eef2f7', flex: 1 }]} onPress={() => setConfirmOpen(false)}>
+              <Text style={[styles.sheetBtnText, { color: TEXT }]}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.sheetBtn, { backgroundColor: '#e11d48', flex: 1 }]}
+              onPress={() => {
+                if (typeof confirmConfig.onConfirm === 'function') confirmConfig.onConfirm();
+                else setConfirmOpen(false);
+              }}
+            >
+              <Text style={[styles.sheetBtnText, { color: '#fff' }]}>Delete</Text>
+            </TouchableOpacity>
           </View>
         </View>
-      </SafeAreaView>
+      </Modal>
 
-      {/* Safe bottom */}
-      <SafeAreaView edges={['bottom']} style={{ flex: 1 }}>
-        <FlatList
-          data={visibleQuotes}
-          keyExtractor={(q) => String(q.id)}
-          renderItem={renderItem}
-          contentContainerStyle={{ padding: 16, paddingBottom: Math.max(insets.bottom, 80) }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#999" />}
-          ListEmptyComponent={
-            <Text style={[styles.sub, { textAlign: 'center', marginTop: 40 }]}>
-              No quotes match your filters.
-            </Text>
-          }
-          extraData={{ expandedId, sortBy, statusFilter, query, isPremium }}
-        />
-      </SafeAreaView>
-
-      <ToastView />
+      {/* Toast */}
+      {!!toast && (
+        <View style={styles.toast}>
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
     </View>
   );
 }
 
+/* ------------------ styles ------------------ */
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: '#0b0b0c' },
-  loadingWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0b0b0c' },
+  screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === 'android' ? 8 : 0 },
 
-  headerRow: {
+  topbar: {
+    paddingHorizontal: 16, paddingTop: 10, paddingBottom: 8,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  },
+  h1: { color: TEXT, fontSize: 24, fontWeight: '800' },
+
+  iconBtn: {
+    height: 38, width: 38, borderRadius: 10, borderWidth: 1, borderColor: BORDER,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: CARD,
+  },
+
+  // Search
+  searchRow: {
+    marginTop: 14, marginHorizontal: 16,
+    backgroundColor: CARD, borderRadius: 12, borderWidth: 1, borderColor: BORDER,
+    paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center',
+  },
+  searchInput: { flex: 1, color: TEXT },
+
+  // Tabs – whole chip is clickable
+  tabsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingBottom: 10,
+    gap: 8,
+    paddingHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 10,
   },
-  iconBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
-    backgroundColor: '#1a1a1b',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#2b2c2f',
-  },
-  title: { color: 'white', fontSize: 24, fontWeight: '700' },
-  newBtn: { backgroundColor: '#2a86ff', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10 },
-  newBtnText: { color: 'white', fontWeight: '700' },
-
-  controlsWrap: { paddingHorizontal: 12, paddingBottom: 8, gap: 8 },
-  searchBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#1a1a1b', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10,
-    borderWidth: 1, borderColor: '#2b2c2f',
-  },
-  searchInput: { flex: 1, color: 'white' },
-
-  chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
-    backgroundColor: '#1a1a1b', borderWidth: 1, borderColor: '#2b2c2f',
+    flexGrow: 1,
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: '#eef2f7',
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  chipActive: { backgroundColor: '#2a86ff', borderColor: '#2a86ff' },
-  chipText: { color: '#c9c9cc', fontWeight: '600', fontSize: 12 },
-  chipTextActive: { color: '#fff' },
+  chipActive: { backgroundColor: BRAND + '22', borderColor: BRAND + '55' },
+  chipText: { color: MUTED, fontWeight: '700' },
+  chipTextActive: { color: BRAND },
 
-  sortRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  sortBtn: {
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-    backgroundColor: '#1a1a1b', borderWidth: 1, borderColor: '#2b2c2f',
+  // Card
+  card: {
+    backgroundColor: CARD, marginHorizontal: 16, padding: 14, borderRadius: 16,
+    borderWidth: 1, borderColor: BORDER,
+    shadowColor: '#0b1220', shadowOpacity: 0.04, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 2,
+    marginBottom: 2,
   },
-  sortBtnActive: { backgroundColor: '#34353a', borderColor: '#3c3c3f' },
-  sortText: { color: '#c9c9cc', fontWeight: '600', fontSize: 12 },
-  sortTextActive: { color: '#fff' },
+  quoteTiny: {
+    position: 'absolute', right: 34, top: 14, color: MUTED, fontSize: 12, maxWidth: 140, textAlign: 'right',
+  },
+  clientName: { color: TEXT, fontWeight: '900', fontSize: 16 },
+  rowMini: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+  rowMiniText: { color: MUTED },
 
-  card: { backgroundColor: '#1a1a1b', borderRadius: 16, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: '#2b2c2f' },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
-  quoteNo: { color: 'white', fontWeight: '700', fontSize: 16 },
-  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  badgeText: { color: 'white', fontSize: 12, fontWeight: '700' },
-  client: { color: 'white', marginTop: 6, fontSize: 15 },
-  sub: { color: '#a9a9ac', marginTop: 2, fontSize: 12 },
-
-  btnRow: { marginTop: 10, gap: 8, flexWrap: 'wrap', flexDirection: 'row' },
-  btn: { flexGrow: 1, flexBasis: '48%', borderRadius: 12, paddingVertical: 10, alignItems: 'center' },
-  btnPrimary: { backgroundColor: '#3ecf8e' },
-  btnSecondary: { backgroundColor: '#272729', borderWidth: 1, borderColor: '#3c3c3f' },
-  btnDark: { backgroundColor: '#1f1f21', borderWidth: 1, borderColor: '#34353a' },
-  btnLocked: { backgroundColor: '#2a2b2f', borderWidth: 1, borderColor: '#3a3b40' },
-  btnDanger: { backgroundColor: '#b3261e' },
-  btnAccent: { backgroundColor: '#2a86ff' },
-
-  btnText: { color: '#0b0b0c', fontWeight: '800' },
-  btnTextAlt: { color: 'white', fontWeight: '800' },
-
-  toast: {
+  totalBottom: {
     position: 'absolute',
-    left: 16, right: 16, bottom: 24,
-    backgroundColor: '#222326', borderRadius: 12,
-    paddingVertical: 10, paddingHorizontal: 14,
-    borderWidth: 1, borderColor: '#3a3b3f',
+    right: 16,
+    bottom: 12,
+    fontSize: 16,
+    fontWeight: '900',
+    color: TEXT,
   },
-  toastText: { color: 'white', textAlign: 'center', fontWeight: '600' },
+
+  // FAB
+  fab: {
+    position: 'absolute', right: 18, bottom: 28, width: 56, height: 56, borderRadius: 28,
+    backgroundColor: BRAND, alignItems: 'center', justifyContent: 'center',
+    shadowColor: BRAND, shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 6,
+  },
+
+  // Sheet
+  modalBackdrop: { flex: 1, backgroundColor: '#0008' },
+  sheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: CARD, borderTopLeftRadius: 18, borderTopRightRadius: 18,
+    padding: 16, borderTopWidth: 1, borderColor: BORDER,
+  },
+  sheetHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 999, backgroundColor: BORDER, marginBottom: 10 },
+  sheetTitle: { color: TEXT, fontWeight: '900', fontSize: 18, marginBottom: 8 },
+
+  filterRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 10 },
+  filterLabel: { color: MUTED, fontWeight: '800' },
+
+  smallInput: {
+    backgroundColor: '#f6f7f9', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 10,
+    borderWidth: 1, borderColor: BORDER, color: TEXT,
+  },
+  inputIconBtn: {
+    position: 'absolute', right: 8, top: 8, height: 28, width: 28, borderRadius: 8,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: '#f3f4f6',
+    borderWidth: 1, borderColor: BORDER,
+  },
+  clearBadge: {
+    position: 'absolute', top: 8, height: 28, width: 28, borderRadius: 8,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8fafc',
+    borderWidth: 1, borderColor: BORDER,
+  },
+
+  segment: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  segmentBtn: {
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+    borderWidth: 1, borderColor: BORDER, backgroundColor: '#f7f8fb',
+  },
+  segmentBtnActive: { backgroundColor: BRAND + '15', borderColor: BRAND + '66' },
+  segmentText: { color: MUTED, fontWeight: '700' },
+  segmentTextActive: { color: BRAND },
+
+  sheetBtn: { paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' },
+  sheetBtnText: { fontWeight: '800' },
+
+  // Action rows (full-width clickable)
+  rowAction: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14, borderBottomWidth: 1, borderColor: BORDER },
+  rowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  rowText: { color: TEXT, fontWeight: '800' },
+
+  // Confirm dialog
+  confirmBox: {
+    position: 'absolute', left: 16, right: 16, bottom: '25%',
+    backgroundColor: CARD, borderRadius: 16, padding: 18, borderWidth: 1, borderColor: BORDER,
+    shadowColor: '#0b1220', shadowOpacity: 0.1, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 4,
+  },
+  confirmTitle: { color: TEXT, fontWeight: '900', fontSize: 18, marginBottom: 6 },
+  confirmMessage: { color: MUTED },
+
+  // Toast
+  toast: {
+    position: 'absolute', bottom: 22, left: 16, right: 16, backgroundColor: '#111827',
+    paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12, alignItems: 'center',
+    shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 4,
+  },
+  toastText: { color: '#fff', fontWeight: '700' },
 });

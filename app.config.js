@@ -1,7 +1,7 @@
-// app.config.js
-import 'dotenv/config';
+// app.config.js (CommonJS)
+require('dotenv').config();
 
-export default {
+module.exports = {
   expo: {
     name: 'TradeMate Quotes',
     slug: 'trademate-quotes',
@@ -11,20 +11,19 @@ export default {
     userInterfaceStyle: 'automatic',
     platforms: ['android', 'ios'],
 
+    // Bundle all assets
     assetBundlePatterns: ['/*'],
 
-    // ✅ App icon (JPG)
     icon: './assets/images/app-icon.jpg',
 
-    // ✅ Splash (dark + light modes)
     splash: {
       image: './assets/images/trademate-login-logo.png',
       resizeMode: 'contain',
-      backgroundColor: '#ffffff', // Light mode fallback
+      backgroundColor: '#ffffff',
       dark: {
-        image: './assets/images/login-logo.png',
+        image: './assets/images/trademate-login-logo.png',
         resizeMode: 'contain',
-        backgroundColor: '#0b0b0c', // Dark mode fallback
+        backgroundColor: '#0b0b0c',
       },
     },
 
@@ -32,9 +31,13 @@ export default {
     experiments: { typedRoutes: false },
 
     extra: {
+      // Supabase
       SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL,
       SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
-      EXPO_PUBLIC_GOOGLE_MAPS_KEY: process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY,
+
+      // ✅ Single Google key used for Places, Geocoding, Distance Matrix, etc.
+      GOOGLE_API_KEY: process.env.EXPO_PUBLIC_GOOGLE_API_KEY,
+
       eas: { projectId: '57f55544-8d0b-4f50-b45e-57948ba02dfc' },
     },
 
@@ -42,11 +45,24 @@ export default {
       package: 'com.trademate.quotes',
       softwareKeyboardLayoutMode: 'resize',
 
-      // ✅ Adaptive icon (foreground must match main icon, background color required)
       adaptiveIcon: {
         foregroundImage: './assets/images/app-icon.jpg',
         backgroundColor: '#0b0b0c',
       },
+
+      splash: {
+        image: './assets/images/trademate-login-logo.png',
+        resizeMode: 'contain',
+        backgroundColor: '#0a0a0b',
+        dark: {
+          image: './assets/images/trademate-login-logo.png',
+          resizeMode: 'contain',
+          backgroundColor: '#000000',
+        },
+      },
+
+      // If you later use the native Google Maps SDK, uncomment:
+      // config: { googleMaps: { apiKey: process.env.EXPO_PUBLIC_GOOGLE_API_KEY } },
 
       intentFilters: [
         {
@@ -59,6 +75,18 @@ export default {
 
     ios: {
       bundleIdentifier: 'com.trademate.quotes',
+      splash: {
+        image: './assets/images/trademate-login-logo.png',
+        resizeMode: 'contain',
+        backgroundColor: '#ffffff',
+        dark: {
+          image: './assets/images/trademate-login-logo.png',
+          resizeMode: 'contain',
+          backgroundColor: '#0b0b0c',
+        },
+      },
+      // If you later use the native Google Maps SDK, uncomment:
+      // config: { googleMapsApiKey: process.env.EXPO_PUBLIC_GOOGLE_API_KEY },
     },
 
     updates: {

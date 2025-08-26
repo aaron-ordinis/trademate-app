@@ -1,5 +1,5 @@
 // app/(auth)/login.js
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,8 @@ import {
   StatusBar,
 } from 'react-native';
 import { useRouter, Link } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Eye, EyeOff } from 'lucide-react-native';
 import { supabase } from '../../lib/supabase';
 
 const BRAND = '#2a86ff';
@@ -19,6 +21,12 @@ const TEXT = '#0b1220';
 const SUBTLE = '#6b7280';
 const SURFACE = '#f6f7f9';
 const BORDER = '#e6e9ee';
+
+const STORAGE_KEYS = {
+  rememberMe: 'tmq.rememberMe',
+  rememberedEmail: 'tmq.rememberedEmail',
+  keepSignedIn: 'tmq.keepSignedIn',
+};
 
 export default function Login() {
   const router = useRouter();
@@ -29,6 +37,24 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [showPw, setShowPw] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
+  const [keepSignedIn, setKeepSignedIn] = useState(true);
+
+  // --- Prefill toggles + remembered email
+  useEffect(() => {
+    (async () => {
+      try {
+        const [rm, em, ksi] = await Promise.all([
+          AsyncStorage.getItem(STORAGE_KEYS.rememberMe),
+          AsyncStorage.getItem(STORAGE_KEYS.rememberedEmail),
+          AsyncStorage.getItem(STORAGE_KEYS.keepSignedIn),
+        ]);
+        if (rm != null) setRememberMe(rm === '1');
+        if (ksi != null) setKeepSignedIn(ksi === '1');
+        if (em && (rm === '1' || rm === null)) setEmail(em);
+      } catch {}
+    })();
+  }, []);
 
   const normEmail = () => email.trim().toLowerCase();
 
@@ -49,7 +75,6 @@ export default function Login() {
   const mapSupabaseError = (err) => {
     const msg = String(err?.message || '').toLowerCase();
     const code = String(err?.code || '').toLowerCase();
-
     if (code === 'invalid_credentials' || msg.includes('invalid login credentials')) {
       return 'Email or password is incorrect.';
     }
@@ -66,6 +91,15 @@ export default function Login() {
     try {
       setLoading(true);
       const e = normEmail();
+
+      // persist preferences immediately
+      await Promise.all([
+        AsyncStorage.setItem(STORAGE_KEYS.rememberMe, rememberMe ? '1' : '0'),
+        AsyncStorage.setItem(STORAGE_KEYS.keepSignedIn, keepSignedIn ? '1' : '0'),
+        rememberMe
+          ? AsyncStorage.setItem(STORAGE_KEYS.rememberedEmail, e)
+          : AsyncStorage.removeItem(STORAGE_KEYS.rememberedEmail),
+      ]);
 
       const { data, error } = await supabase.auth.signInWithPassword({
         email: e,
@@ -97,7 +131,6 @@ export default function Login() {
 
   const handleForgotPw = async () => {
     if (loading) return;
-
     const e = normEmail();
     if (!e) {
       setAuthError('Enter your email above to receive a reset link.');
@@ -111,7 +144,7 @@ export default function Login() {
       setLoading(true);
       setAuthError('');
       const { error } = await supabase.auth.resetPasswordForEmail(e, {
-        redirectTo: 'tradematequotes://reset', // deep link to your reset screen
+        redirectTo: 'tradematequotes://reset',
       });
       if (error) throw error;
       Alert.alert('Check your email', 'We sent a password reset link.');
@@ -141,25 +174,29 @@ export default function Login() {
 
         {!!authError && <Text style={styles.errorText}>{authError}</Text>}
 
-        <TextInput
-          placeholder="Email"
-          placeholderTextColor={SUBTLE}
-          autoCapitalize="none"
-          keyboardType="email-address"
-          autoComplete="email"
-          textContentType="username"
-          value={email}
-          onChangeText={(t) => {
-            setEmail(t);
-            if (authError) setAuthError('');
-          }}
-          style={styles.input}
-          returnKeyType="next"
-          onSubmitEditing={onSubmitEmail}
-          editable={!loading}
-        />
+        {/* Email */}
+        <View style={styles.inputWrap}>
+          <TextInput
+            placeholder="Email"
+            placeholderTextColor={SUBTLE}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            autoComplete="email"
+            textContentType="username"
+            value={email}
+            onChangeText={(t) => {
+              setEmail(t);
+              if (authError) setAuthError('');
+            }}
+            style={styles.input}
+            returnKeyType="next"
+            onSubmitEditing={onSubmitEmail}
+            editable={!loading}
+          />
+        </View>
 
-        <View>
+        {/* Password + eye */}
+        <View style={styles.inputWrap}>
           <TextInput
             ref={pwRef}
             placeholder="Password"
@@ -172,20 +209,53 @@ export default function Login() {
               setPassword(t);
               if (authError) setAuthError('');
             }}
-            style={styles.input}
+            style={[styles.input, styles.inputHasIcon]}
             returnKeyType="go"
             onSubmitEditing={handleLogin}
             editable={!loading}
           />
           <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={showPw ? 'Hide password' : 'Show password'}
             onPress={() => !loading && setShowPw((s) => !s)}
-            style={styles.showBtn}
+            style={styles.eyeBtn}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             disabled={loading}
           >
-            <Text style={styles.showBtnText}>{showPw ? 'Hide' : 'Show'}</Text>
+            {showPw ? (
+              <Eye color="#9aa0a6" size={20} />
+            ) : (
+              <EyeOff color="#9aa0a6" size={20} />
+            )}
           </TouchableOpacity>
         </View>
 
+        {/* Checkboxes */}
+        <View style={styles.checksRow}>
+          <TouchableOpacity
+            onPress={() => setKeepSignedIn((v) => !v)}
+            style={styles.checkItem}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.checkbox, keepSignedIn && styles.checkboxOn]}>
+              {keepSignedIn ? <Text style={styles.tick}>✓</Text> : null}
+            </View>
+            <Text style={styles.checkLabel}>Keep me signed in</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setRememberMe((v) => !v)}
+            style={styles.checkItem}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.checkbox, rememberMe && styles.checkboxOn]}>
+              {rememberMe ? <Text style={styles.tick}>✓</Text> : null}
+            </View>
+            <Text style={styles.checkLabel}>Remember me</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Sign in */}
         <TouchableOpacity
           style={[styles.primaryBtn, loading && { opacity: 0.7 }]}
           onPress={handleLogin}
@@ -222,34 +292,18 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 18,
+    padding: 22,
     alignItems: 'center',
-    // subtle elevation
     shadowColor: '#0b1220',
-    shadowOpacity: 0.06,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 3,
+    shadowOpacity: 0.08,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 4,
   },
-  logo: {
-    width: 112,
-    height: 112,
-    marginBottom: 12,
-  },
-  title: {
-    color: TEXT,
-    fontSize: 24,
-    fontWeight: '800',
-    marginBottom: 4,
-    textAlign: 'center',
-  },
-  subtitle: {
-    color: SUBTLE,
-    fontSize: 14,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
+  logo: { width: 156, height: 156, marginBottom: 14 },
+  title: { color: TEXT, fontSize: 26, fontWeight: '800', marginBottom: 6, textAlign: 'center' },
+  subtitle: { color: SUBTLE, fontSize: 14, marginBottom: 18, textAlign: 'center' },
   errorText: {
     width: '100%',
     color: '#b3261e',
@@ -260,39 +314,54 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     marginBottom: 10,
   },
+
+  inputWrap: { width: '100%', marginBottom: 12, position: 'relative' },
   input: {
     width: '100%',
     backgroundColor: SURFACE,
     color: TEXT,
     borderRadius: 12,
-    padding: 14,
-    marginBottom: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
     borderWidth: 1,
     borderColor: BORDER,
+    fontSize: 16,
   },
-  showBtn: {
-    position: 'absolute',
-    right: 12,
-    top: 12,
-    paddingHorizontal: 6,
-    paddingVertical: 4,
+  inputHasIcon: { paddingRight: 46 },
+
+  eyeBtn: { position: 'absolute', right: 10, top: 0, bottom: 0, justifyContent: 'center' },
+
+  checksRow: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 2,
+    marginBottom: 8,
   },
-  showBtnText: {
-    color: BRAND,
-    fontWeight: '700',
+  checkItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  checkboxOn: { borderColor: BRAND, backgroundColor: '#e9f2ff' },
+  tick: { color: BRAND, fontWeight: '800', fontSize: 14, lineHeight: 14 },
+  checkLabel: { color: SUBTLE, fontSize: 13 },
+
   primaryBtn: {
     width: '100%',
     backgroundColor: BRAND,
     borderRadius: 12,
     padding: 14,
     alignItems: 'center',
-    marginTop: 6,
+    marginTop: 10,
   },
-  primaryBtnText: {
-    color: '#ffffff',
-    fontWeight: '800',
-  },
+  primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 16 },
   linkBtn: { marginTop: 12 },
   linkText: { color: BRAND, fontWeight: '700' },
   footerText: { color: SUBTLE, marginTop: 16, textAlign: 'center' },
