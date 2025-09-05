@@ -139,7 +139,7 @@ export default function Onboarding() {
 
       const file = result.assets[0];
       const uri = file.uri;
-      const name = file.name || (Platform.OS === 'ios' ? uri.split('/').pop() : `upload_${Date.now()}`);
+      const name = file.name || (Platform.OS === 'ios' ? uri.split('/').pop() : 'upload');
       const ext = (name?.split('.').pop() || '').toLowerCase();
 
       // Choose content-type
@@ -151,8 +151,8 @@ export default function Onboarding() {
       else if (file.mimeType) contentType = file.mimeType;
 
       const { data: userData } = await supabase.auth.getUser();
-      const currentUser = userData?.user;
-      if (!currentUser) throw new Error('Not signed in');
+      const logoUser = userData?.user;
+      if (!logoUser) throw new Error('Not signed in');
 
       // Read file as base64 (safe for content:// and ph://)
       const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
@@ -160,7 +160,8 @@ export default function Onboarding() {
 
       // Convert to bytes and upload
       const bytes = base64ToBytes(base64);
-      const pathInBucket = `${currentUser.id}/${Date.now()}.${ext || 'bin'}`;
+      // timestamped filename to avoid cache collisions
+      const pathInBucket = `${logoUser.id}/${Date.now()}.${ext || 'bin'}`;
 
       const { error: upErr } = await supabase
         .storage
@@ -171,10 +172,14 @@ export default function Onboarding() {
       // URL (public or signed)
       const publicishUrl = await resolveStorageUrl(pathInBucket);
 
-      // Upsert a minimal row so the logo appears even before finishing onboarding
-      await supabase.from('profiles').upsert({ id: currentUser.id, custom_logo_url: publicishUrl }).catch(() => {});
+      // Ensure a profile row exists with the logo URL
+      const { error: upsertErr } = await supabase
+        .from('profiles')
+        .upsert({ id: logoUser.id, custom_logo_url: publicishUrl });
+      if (upsertErr) throw upsertErr;
 
-      setLogoUrl(publicishUrl);
+      // cache-bust in UI
+      setLogoUrl(publicishUrl + (publicishUrl.includes('?') ? '&' : '?') + 't=' + Date.now());
     } catch (e) {
       Alert.alert('Upload failed', e?.message || 'Could not upload logo.');
     } finally {
@@ -205,10 +210,14 @@ export default function Onboarding() {
         if (i !== -1) { storagePath = url.substring(i + m.length).split('?')[0]; break; }
       }
       if (storagePath) {
-        await supabase.storage.from(BUCKET).remove([storagePath]).catch(() => {});
+        try { await supabase.storage.from(BUCKET).remove([storagePath]); } catch {}
       }
 
-      await supabase.from('profiles').upsert({ id: user.id, custom_logo_url: null }).catch(() => {});
+      const { error: updErr } = await supabase
+        .from('profiles')
+        .upsert({ id: user.id, custom_logo_url: null });
+      if (updErr) throw updErr;
+
       setLogoUrl(null);
     } catch (e) {
       Alert.alert('Error', e?.message || 'Could not remove logo.');
@@ -382,7 +391,7 @@ export default function Onboarding() {
             </View>
 
             <View style={styles.row2}>
-              <View className="flex-1" style={styles.flex1}>
+              <View style={styles.flex1}>
                 <Text style={styles.labelSmall}>Travel Fee (£/mile)</Text>
                 <TextInput
                   style={styles.input}

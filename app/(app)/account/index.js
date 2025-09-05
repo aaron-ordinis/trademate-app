@@ -10,12 +10,21 @@ import {
   Linking,
   ScrollView,
   Platform,
+  Dimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../../lib/supabase';
 import { ACCOUNT_PRICE } from '../../../lib/pricing';
+
+/* -------------------- Brand tokens -------------------- */
+const BRAND = '#2a86ff';
+const TEXT = '#0b1220';
+const MUTED = '#6b7280';
+const CARD = '#ffffff';
+const BG = '#f5f7fb';
+const BORDER = '#e6e9ee';
 
 /* -------------------- Pricing helpers -------------------- */
 const PRICING = {
@@ -32,44 +41,35 @@ const weekly = {
 const weeklyLabel = (v) => `£${(Math.round(v * 100) / 100).toFixed(2)}/week`;
 
 /* -------------------- Legal -------------------- */
-// TODO: replace with your live docs
-const PRIVACY_URL = 'https://example.com/privacy';
-const TERMS_URL = 'https://example.com/terms';
+const PRIVACY_URL = 'https://www.tradematequotes.com/privacy';
+const TERMS_URL   = 'https://www.tradematequotes.com/terms';
 
 /* -------------------- Feature list -------------------- */
-/**
- * Each row: [label, freeValue, premiumValue, key]
- * - 'x' instead of dashes where something isn't included
- * - Free value for AI is "1/day" and Premium is "Unlimited"
- */
 const FEATURE_ROWS = [
-  ['Custom logo', '✓', '✓', 'logo'],
-  ['AI-generated quotes', '1/day', 'Unlimited', 'ai'],
-  ['Edit feature', 'x', '✓', 'edit'],
-  ['Duplicate feature', 'x', '✓', 'duplicate'],
-  ['Multiple templates', 'x', '✓', 'templates'],
-  ['Remove TradeMate watermark', 'x', '✓', 'watermark'],
-  ['Priority support', 'x', '✓', 'support'],
+  { key: 'logo',       label: 'Custom logo',                 free: '✓',      pro: '✓' },
+  { key: 'ai',         label: 'AI-generated quotes',         free: '1/day',  pro: '✓' },
+  { key: 'edit',       label: 'Edit feature',                free: 'x',      pro: '✓' },
+  { key: 'duplicate',  label: 'Duplicate feature',           free: 'x',      pro: '✓' },
+  { key: 'templates',  label: 'Multiple templates',          free: 'x',      pro: '✓' },
+  { key: 'watermark',  label: 'Remove TradeMate watermark',  free: 'x',      pro: '✓' },
+  { key: 'support',    label: 'Priority support',            free: 'x',      pro: '✓' },
 ];
 
 export default function AccountScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [plan, setPlan] = useState('free');
+  const [plan, setPlan] = useState('free'); // 'free' | 'premium'
   const [billingEmail, setBillingEmail] = useState('');
   const [profile, setProfile] = useState(null);
-
   const isPremium = plan === 'premium';
 
-  /* -------------------- Load profile -------------------- */
   const loadProfile = useCallback(async () => {
     try {
       setLoading(true);
       const { data: auth } = await supabase.auth.getUser();
-      const user = auth?.user;
+      const user = auth && auth.user;
       if (!user) { router.replace('/(auth)/login'); return; }
       setBillingEmail(user.email || '');
 
@@ -81,11 +81,11 @@ export default function AccountScreen() {
       if (error) throw error;
 
       setProfile(data || {});
-      const tier = String(data?.branding ?? 'free').toLowerCase();
+      const tier = String((data && data.branding) ?? 'free').toLowerCase();
       setPlan(tier === 'premium' ? 'premium' : 'free');
-      if (data?.billing_email) setBillingEmail(data.billing_email);
+      if (data && data.billing_email) setBillingEmail(data.billing_email);
     } catch (e) {
-      Alert.alert('Error', e?.message ?? 'Could not load billing info.');
+      Alert.alert('Error', (e && e.message) || 'Could not load billing info.');
     } finally {
       setLoading(false);
     }
@@ -94,29 +94,27 @@ export default function AccountScreen() {
   useEffect(() => { loadProfile(); }, [loadProfile]);
   useFocusEffect(useCallback(() => { loadProfile(); }, [loadProfile]));
 
-  /* -------------------- Stripe: Checkout -------------------- */
-  const startCheckout = async (planKey /* 'monthly' | 'yearly' */) => {
+  const startCheckout = async (planKey) => {
     try {
       setBusy(true);
       const { data: auth } = await supabase.auth.getUser();
-      const user = auth?.user;
-      const email = user?.email || billingEmail || undefined;
-      const user_id = user?.id || undefined;
+      const user = auth && auth.user;
+      const email = (user && user.email) || billingEmail || undefined;
+      const user_id = (user && user.id) || undefined;
 
       const { data, error } = await supabase.functions.invoke('stripe-checkout', {
         body: { plan: planKey, email, user_id, platform: Platform.OS },
       });
       if (error) throw error;
-      if (!data?.url) throw new Error('No checkout URL returned.');
+      if (!data || !data.url) throw new Error('No checkout URL returned.');
       Linking.openURL(data.url);
     } catch (e) {
-      Alert.alert('Upgrade failed', e?.message ?? 'Could not start checkout.');
+      Alert.alert('Upgrade failed', (e && e.message) || 'Could not start checkout.');
     } finally {
       setBusy(false);
     }
   };
 
-  /* -------------------- Stripe: Billing portal -------------------- */
   const openPortal = async () => {
     try {
       setBusy(true);
@@ -125,21 +123,20 @@ export default function AccountScreen() {
           returnUrl: Platform.select({
             ios: 'tradematequotes://billing/return',
             android: 'tradematequotes://billing/return',
-            default: 'https://yourdomain.example/billing/return',
+            default: 'https://www.tradematequotes.com/billing/return',
           }),
         },
       });
       if (error) throw error;
-      if (!data?.url) throw new Error('No portal URL returned.');
+      if (!data || !data.url) throw new Error('No portal URL returned.');
       Linking.openURL(data.url);
     } catch (e) {
-      Alert.alert('Could not open billing portal', e?.message ?? 'Please try again.');
+      Alert.alert('Could not open billing portal', (e && e.message) || 'Please try again.');
     } finally {
       setBusy(false);
     }
   };
 
-  /* -------------------- Render -------------------- */
   if (loading) {
     return (
       <SafeAreaView edges={['top','left','right','bottom']} style={{ flex:1, backgroundColor: BG }}>
@@ -159,7 +156,6 @@ export default function AccountScreen() {
         {/* Current plan */}
         <View style={styles.card}>
           <Text style={styles.lead}>{isPremium ? 'You’re on Premium 🎉' : 'You’re on the Free plan'}</Text>
-
           {isPremium ? (
             <View style={{ gap: 10 }}>
               <View style={styles.metaGrid}>
@@ -169,7 +165,7 @@ export default function AccountScreen() {
                 <Text style={styles.metaLabel}>Plan</Text>
                 <Text style={styles.metaValue}>Premium</Text>
 
-                {!!profile?.premium_since && (
+                {!!(profile && profile.premium_since) && (
                   <>
                     <Text style={styles.metaLabel}>Premium since</Text>
                     <Text style={styles.metaValue}>
@@ -188,9 +184,8 @@ export default function AccountScreen() {
           )}
         </View>
 
-        {/* Plan cards – always visible so users can switch/see prices */}
+        {/* Plan cards */}
         <View style={styles.planGrid}>
-          {/* Monthly */}
           <TouchableOpacity
             activeOpacity={0.9}
             style={styles.planCard}
@@ -202,7 +197,6 @@ export default function AccountScreen() {
             <Text style={styles.priceSub}>{PRICING.monthly}</Text>
           </TouchableOpacity>
 
-          {/* Yearly (Best Offer) */}
           <TouchableOpacity
             activeOpacity={0.9}
             style={[styles.planCard, styles.planCardBest, styles.planCardBestPadded]}
@@ -216,7 +210,7 @@ export default function AccountScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Feature comparison — always visible; highlight current plan column */}
+        {/* Feature comparison */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>What you get</Text>
 
@@ -225,43 +219,31 @@ export default function AccountScreen() {
             <View style={[styles.tr, styles.thRow]}>
               <Text style={[styles.th, styles.tFeature]}>Features</Text>
 
-              {/* FREE header (wrapped when active) */}
               <View style={[styles.colBox, freeActive && styles.colWrapHeader]}>
                 <Text style={[styles.th, styles.tFree]}>Free</Text>
               </View>
 
-              {/* PREMIUM header (wrapped when active) */}
               <View style={[styles.colBox, !freeActive && styles.colWrapHeader]}>
                 <Text style={[styles.th, styles.tPro]}>Premium</Text>
               </View>
             </View>
 
-            {/* Data rows */}
-            {FEATURE_ROWS.map(([label, freeVal, proVal, key], i) => {
+            {/* Rows */}
+            {FEATURE_ROWS.map((item, i) => {
               const isLast = i === lastIndex;
-
               return (
-                <View key={key} style={[styles.tr, i % 2 ? styles.striped : null]}>
-                  {/* Feature label */}
-                  <Text style={[styles.td, styles.tFeature, styles.wrapText]}>{label}</Text>
+                <View key={item.key} style={[styles.tr, i % 2 ? styles.striped : null]}>
+                  <Text style={[styles.td, styles.tFeature]}>{item.label}</Text>
 
-                  {/* Free column cell */}
-                  <View style={[
-                    styles.colBox,
-                    freeActive && (isLast ? styles.colWrapFooter : styles.colWrapCell)
-                  ]}>
-                    <Text style={[styles.td, styles.tFree, styles.wrapText, freeActive && styles.colTextStrong]}>
-                      {freeVal}
+                  <View style={[styles.colBox, freeActive && (isLast ? styles.colWrapFooter : styles.colWrapCell)]}>
+                    <Text style={[styles.td, styles.tFree, freeActive && styles.colTextStrong]}>
+                      {item.free}
                     </Text>
                   </View>
 
-                  {/* Premium column cell */}
-                  <View style={[
-                    styles.colBox,
-                    !freeActive && (isLast ? styles.colWrapFooter : styles.colWrapCell)
-                  ]}>
-                    <Text style={[styles.td, styles.tPro, styles.wrapText, !freeActive && styles.colTextStrong]}>
-                      {proVal}
+                  <View style={[styles.colBox, !freeActive && (isLast ? styles.colWrapFooter : styles.colWrapCell)]}>
+                    <Text style={[styles.td, styles.tPro, !freeActive && styles.colTextStrong]}>
+                      {item.pro}
                     </Text>
                   </View>
                 </View>
@@ -284,13 +266,6 @@ export default function AccountScreen() {
 }
 
 /* -------------------- Styles -------------------- */
-const BRAND = '#2a86ff';
-const TEXT = '#0b1220';
-const MUTED = '#6b7280';
-const CARD = '#ffffff';
-const BG = '#f5f7fb';
-const BORDER = '#e6e9ee';
-
 const styles = StyleSheet.create({
   wrap: { padding: 16, gap: 14 },
   loading: { flex: 1, backgroundColor: BG, alignItems: 'center', justifyContent: 'center' },
@@ -327,18 +302,19 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 }, elevation: 2,
   },
   planCardBest: { borderColor: BRAND, borderWidth: 2 },
-  // Prevent "Best Offer" from overlapping "12 Months"
-  planCardBestPadded: { paddingTop: 32 },
+  planCardBestPadded: { paddingTop: 36 },
+
   bestBadge: {
     position: 'absolute', top: 8, right: 8, backgroundColor: BRAND,
     paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999,
     shadowColor: BRAND, shadowOpacity: 0.2, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
   bestBadgeText: { color: '#fff', fontWeight: '800', fontSize: 12 },
-  planTitle: { color: TEXT, fontWeight: '900', marginTop: 4, marginBottom: 6 },
+
+  planTitle: { color: TEXT, fontWeight: '900', marginTop: 4, marginBottom: 6, fontSize: 16 },
   planTitleWithBadge: { marginTop: 0 },
   priceMain: { color: TEXT, fontWeight: '900', fontSize: 20 },
-  priceSub: { color: MUTED, marginTop: 2 },
+  priceSub: { color: MUTED, marginTop: 2, fontSize: 14 },
 
   /* Table */
   table: { marginTop: 6, borderWidth: 1, borderColor: BORDER, borderRadius: 12, overflow: 'hidden' },
@@ -346,17 +322,26 @@ const styles = StyleSheet.create({
   thRow: { backgroundColor: '#f3f4f6' },
   striped: { backgroundColor: '#fafafa' },
 
-  th: { fontWeight: '800', color: TEXT, paddingVertical: 10, paddingHorizontal: 12, flex: 1, textAlign: 'center' },
-  td: { color: TEXT, paddingVertical: 12, paddingHorizontal: 12, flex: 1, textAlign: 'center' },
-  tFeature: { flex: 2, textAlign: 'left' },
+  // readable text: allow wrapping, don’t truncate
+  th: {
+    fontWeight: '800', color: TEXT, paddingVertical: 10, paddingHorizontal: 12,
+    flex: 1, textAlign: 'center', fontSize: 14,
+    flexWrap: 'wrap', maxWidth: '100%', flexShrink: 1,
+  },
+  td: {
+    color: TEXT, paddingVertical: 12, paddingHorizontal: 12,
+    flex: 1, textAlign: 'center', fontSize: 14,
+    flexWrap: 'wrap', maxWidth: '100%', flexShrink: 1,
+  },
+
+  // give right columns a bit more space so words can wrap less
+  tFeature: { flex: 1.6, textAlign: 'left' },
+  colBox: { flex: 1.2 },
+
   tFree: { textAlign: 'center' },
   tPro: { textAlign: 'center', fontWeight: '800' },
 
-  // Make sure long labels/values wrap cleanly
-  wrapText: { flexWrap: 'wrap' },
-
-  // Column wrappers to create a single, continuous highlighted "card" look
-  colBox: { flex: 1 }, // keeps layout matching the cells
+  // Wrap highlight container pieces
   colWrapHeader: {
     backgroundColor: '#f0f6ff',
     borderColor: '#2a86ff',
@@ -377,7 +362,6 @@ const styles = StyleSheet.create({
     borderLeftWidth: 1.5,
     borderRightWidth: 1.5,
     marginHorizontal: 4,
-    // overlap row borders to remove visual gaps
     marginTop: -1,
     marginBottom: -1,
   },

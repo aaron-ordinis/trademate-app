@@ -1,4 +1,4 @@
-// app/(auth)/login.js
+/* app/(auth)/login.js */
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
@@ -25,7 +25,6 @@ const BORDER = '#e6e9ee';
 const STORAGE_KEYS = {
   rememberMe: 'tmq.rememberMe',
   rememberedEmail: 'tmq.rememberedEmail',
-  keepSignedIn: 'tmq.keepSignedIn',
 };
 
 export default function Login() {
@@ -38,19 +37,16 @@ export default function Login() {
   const [showPw, setShowPw] = useState(false);
   const [authError, setAuthError] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
-  const [keepSignedIn, setKeepSignedIn] = useState(true);
 
-  // --- Prefill toggles + remembered email
+  // --- Prefill remembered email
   useEffect(() => {
     (async () => {
       try {
-        const [rm, em, ksi] = await Promise.all([
+        const [rm, em] = await Promise.all([
           AsyncStorage.getItem(STORAGE_KEYS.rememberMe),
           AsyncStorage.getItem(STORAGE_KEYS.rememberedEmail),
-          AsyncStorage.getItem(STORAGE_KEYS.keepSignedIn),
         ]);
         if (rm != null) setRememberMe(rm === '1');
-        if (ksi != null) setKeepSignedIn(ksi === '1');
         if (em && (rm === '1' || rm === null)) setEmail(em);
       } catch {}
     })();
@@ -95,7 +91,6 @@ export default function Login() {
       // persist preferences immediately
       await Promise.all([
         AsyncStorage.setItem(STORAGE_KEYS.rememberMe, rememberMe ? '1' : '0'),
-        AsyncStorage.setItem(STORAGE_KEYS.keepSignedIn, keepSignedIn ? '1' : '0'),
         rememberMe
           ? AsyncStorage.setItem(STORAGE_KEYS.rememberedEmail, e)
           : AsyncStorage.removeItem(STORAGE_KEYS.rememberedEmail),
@@ -230,19 +225,8 @@ export default function Login() {
           </TouchableOpacity>
         </View>
 
-        {/* Checkboxes */}
-        <View style={styles.checksRow}>
-          <TouchableOpacity
-            onPress={() => setKeepSignedIn((v) => !v)}
-            style={styles.checkItem}
-            activeOpacity={0.7}
-          >
-            <View style={[styles.checkbox, keepSignedIn && styles.checkboxOn]}>
-              {keepSignedIn ? <Text style={styles.tick}>✓</Text> : null}
-            </View>
-            <Text style={styles.checkLabel}>Keep me signed in</Text>
-          </TouchableOpacity>
-
+        {/* Remember me */}
+        <View style={styles.checksRowSingle}>
           <TouchableOpacity
             onPress={() => setRememberMe((v) => !v)}
             style={styles.checkItem}
@@ -331,10 +315,11 @@ const styles = StyleSheet.create({
 
   eyeBtn: { position: 'absolute', right: 10, top: 0, bottom: 0, justifyContent: 'center' },
 
-  checksRow: {
+  // Single checkbox row (Remember me only)
+  checksRowSingle: {
     width: '100%',
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     marginTop: 2,
     marginBottom: 8,
   },

@@ -19,14 +19,13 @@ import * as FileSystem from 'expo-file-system';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 
-// Icons
+// Icons (About removed)
 import {
   ChevronRight,
   Crown,
   Building2,
   CreditCard,
   HelpCircle,
-  Info,
   LogOut,
   Image as ImageIcon,
   FileText,
@@ -377,7 +376,7 @@ export default function SettingsHome() {
           </View>
         )}
 
-        {/* Sections */}
+        {/* Sections (About removed; keep Plan & Billing + Business Profile + Support) */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account</Text>
           <Row
@@ -399,14 +398,8 @@ export default function SettingsHome() {
           <Row
             icon={<HelpCircle size={18} color={MUTED} />}
             title="Help & Support"
-            subtitle="FAQs, contact"
+            subtitle="FAQs, guides, contact us"
             onPress={() => router.push('/(app)/support')}
-          />
-          <Row
-            icon={<Info size={18} color={MUTED} />}
-            title="About"
-            subtitle="Version & info"
-            onPress={() => router.push('/(app)/about')}
           />
         </View>
 
