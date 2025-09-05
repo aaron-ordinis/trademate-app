@@ -1,5 +1,8 @@
 {
-  "cli": { "version": ">= 13.0.0" },
+  "cli": {
+    "version": ">= 13.0.0",
+    "appVersionSource": "remote"
+  },
   "build": {
     "development": {
       "developmentClient": true,
@@ -14,14 +17,15 @@
     },
     "production": {
       "channel": "production",
+      "android": { "buildType": "app-bundle" },
       "env": { "EXPO_NO_TELEMETRY": "1" }
     }
   },
   "submit": {
     "production": {
       "android": {
-  "serviceAccountKeyPath": "./google-service-account.json",
-  "track": "internal"
+        "serviceAccountKeyPath": "./google-service-account.json",
+        "track": "internal"
       },
       "ios": {}
     }

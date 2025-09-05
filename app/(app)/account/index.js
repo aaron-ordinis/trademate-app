@@ -10,7 +10,6 @@ import {
   Linking,
   ScrollView,
   Platform,
-  Dimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -25,6 +24,8 @@ const MUTED = '#6b7280';
 const CARD = '#ffffff';
 const BG = '#f5f7fb';
 const BORDER = '#e6e9ee';
+
+const IS_ANDROID = Platform.OS === 'android';
 
 /* -------------------- Pricing helpers -------------------- */
 const PRICING = {
@@ -46,13 +47,13 @@ const TERMS_URL   = 'https://www.tradematequotes.com/terms';
 
 /* -------------------- Feature list -------------------- */
 const FEATURE_ROWS = [
-  { key: 'logo',       label: 'Custom logo',                 free: '✓',      pro: '✓' },
-  { key: 'ai',         label: 'AI-generated quotes',         free: '1/day',  pro: '✓' },
-  { key: 'edit',       label: 'Edit feature',                free: 'x',      pro: '✓' },
-  { key: 'duplicate',  label: 'Duplicate feature',           free: 'x',      pro: '✓' },
-  { key: 'templates',  label: 'Multiple templates',          free: 'x',      pro: '✓' },
-  { key: 'watermark',  label: 'Remove TradeMate watermark',  free: 'x',      pro: '✓' },
-  { key: 'support',    label: 'Priority support',            free: 'x',      pro: '✓' },
+  { key: 'logo',       label: 'Custom logo',                 free: '✓',       pro: '✓' },
+  { key: 'ai',         label: 'AI-generated quotes',         free: '1/day',   pro: 'Unlimited' },
+  { key: 'edit',       label: 'Edit feature',                free: 'x',       pro: '✓' },
+  { key: 'duplicate',  label: 'Duplicate feature',           free: 'x',       pro: '✓' },
+  { key: 'templates',  label: 'Multiple templates',          free: 'x',       pro: '✓' },
+  { key: 'watermark',  label: 'Remove TradeMate watermark',  free: 'x',       pro: '✓' },
+  { key: 'support',    label: 'Priority support',            free: 'x',       pro: '✓' },
 ];
 
 export default function AccountScreen() {
@@ -60,16 +61,17 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [plan, setPlan] = useState('free'); // 'free' | 'premium'
+  const [plan, setPlan] = useState<'free' | 'premium'>('free');
   const [billingEmail, setBillingEmail] = useState('');
-  const [profile, setProfile] = useState(null);
+  const [profile, setProfile] = useState<any>(null);
   const isPremium = plan === 'premium';
 
+  /* -------------------- Load profile -------------------- */
   const loadProfile = useCallback(async () => {
     try {
       setLoading(true);
       const { data: auth } = await supabase.auth.getUser();
-      const user = auth && auth.user;
+      const user = auth?.user;
       if (!user) { router.replace('/(auth)/login'); return; }
       setBillingEmail(user.email || '');
 
@@ -81,11 +83,11 @@ export default function AccountScreen() {
       if (error) throw error;
 
       setProfile(data || {});
-      const tier = String((data && data.branding) ?? 'free').toLowerCase();
+      const tier = String(data?.branding ?? 'free').toLowerCase();
       setPlan(tier === 'premium' ? 'premium' : 'free');
-      if (data && data.billing_email) setBillingEmail(data.billing_email);
+      if (data?.billing_email) setBillingEmail(data.billing_email);
     } catch (e) {
-      Alert.alert('Error', (e && e.message) || 'Could not load billing info.');
+      Alert.alert('Error', e?.message ?? 'Could not load billing info.');
     } finally {
       setLoading(false);
     }
@@ -94,28 +96,47 @@ export default function AccountScreen() {
   useEffect(() => { loadProfile(); }, [loadProfile]);
   useFocusEffect(useCallback(() => { loadProfile(); }, [loadProfile]));
 
+  /* -------------------- Android: Play Billing placeholders -------------------- */
+  const openPlaySubscriptions = () =>
+    Linking.openURL('https://play.google.com/store/account/subscriptions');
+
+  const startAndroidPurchase = async (planKey) => {
+    // Placeholder until react-native-iap is wired
+    Alert.alert(
+      'Coming soon',
+      'Purchases on Android are handled by Google Play. This button will use Google Play Billing in the next update.',
+      [
+        { text: 'Manage subscriptions', onPress: openPlaySubscriptions },
+        { text: 'OK' },
+      ]
+    );
+  };
+
+  /* -------------------- Stripe (iOS/Web only) -------------------- */
   const startCheckout = async (planKey) => {
+    if (IS_ANDROID) { return startAndroidPurchase(planKey); } // guard
     try {
       setBusy(true);
       const { data: auth } = await supabase.auth.getUser();
-      const user = auth && auth.user;
-      const email = (user && user.email) || billingEmail || undefined;
-      const user_id = (user && user.id) || undefined;
+      const user = auth?.user;
+      const email = user?.email || billingEmail || undefined;
+      const user_id = user?.id || undefined;
 
       const { data, error } = await supabase.functions.invoke('stripe-checkout', {
         body: { plan: planKey, email, user_id, platform: Platform.OS },
       });
       if (error) throw error;
-      if (!data || !data.url) throw new Error('No checkout URL returned.');
+      if (!data?.url) throw new Error('No checkout URL returned.');
       Linking.openURL(data.url);
     } catch (e) {
-      Alert.alert('Upgrade failed', (e && e.message) || 'Could not start checkout.');
+      Alert.alert('Upgrade failed', e?.message ?? 'Could not start checkout.');
     } finally {
       setBusy(false);
     }
   };
 
   const openPortal = async () => {
+    if (IS_ANDROID) { return openPlaySubscriptions(); } // guard
     try {
       setBusy(true);
       const { data, error } = await supabase.functions.invoke('stripe-portal', {
@@ -128,15 +149,16 @@ export default function AccountScreen() {
         },
       });
       if (error) throw error;
-      if (!data || !data.url) throw new Error('No portal URL returned.');
+      if (!data?.url) throw new Error('No portal URL returned.');
       Linking.openURL(data.url);
     } catch (e) {
-      Alert.alert('Could not open billing portal', (e && e.message) || 'Please try again.');
+      Alert.alert('Could not open billing portal', e?.message ?? 'Please try again.');
     } finally {
       setBusy(false);
     }
   };
 
+  /* -------------------- Render -------------------- */
   if (loading) {
     return (
       <SafeAreaView edges={['top','left','right','bottom']} style={{ flex:1, backgroundColor: BG }}>
@@ -153,9 +175,24 @@ export default function AccountScreen() {
       <ScrollView contentContainerStyle={[styles.wrap, { paddingBottom: Math.max(insets.bottom, 20) }]}>
         <Text style={styles.h1}>Plan &amp; Billing</Text>
 
+        {/* Android policy banner */}
+        {IS_ANDROID && (
+          <View style={styles.banner}>
+            <Text style={styles.bannerTitle}>Purchases on Android</Text>
+            <Text style={styles.bannerText}>
+              Google Play handles subscriptions on Android devices. You can manage or cancel your
+              subscription any time in Google Play.
+            </Text>
+            <TouchableOpacity style={styles.bannerBtn} onPress={openPlaySubscriptions}>
+              <Text style={styles.bannerBtnText}>Open Google Play Subscriptions</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Current plan */}
         <View style={styles.card}>
           <Text style={styles.lead}>{isPremium ? 'You’re on Premium 🎉' : 'You’re on the Free plan'}</Text>
+
           {isPremium ? (
             <View style={{ gap: 10 }}>
               <View style={styles.metaGrid}>
@@ -165,7 +202,7 @@ export default function AccountScreen() {
                 <Text style={styles.metaLabel}>Plan</Text>
                 <Text style={styles.metaValue}>Premium</Text>
 
-                {!!(profile && profile.premium_since) && (
+                {!!profile?.premium_since && (
                   <>
                     <Text style={styles.metaLabel}>Premium since</Text>
                     <Text style={styles.metaValue}>
@@ -176,7 +213,9 @@ export default function AccountScreen() {
               </View>
 
               <TouchableOpacity style={[styles.btn, styles.btnManage]} onPress={openPortal} disabled={busy}>
-                <Text style={styles.btnText}>{busy ? 'Opening…' : 'Manage billing'}</Text>
+                <Text style={styles.btnText}>
+                  {IS_ANDROID ? 'Manage in Google Play' : (busy ? 'Opening…' : 'Manage billing')}
+                </Text>
               </TouchableOpacity>
             </View>
           ) : (
@@ -186,6 +225,7 @@ export default function AccountScreen() {
 
         {/* Plan cards */}
         <View style={styles.planGrid}>
+          {/* Monthly */}
           <TouchableOpacity
             activeOpacity={0.9}
             style={styles.planCard}
@@ -195,8 +235,10 @@ export default function AccountScreen() {
             <Text style={styles.planTitle}>1 Month</Text>
             <Text style={styles.priceMain}>{weeklyLabel(weekly.monthly)}</Text>
             <Text style={styles.priceSub}>{PRICING.monthly}</Text>
+            {IS_ANDROID && <Text style={styles.androidHint}>Google Play purchase</Text>}
           </TouchableOpacity>
 
+          {/* Yearly (Best Offer) */}
           <TouchableOpacity
             activeOpacity={0.9}
             style={[styles.planCard, styles.planCardBest, styles.planCardBestPadded]}
@@ -207,6 +249,7 @@ export default function AccountScreen() {
             <Text style={[styles.planTitle, styles.planTitleWithBadge]}>12 Months</Text>
             <Text style={styles.priceMain}>{weeklyLabel(weekly.yearly)}</Text>
             <Text style={styles.priceSub}>{PRICING.yearly}</Text>
+            {IS_ANDROID && <Text style={styles.androidHint}>Google Play purchase</Text>}
           </TouchableOpacity>
         </View>
 
@@ -215,7 +258,7 @@ export default function AccountScreen() {
           <Text style={styles.cardTitle}>What you get</Text>
 
           <View style={styles.table}>
-            {/* Header row */}
+            {/* Header */}
             <View style={[styles.tr, styles.thRow]}>
               <Text style={[styles.th, styles.tFeature]}>Features</Text>
 
@@ -272,6 +315,26 @@ const styles = StyleSheet.create({
 
   h1: { color: TEXT, fontSize: 24, fontWeight: '800', textAlign: 'center', marginVertical: 6 },
 
+  /* Banner */
+  banner: {
+    backgroundColor: '#eaf2ff',
+    borderColor: '#cfe0ff',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+  },
+  bannerTitle: { color: TEXT, fontWeight: '900', marginBottom: 4 },
+  bannerText: { color: MUTED, marginBottom: 8 },
+  bannerBtn: {
+    alignSelf: 'flex-start',
+    backgroundColor: BRAND,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  bannerBtnText: { color: '#fff', fontWeight: '800' },
+
   card: {
     backgroundColor: CARD, borderRadius: 16, padding: 16,
     borderWidth: 1, borderColor: BORDER,
@@ -283,7 +346,7 @@ const styles = StyleSheet.create({
   subtle: { color: MUTED },
 
   btn: { borderRadius: 12, padding: 12, alignItems: 'center' },
-  btnManage: { backgroundColor: '#10b981' },
+  btnManage: { backgroundColor: IS_ANDROID ? '#2563eb' : '#10b981' },
   btnText: { color: '#fff', fontWeight: '800' },
 
   metaGrid: {
@@ -315,6 +378,7 @@ const styles = StyleSheet.create({
   planTitleWithBadge: { marginTop: 0 },
   priceMain: { color: TEXT, fontWeight: '900', fontSize: 20 },
   priceSub: { color: MUTED, marginTop: 2, fontSize: 14 },
+  androidHint: { marginTop: 8, color: MUTED, fontSize: 12 },
 
   /* Table */
   table: { marginTop: 6, borderWidth: 1, borderColor: BORDER, borderRadius: 12, overflow: 'hidden' },
@@ -322,7 +386,6 @@ const styles = StyleSheet.create({
   thRow: { backgroundColor: '#f3f4f6' },
   striped: { backgroundColor: '#fafafa' },
 
-  // readable text: allow wrapping, don’t truncate
   th: {
     fontWeight: '800', color: TEXT, paddingVertical: 10, paddingHorizontal: 12,
     flex: 1, textAlign: 'center', fontSize: 14,
@@ -334,14 +397,12 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap', maxWidth: '100%', flexShrink: 1,
   },
 
-  // give right columns a bit more space so words can wrap less
   tFeature: { flex: 1.6, textAlign: 'left' },
   colBox: { flex: 1.2 },
 
   tFree: { textAlign: 'center' },
   tPro: { textAlign: 'center', fontWeight: '800' },
 
-  // Wrap highlight container pieces
   colWrapHeader: {
     backgroundColor: '#f0f6ff',
     borderColor: '#2a86ff',

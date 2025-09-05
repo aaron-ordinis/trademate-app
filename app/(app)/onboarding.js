@@ -11,7 +11,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 
-// Theme (aligned with Settings/Profile light UI)
+// Theme
 const BRAND  = '#2a86ff';
 const TEXT   = '#0b1220';
 const MUTED  = '#6b7280';
@@ -21,8 +21,7 @@ const BORDER = '#e6e9ee';
 
 const BUCKET = 'logos';
 
-/* ---------- helpers (MATCH PROFILE) ---------- */
-// Pure-JS base64 → Uint8Array (no atob/Buffer)
+/* ---------- helpers ---------- */
 function base64ToBytes(b64) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const lookup = new Uint8Array(256);
@@ -46,12 +45,10 @@ function base64ToBytes(b64) {
   return out;
 }
 
-// Resolve a usable file URL (public bucket or signed URL fallback)
 async function resolveStorageUrl(pathInBucket) {
   const { data: pub, error: pubErr } = supabase.storage.from(BUCKET).getPublicUrl(pathInBucket);
   if (!pubErr && pub?.publicUrl) return pub.publicUrl;
 
-  // long-lived signed fallback
   const expiresIn = 60 * 60 * 24 * 365 * 5;
   const { data: signed, error: sErr } = await supabase
     .storage
@@ -66,7 +63,6 @@ export default function Onboarding() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  // Prefill email only
   const [email, setEmail] = useState('');
 
   // Basics
@@ -89,7 +85,7 @@ export default function Onboarding() {
   const [terms, setTerms]                 = useState('');
   const [warranty, setWarranty]           = useState('');
 
-  // Logo (mirror Profile)
+  // Logo
   const [logoUrl, setLogoUrl]             = useState(null);
   const [logoWorking, setLogoWorking]     = useState(false);
   const [logoModalOpen, setLogoModalOpen] = useState(false);
@@ -111,10 +107,9 @@ export default function Onboarding() {
     return Number.isFinite(n) ? n : fallback;
   };
 
-  // Live calculated Day Rate (read-only)
   const dayRate = useMemo(() => {
     const hr  = toNumber(hourlyRate, 0);
-    const hpd = toNumber(hoursPerDay, 10); // sensible default
+    const hpd = toNumber(hoursPerDay, 10);
     return +(hr * hpd).toFixed(2);
   }, [hourlyRate, hoursPerDay]);
 
@@ -125,7 +120,6 @@ export default function Onboarding() {
     return parts.map(p => p.charAt(0).toUpperCase()).join('') || 'U';
   }, [businessName]);
 
-  /* ---------- LOGO ACTIONS (MATCH PROFILE) ---------- */
   const pickAndUploadLogo = async () => {
     try {
       setLogoWorking(true);
@@ -142,7 +136,6 @@ export default function Onboarding() {
       const name = file.name || (Platform.OS === 'ios' ? uri.split('/').pop() : 'upload');
       const ext = (name?.split('.').pop() || '').toLowerCase();
 
-      // Choose content-type
       let contentType = 'application/octet-stream';
       if (ext === 'pdf') contentType = 'application/pdf';
       else if (ext === 'jpg' || ext === 'jpeg') contentType = 'image/jpeg';
@@ -151,17 +144,14 @@ export default function Onboarding() {
       else if (file.mimeType) contentType = file.mimeType;
 
       const { data: userData } = await supabase.auth.getUser();
-      const logoUser = userData?.user;
-      if (!logoUser) throw new Error('Not signed in');
+      const logoUserData = userData?.user;
+      if (!logoUserData) throw new Error('Not signed in');
 
-      // Read file as base64 (safe for content:// and ph://)
       const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
       if (!base64) throw new Error('Could not read file data');
 
-      // Convert to bytes and upload
       const bytes = base64ToBytes(base64);
-      // timestamped filename to avoid cache collisions
-      const pathInBucket = `${logoUser.id}/${Date.now()}.${ext || 'bin'}`;
+      const pathInBucket = `${logoUserData.id}/${Date.now()}.${ext || 'bin'}`;
 
       const { error: upErr } = await supabase
         .storage
@@ -169,16 +159,13 @@ export default function Onboarding() {
         .upload(pathInBucket, bytes, { contentType, upsert: true });
       if (upErr) throw upErr;
 
-      // URL (public or signed)
       const publicishUrl = await resolveStorageUrl(pathInBucket);
 
-      // Ensure a profile row exists with the logo URL
       const { error: upsertErr } = await supabase
         .from('profiles')
-        .upsert({ id: logoUser.id, custom_logo_url: publicishUrl });
+        .upsert({ id: logoUserData.id, custom_logo_url: publicishUrl });
       if (upsertErr) throw upsertErr;
 
-      // cache-bust in UI
       setLogoUrl(publicishUrl + (publicishUrl.includes('?') ? '&' : '?') + 't=' + Date.now());
     } catch (e) {
       Alert.alert('Upload failed', e?.message || 'Could not upload logo.');
@@ -197,7 +184,6 @@ export default function Onboarding() {
       const user = userData?.user;
       if (!user) throw new Error('Not signed in');
 
-      // Best-effort delete from storage (path inference)
       const url = String(logoUrl || '');
       let storagePath = null;
       const markers = [
@@ -227,7 +213,6 @@ export default function Onboarding() {
     }
   };
 
-  /* ---------- SAVE PROFILE ---------- */
   const saveProfile = async () => {
     try {
       setSaving(true);
@@ -289,7 +274,7 @@ export default function Onboarding() {
             <Text style={styles.hintHeader}>Set this once. Used on every quote.</Text>
           </View>
 
-          {/* Logo card (MIRRORS PROFILE UI) */}
+          {/* Logo card */}
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Company Logo</Text>
             <View style={{ alignItems: 'center', marginTop: 10 }}>
@@ -321,28 +306,28 @@ export default function Onboarding() {
             <Text style={styles.cardTitle}>Contact & Basics</Text>
             <TextInput style={[styles.input, styles.inputDisabled]} editable={false} value={email} placeholder="Email" placeholderTextColor={MUTED} />
             <Text style={styles.labelSmall}>Business Name</Text>
-            <TextInput style={styles.input} placeholder="e.g. Aaron Electrical" placeholderTextColor={MUTED} value={businessName} onChangeText={setBusinessName} />
+            <TextInput style={styles.input} placeholder="Business name" placeholderTextColor={MUTED} value={businessName} onChangeText={setBusinessName} />
             <Text style={styles.labelSmall}>Phone</Text>
-            <TextInput style={styles.input} placeholder="e.g. 07123 456789" placeholderTextColor={MUTED} value={phone} onChangeText={setPhone} />
+            <TextInput style={styles.input} placeholder="Phone number" placeholderTextColor={MUTED} value={phone} onChangeText={setPhone} />
           </View>
 
           {/* Address */}
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Business Address</Text>
             <Text style={styles.labelSmall}>Address line 1</Text>
-            <TextInput style={styles.input} placeholder="Flat 21" placeholderTextColor={MUTED} value={address1} onChangeText={setAddress1} />
+            <TextInput style={styles.input} placeholder="Address line 1" placeholderTextColor={MUTED} value={address1} onChangeText={setAddress1} />
             <View style={styles.row2}>
               <View style={styles.flex1}>
                 <Text style={styles.labelSmall}>City</Text>
-                <TextInput style={styles.input} placeholder="Tamworth" placeholderTextColor={MUTED} value={city} onChangeText={setCity} />
+                <TextInput style={styles.input} placeholder="City" placeholderTextColor={MUTED} value={city} onChangeText={setCity} />
               </View>
               <View style={styles.flex1}>
                 <Text style={styles.labelSmall}>Postcode</Text>
-                <TextInput style={styles.input} placeholder="B77 2AR" placeholderTextColor={MUTED} value={postcode} onChangeText={setPostcode} />
+                <TextInput style={styles.input} placeholder="Postcode" placeholderTextColor={MUTED} value={postcode} onChangeText={setPostcode} />
               </View>
             </View>
             <Text style={styles.labelSmall}>Trade</Text>
-            <TextInput style={styles.input} placeholder="e.g. plumber, electrician" placeholderTextColor={MUTED} value={tradeType} onChangeText={setTradeType} />
+            <TextInput style={styles.input} placeholder="Trade" placeholderTextColor={MUTED} value={tradeType} onChangeText={setTradeType} />
           </View>
 
           {/* VAT & company */}
@@ -356,9 +341,9 @@ export default function Onboarding() {
               <Switch value={vatRegistered} onValueChange={setVatRegistered} />
             </View>
             <Text style={styles.labelSmall}>Company Reg No. (optional)</Text>
-            <TextInput style={styles.input} placeholder="12344757" placeholderTextColor={MUTED} value={companyReg} onChangeText={setCompanyReg} />
+            <TextInput style={styles.input} placeholder="Company registration number" placeholderTextColor={MUTED} value={companyReg} onChangeText={setCompanyReg} />
             <Text style={styles.labelSmall}>VAT No. (optional)</Text>
-            <TextInput style={styles.input} placeholder="12746473" placeholderTextColor={MUTED} value={vatNumber} onChangeText={setVatNumber} />
+            <TextInput style={styles.input} placeholder="VAT number" placeholderTextColor={MUTED} value={vatNumber} onChangeText={setVatNumber} />
           </View>
 
           {/* Pricing */}
@@ -370,7 +355,7 @@ export default function Onboarding() {
                 <Text style={styles.labelSmall}>Hourly Rate (£)</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g. 25"
+                  placeholder="Hourly rate"
                   keyboardType="decimal-pad"
                   placeholderTextColor={MUTED}
                   value={hourlyRate}
@@ -381,7 +366,7 @@ export default function Onboarding() {
                 <Text style={styles.labelSmall}>Materials Markup (%)</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g. 15"
+                  placeholder="Markup %"
                   keyboardType="decimal-pad"
                   placeholderTextColor={MUTED}
                   value={markup}
@@ -395,7 +380,7 @@ export default function Onboarding() {
                 <Text style={styles.labelSmall}>Travel Fee (£/mile)</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g. 0.45"
+                  placeholder="£ per mile"
                   keyboardType="decimal-pad"
                   placeholderTextColor={MUTED}
                   value={travelRate}
@@ -406,7 +391,7 @@ export default function Onboarding() {
                 <Text style={styles.labelSmall}>Hours per day</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g. 10"
+                  placeholder="Hours per day"
                   keyboardType="decimal-pad"
                   placeholderTextColor={MUTED}
                   value={hoursPerDay}
@@ -427,9 +412,9 @@ export default function Onboarding() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Terms</Text>
             <Text style={styles.labelSmall}>Payment Terms</Text>
-            <TextInput style={styles.input} placeholder="e.g. Payment due within 7 days" placeholderTextColor={MUTED} value={terms} onChangeText={setTerms} />
+            <TextInput style={styles.input} placeholder="Payment terms" placeholderTextColor={MUTED} value={terms} onChangeText={setTerms} />
             <Text style={styles.labelSmall}>Warranty</Text>
-            <TextInput style={styles.input} placeholder="e.g. 12 months workmanship warranty" placeholderTextColor={MUTED} value={warranty} onChangeText={setWarranty} />
+            <TextInput style={styles.input} placeholder="Warranty details" placeholderTextColor={MUTED} value={warranty} onChangeText={setWarranty} />
           </View>
 
           <TouchableOpacity style={[styles.btnSave, saving && { opacity: 0.7 }]} onPress={saveProfile} disabled={saving} activeOpacity={0.9}>
@@ -440,7 +425,7 @@ export default function Onboarding() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Upload / Replace / Remove logo (IDENTICAL UX TO PROFILE) */}
+      {/* Logo sheet */}
       <Modal visible={logoModalOpen} animationType="fade" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => !logoWorking && setLogoModalOpen(false)} />
         <View style={styles.sheet}>
@@ -513,7 +498,6 @@ const styles = StyleSheet.create({
 
   switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
 
-  // Avatar-style logo (mirror Profile)
   avatarWrap: { position: 'relative', alignItems: 'center', justifyContent: 'center' },
   avatar: {
     width: 64, height: 64, borderRadius: 32, backgroundColor: BRAND + '15',
@@ -531,7 +515,6 @@ const styles = StyleSheet.create({
   },
   editBadgeText: { color: '#fff', fontWeight: '900', fontSize: 12 },
 
-  // Day-rate calc
   calcRow: {
     backgroundColor: '#eef2f7',
     borderWidth: 1, borderColor: BORDER,
@@ -542,7 +525,6 @@ const styles = StyleSheet.create({
   calcLabel: { color: MUTED, fontWeight: '700' },
   calcValue: { color: TEXT, fontWeight: '900' },
 
-  // Save CTA
   btnSave: {
     backgroundColor: BRAND, borderRadius: 14, padding: 14, alignItems: 'center',
     shadowColor: BRAND, shadowOpacity: 0.2, shadowRadius: 12,
@@ -550,7 +532,6 @@ const styles = StyleSheet.create({
   },
   btnSaveText: { color: '#fff', fontWeight: '900' },
 
-  // Modal / bottom sheet (same as Profile)
   modalBackdrop: { flex: 1, backgroundColor: '#0008' },
   sheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
