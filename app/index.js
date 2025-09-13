@@ -1,3 +1,4 @@
+import { quotesListHref, loginHref } from "../lib/nav";
 // MUST be first for Android stability
 import 'react-native-gesture-handler';
 import 'react-native-reanimated';
@@ -91,11 +92,11 @@ export default function Index() {
 
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      router.replace(session ? '/(app)/quotes/list' : '/(auth)/login');
+  router.replace(session ? quotesListHref : loginHref);
       setBooting(false);
 
       const sub = supabase.auth.onAuthStateChange((_event, sess) => {
-        router.replace(sess ? '/(app)/quotes/list' : '/(auth)/login');
+  router.replace(sess ? quotesListHref : loginHref);
       });
       unsub = sub?.data?.subscription;
     })();

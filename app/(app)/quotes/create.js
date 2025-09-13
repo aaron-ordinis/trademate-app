@@ -1,6 +1,9 @@
+import { loginHref, quotesListHref, quotePreviewHref } from "../../../lib/nav";
 // app/(app)/quotes/create.js
 // GB-only address search with manual edit step + refreshed UI.
 // Job details: larger field, 250-char limit with live counter and emphasis.
+// Robust Places autocomplete + hard block on generate without summary/details.
+// Stores a PUBLIC (non-expiring) PDF URL in quotes.pdf_url.
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
@@ -15,6 +18,7 @@ import {
   Car as IconCar,
   Search as IconSearch,
   Edit3 as IconEdit,
+  AlertTriangle as IconAlertTriangle
 } from 'lucide-react-native';
 
 /* ---------------- theme ---------------- */
@@ -38,11 +42,12 @@ const num = (v, d = 0) => {
   const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
   return Number.isFinite(n) ? n : d;
 };
+const isBlank = (s) => !String(s || '').trim();
 const haversineMiles = (lat1, lon1, lat2, lon2) => {
   const toRad = (x) => (x * Math.PI) / 180;
   const R_km = 6371;
   const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
+  const dLon = toRad(lon1 - lon2) * -1; // (lon2 - lon1)
   const a = Math.sin(dLat / 2) ** 2 +
             Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
@@ -55,6 +60,21 @@ const uuid4 = () =>
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+
+// small resilient fetch
+async function tryJson(url, opts = {}, tries = 2) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, opts);
+      return await res.json();
+    } catch (e) {
+      lastErr = e;
+      await sleep(150 + i * 200);
+    }
+  }
+  throw lastErr;
+}
 
 async function probeUrl(url) {
   const bust = 'cb=' + Date.now() + '&r=' + Math.random().toString(36).slice(2);
@@ -86,6 +106,15 @@ async function pollSignedUrlReady(
     await sleep(delay);
   }
   return null;
+}
+
+/** Parse any Supabase storage URL (signed/public) -> { bucket, path } */
+function parseStorageUrl(url) {
+  if (!url) return null;
+  // …/storage/v1/object/(sign|public)/<bucket>/<path>[?…]
+  const m = url.match(/\/storage\/v1\/object\/(sign|public)\/([^/]+)\/(.+?)(?:\?|$)/);
+  if (!m) return null;
+  return { bucket: m[2], path: decodeURIComponent(m[3]) };
 }
 
 /* -------------- phases fallback -------------- */
@@ -180,7 +209,7 @@ function AddressModal({ visible, onClose, onUse, initialText, GOOGLE }) {
   useEffect(() => {
     if (!visible || mode !== 'search') return;
     const q = (query || '').trim();
-    if (q.length < 3) { setSuggestions([]); return; }
+    if (q.length < 3) { setSuggestions([]); setError(''); return; }
     if (!GOOGLE) { setError('Google key missing. Set EXPO_PUBLIC_GOOGLE_MAPS_KEY.'); return; }
     setError('');
     clearTimeout(debounceRef.current);
@@ -190,18 +219,25 @@ function AddressModal({ visible, onClose, onUse, initialText, GOOGLE }) {
         const url =
           'https://maps.googleapis.com/maps/api/place/autocomplete/json'
           + '?input=' + encodeURIComponent(q)
-          + '&types=address&components=country:gb'
+          + '&types=address&components=country:gb&language=en&region=GB'
           + '&sessiontoken=' + sessionToken
           + '&key=' + GOOGLE;
-        const res = await fetch(url);
-        const j = await res.json();
+        const j = await tryJson(url, {}, 2);
+        const status = String(j?.status || 'OK');
+        if (status !== 'OK') {
+          setSuggestions([]);
+          if (status !== 'ZERO_RESULTS') setError('Search error: ' + status);
+          else setError('');
+          return;
+        }
         const preds = Array.isArray(j?.predictions) ? j.predictions : [];
         setSuggestions(preds);
       } catch (e) {
         console.warn('[TMQ][PLACES] autocomplete', e?.message || e);
         setSuggestions([]);
+        setError('Network error. Try again.');
       } finally {
-               setBusy(false);
+        setBusy(false);
       }
     }, 160);
     return () => clearTimeout(debounceRef.current);
@@ -215,11 +251,12 @@ function AddressModal({ visible, onClose, onUse, initialText, GOOGLE }) {
       'https://maps.googleapis.com/maps/api/place/details/json'
       + '?place_id=' + encodeURIComponent(placeId)
       + '&fields=' + fields
+      + '&language=en&region=GB'
       + '&sessiontoken=' + sessionToken
       + '&key=' + GOOGLE;
     try {
-      const res = await fetch(url);
-      const j = await res.json();
+      const j = await tryJson(url, {}, 2);
+      if (String(j?.status || 'OK') !== 'OK') return null;
       return j?.result || null;
     } catch (e) {
       console.warn('[TMQ][PLACES] details', e?.message || e);
@@ -294,6 +331,8 @@ function AddressModal({ visible, onClose, onUse, initialText, GOOGLE }) {
                 </View>
               )}
 
+              {!!error && <Text style={{ color: BRAND.warn, marginBottom: 4, fontWeight: '700' }}>{error}</Text>}
+
               <TouchableOpacity onPress={() => { setMode('edit'); setEditValue(query); }} style={{ alignSelf: 'flex-start', marginTop: 6 }} accessibilityRole="button" accessibilityLabel="Enter address manually">
                 <Text style={{ color: BRAND.primary, fontWeight: '700' }}>Enter manually</Text>
               </TouchableOpacity>
@@ -310,7 +349,7 @@ function AddressModal({ visible, onClose, onUse, initialText, GOOGLE }) {
                 accessibilityLabel="Edit full address"
               />
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                <TouchableOpacity onPress={() => setMode('search')} style={[styles.modalAltBtn, { backgroundColor: '#e5e7eb', flex: 1 }]} accessibilityRole="button" accessibilityLabel="Back to search">
+                <TouchableOpacity style={[styles.modalAltBtn, { backgroundColor: '#e5e7eb', flex: 1 }]} onPress={() => setMode('search')} accessibilityRole="button" accessibilityLabel="Back to search">
                   <Text style={[styles.modalAltBtnText, { color: BRAND.text }]}>Back to search</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -328,8 +367,6 @@ function AddressModal({ visible, onClose, onUse, initialText, GOOGLE }) {
               </View>
             </>
           )}
-
-          {!!error && <Text style={{ color: BRAND.warn, marginTop: 6, fontWeight: '600' }}>{error}</Text>}
 
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
             <TouchableOpacity onPress={clearAll} style={[styles.modalAltBtn, { backgroundColor: '#e5e7eb' }]} accessibilityRole="button" accessibilityLabel="Clear address">
@@ -351,7 +388,7 @@ export default function CreateQuote() {
   const params = useLocalSearchParams();
   const quoteId = params?.quoteId ? String(params.quoteId) : null;
 
-  const { show: showAlert, AlertView } = useNiceAlert();
+  const { show: showNiceAlert, AlertView } = useNiceAlert();
 
   // Client & job
   const [clientName, setClientName] = useState('');
@@ -406,7 +443,7 @@ export default function CreateQuote() {
     try {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
-      if (!user) { router.replace('/(auth)/login'); return null; }
+      if (!user) { router.replace(loginHref); return null; }
 
       const { data, error } = await supabase
         .from('profiles')
@@ -485,26 +522,35 @@ export default function CreateQuote() {
 
   /* --------------- Google helpers --------------- */
   const GOOGLE = process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY || (globalThis?.expo?.env?.EXPO_PUBLIC_GOOGLE_MAPS_KEY);
+  const HAS_PLACES_KEY = !!GOOGLE;
 
   const geocodeAddress = async (address) => {
     if (!GOOGLE) return null;
     const clean = String(address || '').replace(/\s*\n+\s*/g, ', ');
-    const url = 'https://maps.googleapis.com/maps/api/geocode/json?address=' + encodeURIComponent(clean) + '&key=' + GOOGLE;
-    const res = await fetch(url);
-    const j = await res.json();
-    const loc = j?.results?.[0]?.geometry?.location;
-    return loc ? { lat: loc.lat, lng: loc.lng } : null;
+    const url = 'https://maps.googleapis.com/maps/api/geocode/json?address='
+      + encodeURIComponent(clean) + '&language=en&region=GB&key=' + GOOGLE;
+    try {
+      const j = await tryJson(url, {}, 2);
+      if (String(j?.status || 'OK') !== 'OK') return null;
+      const loc = j?.results?.[0]?.geometry?.location;
+      return loc ? { lat: loc.lat, lng: loc.lng } : null;
+    } catch {
+      return null;
+    }
   };
 
   const getDrivingDistanceMiles = async (origLat, origLng, destLat, destLng) => {
     if (!GOOGLE) return null;
     const url = 'https://maps.googleapis.com/maps/api/distancematrix/json?origins='
-      + origLat + ',' + origLng + '&destinations=' + destLat + ',' + destLng + '&units=imperial&key=' + GOOGLE;
-    const res = await fetch(url);
-    const j = await res.json();
-    const meters = j?.rows?.[0]?.elements?.[0]?.distance?.value;
-    if (!meters && meters !== 0) return null;
-    return meters * 0.000621371; // one-way miles
+      + origLat + ',' + origLng + '&destinations=' + destLat + ',' + destLng + '&units=imperial&language=en&region=GB&key=' + GOOGLE;
+    try {
+      const j = await tryJson(url, {}, 2);
+      const meters = j?.rows?.[0]?.elements?.[0]?.distance?.value;
+      if (!meters && meters !== 0) return null;
+      return meters * 0.000621371; // one-way miles
+    } catch {
+      return null;
+    }
   };
 
   const buildBusinessAddress = (p) =>
@@ -546,7 +592,7 @@ export default function CreateQuote() {
   /* ---------------- save draft ---------------- */
   const saveDraftOnly = async () => {
     try {
-      if (isFinalized) { showAlert('Locked', 'This quote has already been generated. You can no longer save it as a draft.'); return; }
+      if (isFinalized) { showNiceAlert('Locked', 'This quote has already been generated. You can no longer save it as a draft.'); return; }
       setSaving(true);
       const prof = await getProfileOrThrow();
       const { data: userData } = await supabase.auth.getUser();
@@ -555,7 +601,7 @@ export default function CreateQuote() {
 
       if (!existing && !isPremium) {
         const allowed = await checkDailyQuota(user.id);
-        if (!allowed) { setBlockedToday(true); showAlert('Daily limit reached', 'Free users can create 1 quote per day. Upgrade to Premium for unlimited quotes.'); return; }
+        if (!allowed) { setBlockedToday(true); showNiceAlert('Daily limit reached', 'Free users can create 1 quote per day. Upgrade to Premium for unlimited quotes.'); return; }
       }
 
       const blob = {
@@ -590,8 +636,8 @@ export default function CreateQuote() {
           .eq('id', existing.id);
         if (upErr) throw upErr;
 
-        showAlert('Saved', 'Draft ' + existing.quote_number + ' updated.');
-        router.replace('/(app)/quotes/list');
+        showNiceAlert('Saved', 'Draft ' + existing.quote_number + ' updated.');
+        router.replace(quotesListHref);
         return;
       }
 
@@ -618,11 +664,11 @@ export default function CreateQuote() {
 
       await tryInsertWithUniqueQuoteNumber(draftRow, user.id);
 
-      showAlert('Saved', 'Draft ' + draftRow.quote_number + ' created.');
-      router.replace('/(app)/quotes/list');
+      showNiceAlert('Saved', 'Draft ' + draftRow.quote_number + ' created.');
+      router.replace(quotesListHref);
     } catch (e) {
       console.error('[TMQ][CREATE] saveDraft error', e);
-      showAlert('Error', e.message || 'Could not create draft.');
+      showNiceAlert('Error', e.message || 'Could not create draft.');
     } finally {
       setSaving(false);
     }
@@ -631,7 +677,13 @@ export default function CreateQuote() {
   /* --------------- AI -> PDF flow --------------- */
   const generateAIAndPDF = async () => {
     try {
-      if (isFinalized) { showAlert('Locked', 'This quote has already been generated. You cannot re-generate it.'); return; }
+      if (isFinalized) { showNiceAlert('Locked', 'This quote has already been generated. You cannot re-generate it.'); return; }
+
+      // HARD BLOCK: require job summary + details
+      if (isBlank(jobSummary) || isBlank(jobDetails)) {
+        showNiceAlert('Add job info', 'Please enter a job summary and job details before generating the quote.');
+        return;
+      }
 
       setGenLoading(true);
       const prof = await getProfileOrThrow();
@@ -642,7 +694,7 @@ export default function CreateQuote() {
 
       if (!existing && !isPremium) {
         const allowed = await checkDailyQuota(user.id);
-        if (!allowed) { setBlockedToday(true); showAlert('Daily limit reached', 'Free users can create 1 quote per day. Upgrade to Premium for unlimited quotes.'); return; }
+        if (!allowed) { setBlockedToday(true); showNiceAlert('Daily limit reached', 'Free users can create 1 quote per day. Upgrade to Premium for unlimited quotes.'); return; }
       }
 
       if (!distanceMiles) await autoCalcDistance();
@@ -696,7 +748,7 @@ export default function CreateQuote() {
         const markup = num(profile?.materials_markup_pct, 0) / 100;
         const materialsVal = materialsRaw * (1 + markup);
         const line_items = [
-          { description: `Labour (${hours.toFixed(1)} hrs @ £${num(profile?.hourly_rate, 0).toFixed(2)}/hr)`, qty: 1, unit_price: Number(labour.toFixed(2)), total: Number(labour.toFixed(2)), type: 'labour' },
+          { description: 'Labour (' + hours.toFixed(1) + ' hrs @ £' + num(profile?.hourly_rate, 0).toFixed(2) + '/hr)', qty: 1, unit_price: Number(labour.toFixed(2)), total: Number(labour.toFixed(2)), type: 'labour' },
           { description: 'Standard fixings & sundries (incl. markup)', qty: 1, unit_price: Number(materialsVal.toFixed(2)), total: Number(materialsVal.toFixed(2)), type: 'materials' },
         ];
         if (travel > 0) line_items.push({ description: 'Travel / mileage (round trip)', qty: 1, unit_price: Number(travel.toFixed(2)), total: Number(travel.toFixed(2)), type: 'other' });
@@ -763,13 +815,12 @@ export default function CreateQuote() {
             payment: { instructions: profile?.payment_terms || 'Payment due within 7 days by bank transfer.' }
           },
           quote: {
-            is_estimate: true, // show ESTIMATE banner + legal copy
+            is_estimate: true,
             quote_number: quoteNumber,
             client_name: clientName || 'Client',
             client_address: clientAddress || null,
             site_address: sameAsBilling ? clientAddress : (siteAddress || null),
             job_summary: jobSummary || 'New job',
-            // filter zero rows
             line_items: safeItems,
             totals: aiData?.totals || { subtotal: 0, vat_amount: 0, total: 0, vat_rate: 0 },
             terms: profile?.payment_terms || '',
@@ -781,27 +832,56 @@ export default function CreateQuote() {
       });
       if (pdfErr) throw new Error(pdfErr.message || 'pdf-builder failed');
 
-      // URL readiness
-      let pdfUrl = pdfData?.signedUrl || pdfData?.signed_url || null;
-      const pathFromFn = pdfData?.path || pdfData?.key || pdfData?.objectPath || null;
+      // ---------- Build a PUBLIC, permanent URL ----------
+      let signedUrl = pdfData?.signedUrl || pdfData?.signed_url || null;
+      let storagePath = pdfData?.path || pdfData?.key || pdfData?.objectPath || null;
+      let bucket = 'quotes';
 
-      if (pdfUrl) { (async () => { try { const ok = await probeUrl(pdfUrl); if (!ok) console.warn('[TMQ][PDF] signedUrl probe failed'); } catch {} })(); }
-      else if (pathFromFn) {
-        const ready = await pollSignedUrlReady(pathFromFn, { tries: 120, baseDelay: 500, step: 500, maxDelay: 2000 });
-        if (ready) pdfUrl = ready;
+      if (!storagePath && signedUrl) {
+        const parsed = parseStorageUrl(signedUrl);
+        if (parsed) { bucket = parsed.bucket || 'quotes'; storagePath = parsed.path; }
+      }
+
+      // if we got a storage path, turn it into a public URL
+      let publicUrl = null;
+      if (storagePath) {
+        const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+        publicUrl = pub?.publicUrl || null;
+      }
+
+      // fallbacks if path wasn’t returned yet
+      if (!publicUrl && signedUrl) {
+        const parsed = parseStorageUrl(signedUrl);
+        if (parsed) {
+          bucket = parsed.bucket || 'quotes';
+          storagePath = parsed.path;
+          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+          publicUrl = pub?.publicUrl || null;
+        }
+      }
+
+      // final URL we store in quotes.pdf_url (prefer PUBLIC)
+      let pdfUrlForRow = publicUrl || signedUrl || null;
+
+      // URL readiness
+      if (!signedUrl && storagePath) {
+        const ready = await pollSignedUrlReady(storagePath, { tries: 120, baseDelay: 500, step: 500, maxDelay: 2000 });
+        if (ready) signedUrl = ready;
       }
 
       const persistedTotals = pdfData?.totals || aiData?.totals || { subtotal: null, vat_amount: null, total: null, vat_rate: null };
       const persistedItems  = safeItems;
-
       let finalQuoteId = existing?.id || null;
 
-      const backgroundResolveAndSavePdfUrl = async (path, quoteIdToUpdate) => {
-        if (!path || !quoteIdToUpdate) return;
+      const bgEnsurePublicUrl = async (qId) => {
         try {
-          const found = await pollSignedUrlReady(path, { tries: 120, baseDelay: 500, step: 500, maxDelay: 2000 });
-          if (found) await supabase.from('quotes').update({ pdf_url: found }).eq('id', quoteIdToUpdate);
-        } catch (e) { console.warn('[TMQ][PDF] backgroundResolve error', e?.message || e); }
+          if (!qId || !storagePath) return;
+          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+          const pubUrl = pub?.publicUrl || null;
+          if (pubUrl) await supabase.from('quotes').update({ pdf_url: pubUrl }).eq('id', qId);
+        } catch (e) {
+          console.warn('[TMQ][PDF] bgEnsurePublicUrl failed', e?.message || e);
+        }
       };
 
       if (existing) {
@@ -819,13 +899,13 @@ export default function CreateQuote() {
           subtotal: persistedTotals.subtotal,
           vat_amount: persistedTotals.vat_amount,
           total: persistedTotals.total,
-          pdf_url: pdfUrl || null
+          pdf_url: pdfUrlForRow
         };
         const { error: upErr } = await supabase.from('quotes').update(updateObj).eq('id', existing.id);
         if (upErr) throw upErr;
         finalQuoteId = existing.id;
 
-        if (!pdfUrl && pathFromFn) backgroundResolveAndSavePdfUrl(pathFromFn, finalQuoteId).catch(() => {});
+        if (!publicUrl && storagePath) bgEnsurePublicUrl(finalQuoteId).catch(() => {});
       } else {
         const generatedRow = {
           user_id: user.id,
@@ -843,38 +923,40 @@ export default function CreateQuote() {
           subtotal: persistedTotals.subtotal,
           vat_amount: persistedTotals.vat_amount,
           total: persistedTotals.total,
-          pdf_url: pdfUrl || null
+          pdf_url: pdfUrlForRow
         };
 
         const inserted = await tryInsertWithUniqueQuoteNumber(generatedRow, user.id);
         finalQuoteId = inserted?.id || null;
         quoteNumber = generatedRow.quote_number;
 
-        if (!pdfUrl && pathFromFn && finalQuoteId) backgroundResolveAndSavePdfUrl(pathFromFn, finalQuoteId).catch(() => {});
+        if (!publicUrl && storagePath && finalQuoteId) bgEnsurePublicUrl(finalQuoteId).catch(() => {});
       }
 
-      if (pdfUrl) {
+      // Navigate to preview: prefer a fresh signed URL for immediate viewing
+      const previewUrl = signedUrl || pdfUrlForRow;
+      if (previewUrl && finalQuoteId) {
         const estHoursStr = String(aiData?.meta?.estimated_hours ?? '');
         const estDaysStr  = String(aiData?.meta?.days ?? '');
         const estMethod   = aiData?.meta?.method || '';
         router.replace({
-          pathname: '/(app)/quotes/preview',
+          pathname: quotePreviewHref(finalQuoteId),
           params: {
-            id: finalQuoteId || '',
-            url: encodeURIComponent(pdfUrl),
-            name: quoteNumber + '.pdf',
+            id: finalQuoteId,
+            url: encodeURIComponent(previewUrl),
+            name: `${quoteNumber}.pdf`,
             estHours: estHoursStr,
             estDays: estDaysStr,
             estMethod
           },
         });
       } else {
-        showAlert('Quote saved', 'PDF is being prepared. Open the quote and tap “Preview” in a moment.');
-        router.replace('/(app)/quotes/list');
+        showNiceAlert('Quote saved', 'Your quote has been saved.');
+        router.replace(quotesListHref);
       }
     } catch (e) {
       console.error('[TMQ][CREATE] generateAIAndPDF error', e);
-      showAlert('Error', e.message || 'AI/PDF failed. Please check function logs.');
+      showNiceAlert('Error', e.message || 'AI/PDF failed. Please check function logs.');
     } finally {
       setGenLoading(false);
     }
@@ -905,6 +987,15 @@ export default function CreateQuote() {
           <Text style={styles.title}>
             {existing ? (isFinalized ? existing.quote_number : ('Edit ' + existing.quote_number)) : 'Create Quote'}
           </Text>
+
+          {!HAS_PLACES_KEY && (
+            <View style={[styles.banner, { backgroundColor: '#fff7ed', borderColor: '#fed7aa' }]}>
+              <IconAlertTriangle size={18} color="#9a3412" />
+              <Text style={[styles.bannerText, { color: '#9a3412' }]}>
+                Address search requires a Google Maps key. Set EXPO_PUBLIC_GOOGLE_MAPS_KEY in your app config.
+              </Text>
+            </View>
+          )}
 
           {blockedToday && !isPremium && !existing && (
             <View style={[styles.banner, { backgroundColor: '#fffbeb', borderColor: '#fcd34d' }]}>

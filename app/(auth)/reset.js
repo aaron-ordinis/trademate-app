@@ -1,3 +1,4 @@
+import { loginHref } from "../../lib/nav";
 // app/(auth)/reset.js
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
@@ -82,7 +83,7 @@ export default function ResetPassword() {
       const { error } = await supabase.auth.updateUser({ password: pw1.trim() });
       if (error) throw error;
       Alert.alert('Updated', 'Password changed. Please sign in.');
-      router.replace('/(auth)/login');
+  router.replace(loginHref);
     } catch (e) {
       console.error('[TMQ][RESET] update error', e);
       Alert.alert('Update failed', e?.message ?? 'Please try again.');
@@ -131,7 +132,7 @@ export default function ResetPassword() {
         {processing ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Update password</Text>}
       </TouchableOpacity>
 
-      <TouchableOpacity style={{ marginTop: 16 }} onPress={() => router.replace('/(auth)/login')}>
+  <TouchableOpacity style={{ marginTop: 16 }} onPress={() => router.replace(loginHref)}>
         <Text style={styles.linkText}>Back to Sign In</Text>
       </TouchableOpacity>
     </View>

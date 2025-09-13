@@ -1,3 +1,4 @@
+import { loginHref } from "../../lib/nav";
 // app/(auth)/register.js
 import React, { useRef, useState, useMemo } from 'react';
 import {
@@ -98,7 +99,7 @@ export default function Register() {
         email: email.trim().toLowerCase(),
         password,
         options: {
-          emailRedirectTo: 'tradematequotes://(auth)/login',
+          emailRedirectTo: `tradematequotes://${loginHref}`,
         },
       });
       if (error) throw error;
@@ -116,7 +117,7 @@ export default function Register() {
           );
         } catch {}
         Alert.alert('Account created', 'You can sign in now.');
-        router.replace('/(auth)/login');
+  router.replace(loginHref);
         return;
       }
 
@@ -276,7 +277,7 @@ export default function Register() {
 
         <Text style={styles.footerText}>
           Already have an account?{' '}
-          <Link href="/(auth)/login" style={styles.linkText}>
+          <Link href={loginHref} style={styles.linkText}>
             Sign in
           </Link>
         </Text>

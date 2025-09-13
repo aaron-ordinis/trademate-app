@@ -61,9 +61,9 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [plan, setPlan] = useState<'free' | 'premium'>('free');
+  const [plan, setPlan] = useState('free');
   const [billingEmail, setBillingEmail] = useState('');
-  const [profile, setProfile] = useState<any>(null);
+  const [profile, setProfile] = useState(null);
   const isPremium = plan === 'premium';
 
   /* -------------------- Load profile -------------------- */

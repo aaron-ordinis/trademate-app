@@ -1,3 +1,4 @@
+import { loginHref, quotesListHref } from "../../lib/nav";
 // app/(app)/onboarding.js
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -96,7 +97,7 @@ export default function Onboarding() {
     (async () => {
       const { data } = await supabase.auth.getUser();
       const u = data?.user;
-      if (!u) { router.replace('/(auth)/login'); return; }
+  if (!u) { router.replace(loginHref); return; }
       setEmail(u.email ?? '');
     })();
   }, [router]);
@@ -255,7 +256,7 @@ export default function Onboarding() {
       if (error) throw error;
 
       Alert.alert('Saved', 'Your business profile is set up.');
-      router.replace('/(app)/quotes/list');
+  router.replace(quotesListHref);
     } catch (e) {
       console.error('[ONBOARD] save error', e);
       Alert.alert('Error', e?.message ?? 'Could not save profile.');

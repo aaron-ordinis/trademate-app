@@ -1,3 +1,4 @@
+import { onboardingHref, signupHref } from "../../lib/nav";
 /* app/(auth)/login.js */
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -110,10 +111,21 @@ export default function Login() {
         .maybeSingle();
       if (pErr) throw pErr;
 
+      // Defensive: treat empty string or null as not set
       const needsOnboarding =
-        !profile || !profile.business_name || profile.hourly_rate == null;
+        !profile ||
+        !profile.business_name ||
+        profile.business_name === '' ||
+        profile.hourly_rate == null ||
+        profile.hourly_rate === '';
 
-      router.replace(needsOnboarding ? '/(app)/onboarding' : '/(app)/quotes/list');
+      // Use replace for navigation
+      if (needsOnboarding) {
+        router.replace(onboardingHref);
+      } else {
+        // TODO: Add quotesTabHref if needed
+        router.replace('/(app)/(tabs)/quotes');
+      }
     } catch (e) {
       const nice = mapSupabaseError(e);
       setAuthError(nice);
@@ -258,7 +270,7 @@ export default function Login() {
 
         <Text style={styles.footerText}>
           New here?{' '}
-          <Link href="/(auth)/register" style={styles.linkText}>
+          <Link href={signupHref} style={styles.linkText}>
             Create account
           </Link>
         </Text>

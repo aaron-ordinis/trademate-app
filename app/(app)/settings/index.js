@@ -1,3 +1,4 @@
+import { loginHref, accountHref, profileHref, supportHref } from "../../../lib/nav";
 /* app/(app)/settings/index.js */
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
@@ -111,7 +112,7 @@ export default function SettingsHome() {
     const attempt = async () => {
       const { data: { user }, error: uErr } = await supabase.auth.getUser();
       if (uErr) throw uErr;
-      if (!user) { router.replace('/(auth)/login'); return null; }
+  if (!user) { router.replace(loginHref); return null; }
       setUserEmail(user.email || '');
       setUserId(user.id);
 
@@ -169,7 +170,7 @@ export default function SettingsHome() {
   const onLogout = async () => {
     try { await supabase.auth.signOut(); }
     catch (e) { showError(e?.message || String(e)); }
-    finally { router.replace('/(auth)/login'); }
+  finally { router.replace(loginHref); }
   };
 
   /**
@@ -370,7 +371,7 @@ export default function SettingsHome() {
                 </Text>
               </View>
             </View>
-            <TouchableOpacity onPress={() => router.push('/(app)/account')} style={styles.upBtn} activeOpacity={0.92}>
+            <TouchableOpacity onPress={() => router.push(accountHref)} style={styles.upBtn} activeOpacity={0.92}>
               <Text style={styles.upBtnText}>Upgrade</Text>
             </TouchableOpacity>
           </View>
@@ -383,13 +384,13 @@ export default function SettingsHome() {
             icon={<CreditCard size={18} color={MUTED} />}
             title="Plan & Billing"
             subtitle="Manage / Upgrade"
-            onPress={() => router.push('/(app)/account')}
+            onPress={() => router.push(accountHref)}
           />
           <Row
             icon={<Building2 size={18} color={MUTED} />}
             title="Business Profile"
             subtitle="Edit details & branding"
-            onPress={() => router.push('/(app)/profile')}
+            onPress={() => router.push(profileHref)}
           />
         </View>
 
@@ -399,7 +400,7 @@ export default function SettingsHome() {
             icon={<HelpCircle size={18} color={MUTED} />}
             title="Help & Support"
             subtitle="FAQs, guides, contact us"
-            onPress={() => router.push('/(app)/support')}
+            onPress={() => router.push(supportHref)}
           />
         </View>
 
