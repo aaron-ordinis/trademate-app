@@ -47,7 +47,7 @@ export default function RootLayout() {
     (async () => {
       try {
         const NavigationBar = await import("expo-navigation-bar");
-        await NavigationBar.setBackgroundColorAsync(TAB_BAR_COLOR);
+        await NavigationBar.setBackgroundColorAsync("#FFFFFF"); // ✅ Ensure white
         await NavigationBar.setButtonStyleAsync("dark");
         await NavigationBar.setDividerColorAsync("transparent");
         await NavigationBar.setBehaviorAsync("inset-swipe");

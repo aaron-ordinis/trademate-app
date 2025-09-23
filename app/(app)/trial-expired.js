@@ -5,7 +5,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   StatusBar,
-  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Crown, CreditCard, LogOut } from 'lucide-react-native';
@@ -15,7 +14,6 @@ import * as Haptics from 'expo-haptics';
 const BRAND = '#2a86ff';
 const TEXT = '#0b1220';
 const MUTED = '#6b7280';
-const CARD = '#ffffff';
 const BG = '#f5f7fb';
 const DANGER = '#dc2626';
 
@@ -23,18 +21,18 @@ export default function TrialExpired() {
   const router = useRouter();
 
   const handleSubscribe = () => {
-    Haptics.selectionAsync();
-    router.push('/(app)/billing');
+    Haptics.selectionAsync().catch(() => {});
+    router.push('/(app)/account');
   };
 
   const handleLogout = async () => {
     try {
-      Haptics.selectionAsync();
+      Haptics.selectionAsync().catch(() => {});
       await supabase.auth.signOut();
-      router.replace('/(auth)/login');
     } catch (error) {
       console.error('Logout error:', error);
-      // Force navigation even if logout fails
+    } finally {
+      // Always force navigation to login
       router.replace('/(auth)/login');
     }
   };
@@ -58,7 +56,6 @@ export default function TrialExpired() {
           <FeatureItem text="Unlimited quotes & invoices" />
           <FeatureItem text="Professional PDF generation" />
           <FeatureItem text="Job management & scheduling" />
-          <FeatureItem text="Remove 'Powered by TradeMate'" />
           <FeatureItem text="Custom logo & branding" />
           <FeatureItem text="Advanced AI features" />
         </View>

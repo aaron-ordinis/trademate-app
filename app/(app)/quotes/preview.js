@@ -37,11 +37,19 @@ const safeName = (name) => (name || "quote.pdf").replace(/[^\w.-]/g, "_");
 const withBust = (url) =>
   url ? (url.includes("?") ? `${url}&cb=${Date.now()}` : `${url}?cb=${Date.now()}`) : url;
 
+// strict UUID guard (prevents invalid input syntax for type uuid)
+const isUuid = (v) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(v || ""));
+
 async function markStatus(quoteId, status) {
-  try { if (quoteId) await supabase.from("quotes").update({ status }).eq("id", quoteId); } catch {}
+  try {
+    if (quoteId && isUuid(quoteId)) {
+      await supabase.from("quotes").update({ status }).eq("id", quoteId);
+    }
+  } catch {}
 }
 
-/** Same PDF.js HTML as invoices (fast + compatible). */
+/** PDF.js HTML viewer (same look/feel as invoices). */
 const makePdfHtml = (base64, viewerWidthCSSPx) => `<!DOCTYPE html>
 <html>
 <head>
@@ -122,9 +130,9 @@ const makePdfHtml = (base64, viewerWidthCSSPx) => `<!DOCTYPE html>
 </html>`;
 
 /* ---------------------------- micro-haptics ---------------------------- */
-const vibrateTap = () => Haptics.selectionAsync().catch(()=>{});
+const vibrateTap   = () => Haptics.selectionAsync().catch(()=>{});
 const vibrateSuccess = () => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(()=>{});
-const vibrateError = () => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(()=>{});
+const vibrateError   = () => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(()=>{});
 
 /* ------------------------- nice action buttons ------------------------- */
 function ActionButton({ label, Icon, onPress, disabled, busy }) {
@@ -151,7 +159,7 @@ function ActionButton({ label, Icon, onPress, disabled, busy }) {
   );
 }
 
-/* ----------------- Resilient waiter (Option 1 enabled) ----------------- */
+/* ----------------- Resilient waiter (same as invoices) ----------------- */
 async function waitForPdfAvailable(resolvePdfUrl, opts) {
   const maxWaitMs = (opts?.maxWaitMs) || 90000;
   const intervalMs = (opts?.intervalMs) || 800;
@@ -203,10 +211,11 @@ export default function QuotePreview() {
   const wvRef = useRef(null);
 
   const params = useLocalSearchParams();
-  const rawId = Array.isArray(params.id) ? params.id[0] : params.id;   // quote id
+  const rawId = Array.isArray(params.id) ? params.id[0] : params.id;
   const rawName = Array.isArray(params.name) ? params.name[0] : params.name;
 
-  const quoteId = rawId ? String(rawId) : null;
+  // STRICT: only accept proper UUIDs; otherwise treat as missing id
+  const quoteId = isUuid(rawId) ? String(rawId) : null;
   const pdfName = safeName(rawName ? String(rawName) : "quote.pdf");
 
   const [busy, setBusy] = useState(null);
@@ -226,13 +235,11 @@ export default function QuotePreview() {
     return () => sub?.remove?.();
   }, []);
 
-  /* ---------- Option 2: Edge Function → DB column fallback ---------- */
+  /* ---------- URL resolution (same strategy as invoices) ---------- */
   const resolvePdfUrl = useCallback(async () => {
-    if (!quoteId) return "";
+    if (!quoteId) throw new Error("Missing quote id.");
 
-    let lastError = null;
-
-    // (1) Edge Function (if you've deployed it)
+    // 1) Try signed URL function if present (non-fatal if not deployed)
     try {
       const { data, error } = await supabase.functions.invoke("get_quote_signed_url", {
         body: { quote_id: quoteId },
@@ -243,22 +250,17 @@ export default function QuotePreview() {
           if (head.ok) return data.url;
         } catch {}
       }
-      lastError = error;
-    } catch (e) {
-      lastError = e;
-    }
+    } catch {}
 
-    // (2) Direct pdf_url column
-    try {
-      const got = await supabase.from("quotes").select("pdf_url").eq("id", quoteId).maybeSingle();
-      if (got?.data?.pdf_url) return got.data.pdf_url;
-      if (got?.error) lastError = got.error;
-    } catch (e) {
-      lastError = e;
-    }
+    // 2) Fallback to stored pdf_url
+    const got = await supabase
+      .from("quotes")
+      .select("pdf_url")
+      .eq("id", quoteId)
+      .maybeSingle();
 
-    console.warn("[QUOTE_PREVIEW] URL resolution failed:", lastError);
-    return "";
+    if (got?.error) throw got.error;
+    return got?.data?.pdf_url || "";
   }, [quoteId]);
 
   const loadBase64 = useCallback(async () => {
@@ -278,17 +280,13 @@ export default function QuotePreview() {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      if (!b64 || b64.length < 100) throw new Error("PDF file appears to be empty or corrupted");
-
-      const header = global.atob
-        ? global.atob(b64.slice(0, 20))
-        : Buffer.from(b64.slice(0, 20), "base64").toString("binary");
-      if (!String(header).startsWith("%PDF-")) throw new Error("File is not a valid PDF");
+      // sanity check: PDF files start with "%PDF-" => base64 starts with "JVBERi0"
+      if (!b64 || b64.length < 100 || !b64.startsWith("JVBERi0")) {
+        throw new Error("PDF file appears to be empty or corrupted");
+      }
 
       setBase64Pdf(b64);
     } catch (e) {
-      // keep UX smooth: show message but auto-retry shortly
-      console.warn("[QUOTE_PREVIEW] loadBase64 failed:", e?.message || e);
       setFatal(e?.message || "Could not load PDF.");
     } finally {
       setLoading(false);
@@ -297,7 +295,6 @@ export default function QuotePreview() {
 
   useEffect(() => {
     loadBase64();
-    // silent auto-retry after 2.5s if still not ready
     const t = setTimeout(() => {
       if (fatal && !loading && !base64Pdf) loadBase64();
     }, 2500);

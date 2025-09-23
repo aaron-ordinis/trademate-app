@@ -84,7 +84,7 @@ export default function Onboarding() {
       StatusBar.setBackgroundColor(BG_HEX, true);
       (async () => {
         try {
-          await NavigationBar.setBackgroundColorAsync(BG_HEX);
+          await NavigationBar.setBackgroundColorAsync("#FFFFFF"); // ✅ Ensure white
           await NavigationBar.setButtonStyleAsync("dark");
           await NavigationBar.setDividerColorAsync("transparent");
         } catch {}
