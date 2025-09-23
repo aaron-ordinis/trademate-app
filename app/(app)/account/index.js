@@ -1,5 +1,5 @@
 // app/(app)/account/index.js
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -15,7 +15,9 @@ import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../../lib/supabase';
-import { ACCOUNT_PRICE } from '../../../lib/pricing';
+import * as RNIap from 'react-native-iap';
+import Constants from 'expo-constants';
+import { ChevronLeft } from 'lucide-react-native';
 
 /* -------------------- Brand tokens -------------------- */
 const BRAND = '#2a86ff';
@@ -27,44 +29,46 @@ const BORDER = '#e6e9ee';
 
 const IS_ANDROID = Platform.OS === 'android';
 
-/* -------------------- Pricing helpers -------------------- */
-const PRICING = {
-  monthly: `£${ACCOUNT_PRICE.monthlyGBP.toFixed(2)}/mo`,
-  yearly: `£${ACCOUNT_PRICE.yearlyGBP.toFixed(2)}/yr`,
-};
-const WEEKS_PER_MONTH = 4;
-const WEEKS_PER_YEAR = 52;
+/* -------------------- Play product IDs (your Console IDs) -------------------- */
+const WEEKLY_PRODUCT_ID  = 'premium_weekly';
+const MONTHLY_PRODUCT_ID = 'premium_monthly';
 
-const weekly = {
-  monthly: ACCOUNT_PRICE.monthlyGBP / WEEKS_PER_MONTH,
-  yearly: ACCOUNT_PRICE.yearlyGBP / WEEKS_PER_YEAR,
-};
-const weeklyLabel = (v) => `£${(Math.round(v * 100) / 100).toFixed(2)}/week`;
+const GOOGLE_SUBS_URL =
+  'https://play.google.com/store/account/subscriptions';
+
+const VERIFY_URL =
+  Constants.expoConfig?.extra?.VERIFY_URL || process.env.EXPO_PUBLIC_VERIFY_URL;
 
 /* -------------------- Legal -------------------- */
 const PRIVACY_URL = 'https://www.tradematequotes.com/privacy';
 const TERMS_URL   = 'https://www.tradematequotes.com/terms';
 
-/* -------------------- Feature list -------------------- */
-const FEATURE_ROWS = [
-  { key: 'logo',       label: 'Custom logo',                 free: '✓',       pro: '✓' },
-  { key: 'ai',         label: 'AI-generated quotes',         free: '1/day',   pro: 'Unlimited' },
-  { key: 'edit',       label: 'Edit feature',                free: 'x',       pro: '✓' },
-  { key: 'duplicate',  label: 'Duplicate feature',           free: 'x',       pro: '✓' },
-  { key: 'templates',  label: 'Multiple templates',          free: 'x',       pro: '✓' },
-  { key: 'watermark',  label: 'Remove TradeMate watermark',  free: 'x',       pro: '✓' },
-  { key: 'support',    label: 'Priority support',            free: 'x',       pro: '✓' },
+/* -------------------- Benefits list (no comparison table) -------------------- */
+const BENEFITS = [
+  'Unlimited AI-generated quotes',
+  'Edit quotes & invoices',
+  'Use multiple templates',
+  'Attach docs & certificates — sent as one combined PDF',
+  'Remove TradeMate watermark',
+  'Custom logo on PDFs',
+  'Priority support',
 ];
 
 export default function AccountScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [plan, setPlan] = useState('free');
+
+  const [loading, setLoading]   = useState(true);
+  const [busy, setBusy]         = useState(false);
+  const [plan, setPlan]         = useState('free');
   const [billingEmail, setBillingEmail] = useState('');
-  const [profile, setProfile] = useState(null);
+  const [profile, setProfile]   = useState(null);
   const isPremium = plan === 'premium';
+
+  // IAP state
+  const [subs, setSubs] = useState([]); // results from getSubscriptions
+  const updateListenerRef = useRef(null);
+  const errorListenerRef  = useRef(null);
 
   /* -------------------- Load profile -------------------- */
   const loadProfile = useCallback(async () => {
@@ -77,13 +81,13 @@ export default function AccountScreen() {
 
       const { data, error } = await supabase
         .from('profiles')
-        .select('branding,billing_email,stripe_customer_id,premium_since')
+        .select('plan_tier,plan_status,trial_ends_at,billing_email,premium_since')
         .eq('id', user.id)
         .maybeSingle();
       if (error) throw error;
 
       setProfile(data || {});
-      const tier = String(data?.branding ?? 'free').toLowerCase();
+      const tier = String(data?.plan_tier ?? 'free').toLowerCase();
       setPlan(tier === 'premium' ? 'premium' : 'free');
       if (data?.billing_email) setBillingEmail(data.billing_email);
     } catch (e) {
@@ -96,67 +100,162 @@ export default function AccountScreen() {
   useEffect(() => { loadProfile(); }, [loadProfile]);
   useFocusEffect(useCallback(() => { loadProfile(); }, [loadProfile]));
 
-  /* -------------------- Android: Play Billing placeholders -------------------- */
-  const openPlaySubscriptions = () =>
-    Linking.openURL('https://play.google.com/store/account/subscriptions');
+  /* -------------------- IAP: init + listeners (Android) -------------------- */
+  useEffect(() => {
+    if (!IS_ANDROID) return;
 
-  const startAndroidPurchase = async (planKey) => {
-    // Placeholder until react-native-iap is wired
-    Alert.alert(
-      'Coming soon',
-      'Purchases on Android are handled by Google Play. This button will use Google Play Billing in the next update.',
-      [
-        { text: 'Manage subscriptions', onPress: openPlaySubscriptions },
-        { text: 'OK' },
-      ]
-    );
+    let mounted = true;
+    (async () => {
+      try {
+        await RNIap.initConnection();
+        if (RNIap.flushFailedPurchasesCachedAsPendingAndroid) {
+          try { await RNIap.flushFailedPurchasesCachedAsPendingAndroid(); } catch {}
+        }
+        // Fetch the subscription products (new billing returns offer details)
+        const products = await RNIap.getSubscriptions([WEEKLY_PRODUCT_ID, MONTHLY_PRODUCT_ID]);
+        if (mounted) setSubs(Array.isArray(products) ? products : []);
+      } catch (e) {
+        console.warn('IAP init error', e);
+      }
+    })();
+
+    updateListenerRef.current = RNIap.purchaseUpdatedListener(async (purchase) => {
+      try {
+        // Acknowledge (Android)
+        if (purchase?.purchaseToken) {
+          try { await RNIap.acknowledgePurchaseAndroid(purchase.purchaseToken); } catch {}
+        }
+
+        // Verify with backend
+        if (VERIFY_URL && purchase?.purchaseToken && purchase?.productId) {
+          const { data: { session } } = await supabase.auth.getSession();
+          await fetch(VERIFY_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session?.access_token ?? ''}`,
+            },
+            body: JSON.stringify({
+              platform: 'google',
+              productId: purchase.productId,
+              purchaseToken: purchase.purchaseToken,
+              transactionId: purchase.transactionId,
+            }),
+          });
+        }
+
+        try { await RNIap.finishTransaction(purchase, true); } catch {}
+
+        Alert.alert('Success', 'Your subscription is active.');
+        setBusy(false);
+        loadProfile();
+      } catch (err) {
+        console.warn('verify/finish error', err);
+        setBusy(false);
+        Alert.alert('Verification error', 'Purchase made, but we could not verify it. Try Restore or contact support.');
+      }
+    });
+
+    errorListenerRef.current = RNIap.purchaseErrorListener((err) => {
+      setBusy(false);
+      if (err && !/user.*cancell?ed/i.test(err?.message || '')) {
+        Alert.alert('Purchase failed', err.message || 'Please try again.');
+      }
+      console.warn('IAP error', err);
+    });
+
+    return () => {
+      mounted = false;
+      try { updateListenerRef.current?.remove?.(); } catch {}
+      try { errorListenerRef.current?.remove?.(); } catch {}
+      try { RNIap.endConnection(); } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadProfile]);
+
+  /* -------------------- Offer helpers (fixes "subscriptionOffers required") -------------------- */
+  // Get the first available offerToken for a given product
+  const getOfferToken = (productId) => {
+    const prod = subs.find(p => p.productId === productId);
+    const offers = prod?.subscriptionOfferDetails || [];
+    // Prefer a non-trial, paid base offer if present; otherwise just take the first
+    const pick =
+      offers.find(o => (o?.pricingPhases?.pricingPhaseList?.[0]?.priceAmountMicros ?? 0) > 0) ||
+      offers[0];
+    return pick?.offerToken;
   };
 
-  /* -------------------- Stripe (iOS/Web only) -------------------- */
-  const startCheckout = async (planKey) => {
-    if (IS_ANDROID) { return startAndroidPurchase(planKey); } // guard
+  const priceLabels = useMemo(() => {
+    const fmt = (productId, fallback) => {
+      const prod = subs.find(p => p.productId === productId);
+      const phase = prod?.subscriptionOfferDetails?.[0]?.pricingPhases?.pricingPhaseList?.[0];
+      return phase?.formattedPrice || prod?.price || fallback;
+    };
+    return {
+      weekly:  fmt(WEEKLY_PRODUCT_ID,  'Weekly plan'),
+      monthly: fmt(MONTHLY_PRODUCT_ID, 'Monthly plan'),
+    };
+  }, [subs]);
+
+  const buy = async (productId) => {
+    if (!IS_ANDROID) {
+      Alert.alert('Android only', 'Purchases are handled via Google Play on Android.');
+      return;
+    }
     try {
       setBusy(true);
-      const { data: auth } = await supabase.auth.getUser();
-      const user = auth?.user;
-      const email = user?.email || billingEmail || undefined;
-      const user_id = user?.id || undefined;
+      const offerToken = getOfferToken(productId);
+      if (!offerToken) throw new Error('Offer not ready yet. Please try again in a moment.');
 
-      const { data, error } = await supabase.functions.invoke('stripe-checkout', {
-        body: { plan: planKey, email, user_id, platform: Platform.OS },
+      await RNIap.requestSubscription({
+        sku: productId,
+        // ★ Required for Google Play Billing subscriptions (new model)
+        subscriptionOffers: [{ sku: productId, offerToken }],
       });
-      if (error) throw error;
-      if (!data?.url) throw new Error('No checkout URL returned.');
-      Linking.openURL(data.url);
     } catch (e) {
-      Alert.alert('Upgrade failed', e?.message ?? 'Could not start checkout.');
-    } finally {
       setBusy(false);
+      console.warn('requestSubscription error', e);
+      Alert.alert('Purchase error', e?.message || 'Unable to start purchase.');
     }
   };
 
-  const openPortal = async () => {
-    if (IS_ANDROID) { return openPlaySubscriptions(); } // guard
+  const restore = async () => {
     try {
       setBusy(true);
-      const { data, error } = await supabase.functions.invoke('stripe-portal', {
-        body: {
-          returnUrl: Platform.select({
-            ios: 'tradematequotes://billing/return',
-            android: 'tradematequotes://billing/return',
-            default: 'https://www.tradematequotes.com/billing/return',
-          }),
+      const purchases = await RNIap.getAvailablePurchases();
+      const latest = purchases?.find(
+        p => p.productId === WEEKLY_PRODUCT_ID || p.productId === MONTHLY_PRODUCT_ID
+      );
+      if (!latest?.purchaseToken) {
+        Alert.alert('Nothing to restore', 'No active subscription found for this account.');
+        setBusy(false);
+        return;
+      }
+      const { data: { session } } = await supabase.auth.getSession();
+      await fetch(VERIFY_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? ''}`,
         },
+        body: JSON.stringify({
+          platform: 'google',
+          productId: latest.productId,
+          purchaseToken: latest.purchaseToken,
+          transactionId: latest.transactionId,
+        }),
       });
-      if (error) throw error;
-      if (!data?.url) throw new Error('No portal URL returned.');
-      Linking.openURL(data.url);
+      Alert.alert('Restored', 'Your subscription has been restored.');
+      loadProfile();
     } catch (e) {
-      Alert.alert('Could not open billing portal', e?.message ?? 'Please try again.');
+      console.warn('restore error', e);
+      Alert.alert('Restore failed', 'Could not restore your purchase.');
     } finally {
       setBusy(false);
     }
   };
+
+  const openPlaySubscriptions = () => Linking.openURL(GOOGLE_SUBS_URL);
 
   /* -------------------- Render -------------------- */
   if (loading) {
@@ -167,34 +266,80 @@ export default function AccountScreen() {
     );
   }
 
-  const freeActive = !isPremium;
-  const lastIndex = FEATURE_ROWS.length - 1;
+  /* -------------------- Helper to calculate trial days remaining -------------------- */
+  const getTrialDaysRemaining = () => {
+    if (!profile?.trial_ends_at) return 0;
+    const trialEnd = new Date(profile.trial_ends_at);
+    const now = new Date();
+    const diffTime = trialEnd - now;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return Math.max(0, diffDays);
+  };
+
+  const trialDaysLeft = getTrialDaysRemaining();
 
   return (
     <SafeAreaView edges={['top','left','right','bottom']} style={{ flex:1, backgroundColor: BG }}>
       <ScrollView contentContainerStyle={[styles.wrap, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+        
+        {/* Header with back button */}
+        <View style={styles.header}>
+          <TouchableOpacity 
+            style={styles.backButton}
+            onPress={() => router.back()}
+            activeOpacity={0.7}
+          >
+            <ChevronLeft size={20} color={BRAND} />
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+        </View>
+
         <Text style={styles.h1}>Plan &amp; Billing</Text>
 
-        {/* Android policy banner */}
-        {IS_ANDROID && (
-          <View style={styles.banner}>
-            <Text style={styles.bannerTitle}>Purchases on Android</Text>
-            <Text style={styles.bannerText}>
-              Google Play handles subscriptions on Android devices. You can manage or cancel your
-              subscription any time in Google Play.
-            </Text>
-            <TouchableOpacity style={styles.bannerBtn} onPress={openPlaySubscriptions}>
-              <Text style={styles.bannerBtnText}>Open Google Play Subscriptions</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+        {/* Plan Cards - moved to top */}
+        <View style={styles.planGrid}>
+          <TouchableOpacity
+            activeOpacity={0.9}
+            style={styles.planCard}
+            onPress={() => buy(WEEKLY_PRODUCT_ID)}
+            disabled={busy || !IS_ANDROID}
+          >
+            <Text style={styles.planTitle}>1 Week</Text>
+            <Text style={styles.priceMain}>{priceLabels.weekly}</Text>
+            <Text style={styles.priceSub}>Auto-renews weekly</Text>
+            {!IS_ANDROID && <Text style={styles.androidHint}>Android only</Text>}
+          </TouchableOpacity>
 
-        {/* Current plan */}
+          <TouchableOpacity
+            activeOpacity={0.9}
+            style={[styles.planCard, styles.planCardBest, styles.planCardBestPadded]}
+            onPress={() => buy(MONTHLY_PRODUCT_ID)}
+            disabled={busy || !IS_ANDROID}
+          >
+            <View style={styles.bestBadge}><Text style={styles.bestBadgeText}>Best Value</Text></View>
+            <Text style={[styles.planTitle, styles.planTitleWithBadge]}>1 Month</Text>
+            <Text style={styles.priceMain}>{priceLabels.monthly}</Text>
+            <Text style={styles.priceSub}>Auto-renews monthly</Text>
+            {!IS_ANDROID && <Text style={styles.androidHint}>Android only</Text>}
+          </TouchableOpacity>
+        </View>
+
+        {/* What you get with TradeMate */}
         <View style={styles.card}>
-          <Text style={styles.lead}>{isPremium ? 'You’re on Premium 🎉' : 'You’re on the Free plan'}</Text>
+          <Text style={styles.cardTitle}>What you get with TradeMate</Text>
+          <View style={{ gap: 8 }}>
+            {BENEFITS.map((b) => (
+              <Text key={b} style={styles.benefit}>• {b}</Text>
+            ))}
+          </View>
+          <Text style={styles.legalHint}>Prices include VAT where applicable.</Text>
+        </View>
 
+        {/* Current status - show trial info instead of "free plan" */}
+        <View style={styles.card}>
           {isPremium ? (
-            <View style={{ gap: 10 }}>
+            <>
+              <Text style={[styles.lead, { textAlign: 'center', marginBottom: 16 }]}>You're on Premium</Text>
               <View style={styles.metaGrid}>
                 <Text style={styles.metaLabel}>Billing email</Text>
                 <Text style={styles.metaValue}>{billingEmail || '—'}</Text>
@@ -212,90 +357,46 @@ export default function AccountScreen() {
                 )}
               </View>
 
-              <TouchableOpacity style={[styles.btn, styles.btnManage]} onPress={openPortal} disabled={busy}>
-                <Text style={styles.btnText}>
-                  {IS_ANDROID ? 'Manage in Google Play' : (busy ? 'Opening…' : 'Manage billing')}
-                </Text>
+              <TouchableOpacity style={[styles.btn, styles.btnManage]} onPress={openPlaySubscriptions} disabled={busy}>
+                <Text style={styles.btnText}>Manage in Google Play</Text>
               </TouchableOpacity>
-            </View>
+            </>
           ) : (
-            <Text style={styles.subtle}>Upgrade to unlock everything — cancel anytime.</Text>
+            <>
+              <Text style={styles.lead}>
+                {trialDaysLeft > 0 
+                  ? `${trialDaysLeft} day${trialDaysLeft === 1 ? '' : 's'} left on your trial`
+                  : 'Trial expired'
+                }
+              </Text>
+              <Text style={styles.subtle}>
+                {trialDaysLeft > 0 
+                  ? 'Subscribe before your trial ends to keep all features.'
+                  : 'Subscribe to regain access to all premium features.'
+                }
+              </Text>
+            </>
           )}
         </View>
 
-        {/* Plan cards */}
-        <View style={styles.planGrid}>
-          {/* Monthly */}
-          <TouchableOpacity
-            activeOpacity={0.9}
-            style={styles.planCard}
-            onPress={() => startCheckout('monthly')}
-            disabled={busy}
-          >
-            <Text style={styles.planTitle}>1 Month</Text>
-            <Text style={styles.priceMain}>{weeklyLabel(weekly.monthly)}</Text>
-            <Text style={styles.priceSub}>{PRICING.monthly}</Text>
-            {IS_ANDROID && <Text style={styles.androidHint}>Google Play purchase</Text>}
-          </TouchableOpacity>
-
-          {/* Yearly (Best Offer) */}
-          <TouchableOpacity
-            activeOpacity={0.9}
-            style={[styles.planCard, styles.planCardBest, styles.planCardBestPadded]}
-            onPress={() => startCheckout('yearly')}
-            disabled={busy}
-          >
-            <View style={styles.bestBadge}><Text style={styles.bestBadgeText}>Best Offer</Text></View>
-            <Text style={[styles.planTitle, styles.planTitleWithBadge]}>12 Months</Text>
-            <Text style={styles.priceMain}>{weeklyLabel(weekly.yearly)}</Text>
-            <Text style={styles.priceSub}>{PRICING.yearly}</Text>
-            {IS_ANDROID && <Text style={styles.androidHint}>Google Play purchase</Text>}
-          </TouchableOpacity>
-        </View>
-
-        {/* Feature comparison */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>What you get</Text>
-
-          <View style={styles.table}>
-            {/* Header */}
-            <View style={[styles.tr, styles.thRow]}>
-              <Text style={[styles.th, styles.tFeature]}>Features</Text>
-
-              <View style={[styles.colBox, freeActive && styles.colWrapHeader]}>
-                <Text style={[styles.th, styles.tFree]}>Free</Text>
-              </View>
-
-              <View style={[styles.colBox, !freeActive && styles.colWrapHeader]}>
-                <Text style={[styles.th, styles.tPro]}>Premium</Text>
-              </View>
-            </View>
-
-            {/* Rows */}
-            {FEATURE_ROWS.map((item, i) => {
-              const isLast = i === lastIndex;
-              return (
-                <View key={item.key} style={[styles.tr, i % 2 ? styles.striped : null]}>
-                  <Text style={[styles.td, styles.tFeature]}>{item.label}</Text>
-
-                  <View style={[styles.colBox, freeActive && (isLast ? styles.colWrapFooter : styles.colWrapCell)]}>
-                    <Text style={[styles.td, styles.tFree, freeActive && styles.colTextStrong]}>
-                      {item.free}
-                    </Text>
-                  </View>
-
-                  <View style={[styles.colBox, !freeActive && (isLast ? styles.colWrapFooter : styles.colWrapCell)]}>
-                    <Text style={[styles.td, styles.tPro, !freeActive && styles.colTextStrong]}>
-                      {item.pro}
-                    </Text>
-                  </View>
-                </View>
-              );
-            })}
+        {/* Android policy banner */}
+        {IS_ANDROID && (
+          <View style={styles.banner}>
+            <Text style={styles.bannerTitle}>Purchases on Android</Text>
+            <Text style={styles.bannerText}>
+              Google Play handles subscriptions on Android devices. You can manage or cancel your
+              subscription any time in Google Play.
+            </Text>
+            <TouchableOpacity style={styles.bannerBtn} onPress={openPlaySubscriptions}>
+              <Text style={styles.bannerBtnText}>Open Google Play Subscriptions</Text>
+            </TouchableOpacity>
           </View>
+        )}
 
-          <Text style={styles.legalHint}>Prices include VAT where applicable.</Text>
-        </View>
+        {/* Restore / Manage */}
+        <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={restore} disabled={busy || !IS_ANDROID}>
+          <Text style={styles.btnGhostText}>Restore purchase</Text>
+        </TouchableOpacity>
 
         {/* Legal */}
         <View style={styles.legalRow}>
@@ -304,6 +405,14 @@ export default function AccountScreen() {
           <Text style={styles.legalLink} onPress={() => Linking.openURL(TERMS_URL)}>User Agreement</Text>
         </View>
       </ScrollView>
+
+      {/* Busy overlay */}
+      {busy && (
+        <View style={styles.busyOverlay} accessible accessibilityRole="progressbar" accessibilityLabel="Processing purchase">
+          <ActivityIndicator size="large" color="#2a86ff" />
+          <Text style={{ color: '#fff', marginTop: 8, fontWeight: '700' }}>Processing…</Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -313,9 +422,26 @@ const styles = StyleSheet.create({
   wrap: { padding: 16, gap: 14 },
   loading: { flex: 1, backgroundColor: BG, alignItems: 'center', justifyContent: 'center' },
 
-  h1: { color: TEXT, fontSize: 24, fontWeight: '800', textAlign: 'center', marginVertical: 6 },
+  header: {
+    paddingBottom: 8,
+    marginTop: -8,
+  },
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    marginLeft: -8,
+  },
+  backText: {
+    color: BRAND,
+    fontSize: 16,
+    fontWeight: '800',
+  },
 
-  /* Banner */
+  h1: { color: TEXT, fontSize: 24, fontWeight: '800', textAlign: 'center', marginVertical: 6, marginTop: 0 },
+
   banner: {
     backgroundColor: '#eaf2ff',
     borderColor: '#cfe0ff',
@@ -346,7 +472,7 @@ const styles = StyleSheet.create({
   subtle: { color: MUTED },
 
   btn: { borderRadius: 12, padding: 12, alignItems: 'center' },
-  btnManage: { backgroundColor: IS_ANDROID ? '#2563eb' : '#10b981' },
+  btnManage: { backgroundColor: '#2563eb' },
   btnText: { color: '#fff', fontWeight: '800' },
 
   metaGrid: {
@@ -356,7 +482,6 @@ const styles = StyleSheet.create({
   metaLabel: { color: MUTED },
   metaValue: { color: TEXT, fontWeight: '700' },
 
-  /* Plans */
   planGrid: { flexDirection: 'row', gap: 12 },
   planCard: {
     flex: 1, backgroundColor: CARD, borderRadius: 16, padding: 14,
@@ -380,68 +505,16 @@ const styles = StyleSheet.create({
   priceSub: { color: MUTED, marginTop: 2, fontSize: 14 },
   androidHint: { marginTop: 8, color: MUTED, fontSize: 12 },
 
-  /* Table */
-  table: { marginTop: 6, borderWidth: 1, borderColor: BORDER, borderRadius: 12, overflow: 'hidden' },
-  tr: { flexDirection: 'row', alignItems: 'center' },
-  thRow: { backgroundColor: '#f3f4f6' },
-  striped: { backgroundColor: '#fafafa' },
+  benefit: { color: TEXT, fontSize: 14, lineHeight: 20 },
 
-  th: {
-    fontWeight: '800', color: TEXT, paddingVertical: 10, paddingHorizontal: 12,
-    flex: 1, textAlign: 'center', fontSize: 14,
-    flexWrap: 'wrap', maxWidth: '100%', flexShrink: 1,
-  },
-  td: {
-    color: TEXT, paddingVertical: 12, paddingHorizontal: 12,
-    flex: 1, textAlign: 'center', fontSize: 14,
-    flexWrap: 'wrap', maxWidth: '100%', flexShrink: 1,
-  },
-
-  tFeature: { flex: 1.6, textAlign: 'left' },
-  colBox: { flex: 1.2 },
-
-  tFree: { textAlign: 'center' },
-  tPro: { textAlign: 'center', fontWeight: '800' },
-
-  colWrapHeader: {
-    backgroundColor: '#f0f6ff',
-    borderColor: '#2a86ff',
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
-    borderWidth: 1.5,
-    marginHorizontal: 4,
-    overflow: 'hidden',
-    shadowColor: '#2a86ff',
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  colWrapCell: {
-    backgroundColor: '#f0f6ff',
-    borderColor: '#2a86ff',
-    borderLeftWidth: 1.5,
-    borderRightWidth: 1.5,
-    marginHorizontal: 4,
-    marginTop: -1,
-    marginBottom: -1,
-  },
-  colWrapFooter: {
-    backgroundColor: '#f0f6ff',
-    borderColor: '#2a86ff',
-    borderWidth: 1.5,
-    borderBottomLeftRadius: 10,
-    borderBottomRightRadius: 10,
-    marginHorizontal: 4,
-    marginTop: -1,
-    overflow: 'hidden',
-  },
-  colTextStrong: { fontWeight: '800' },
-
-  cardTitle: { color: TEXT, fontWeight: '800', marginBottom: 6 },
-  legalHint: { color: MUTED, marginTop: 10, fontSize: 12 },
+  legalHint: { color: MUTED, marginTop: 12, fontSize: 12 },
 
   legalRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 8 },
   legalLink: { color: MUTED, textDecorationLine: 'underline' },
   dot: { color: MUTED },
+
+  busyOverlay: {
+    position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center',
+  },
 });

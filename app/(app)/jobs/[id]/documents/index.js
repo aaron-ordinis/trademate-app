@@ -13,13 +13,10 @@ import {
   Modal,
   Pressable,
   TextInput,
-  Image,
-  ScrollView,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
-import { WebView } from "react-native-webview";
 
 import { supabase } from "../../../../../lib/supabase";
 import { jobHref } from "../../../../../lib/nav";
@@ -32,13 +29,13 @@ import {
 
 import {
   Plus,
-  ChevronLeft,
   FileText,
   Image as ImageIcon,
   ExternalLink,
   Trash2,
   Pencil,
   X,
+  ChevronLeft, // ← back icon to match previews
 } from "lucide-react-native";
 
 /* ---------- theme ---------- */
@@ -82,57 +79,10 @@ const isTextLike = (mime = "", name = "") => {
 const iconFor = (mime = "", name = "") => {
   if (isPdfLike(mime, name)) return <FileText size={18} color={BRAND} />;
   if (isImageLike(mime, name)) return <ImageIcon size={18} color={"#0891b2"} />;
+  if (isOfficeLike(mime, name)) return <FileText size={18} color={"#7c3aed"} />;
+  if (isTextLike(mime, name)) return <FileText size={18} color={"#22c55e"} />;
   return <FileText size={18} color={MUTED} />;
 };
-
-/* ---------- In-app previewer for PDFs/Office/Text (stays inside modal) ---------- */
-function DocPreview({ item, onFallbackExternal }) {
-  const [useFallback, setUseFallback] = useState(false);
-  const url = item?.url || "";
-  const gview = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`;
-
-  // Use Google Docs Viewer for Office + (fallback) PDFs
-  const shouldUseGView =
-    useFallback || isOfficeLike(item.mime, item.name) || isPdfLike(item.mime, item.name);
-
-  // Simple inline note for text-y files (we still display via WebView below)
-  const showTextHint = isTextLike(item.mime, item.name);
-
-  return (
-    <View style={{ flex: 1, backgroundColor: "#fff" }}>
-      {showTextHint ? (
-        <View style={{ paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderColor: BORDER }}>
-          <Text style={{ color: MUTED, fontWeight: "700" }}>
-            If this text file doesn't render due to CORS, tap the external icon.
-          </Text>
-        </View>
-      ) : null}
-
-      <WebView
-        source={{ uri: shouldUseGView ? gview : url }}
-        style={{ flex: 1 }}
-        originWhitelist={["*"]}
-        setSupportMultipleWindows={false}
-        startInLoadingState
-        onError={() => {
-          if (!useFallback) setUseFallback(true);
-          else onFallbackExternal && onFallbackExternal();
-        }}
-        onHttpError={() => {
-          if (!useFallback) setUseFallback(true);
-          else onFallbackExternal && onFallbackExternal();
-        }}
-        onShouldStartLoadWithRequest={(req) => {
-          // Keep navigation inside WebView; block target=_blank attempts
-          if (req.navigationType === "click" && req.url !== (shouldUseGView ? gview : url)) {
-            return false;
-          }
-          return true;
-        }}
-      />
-    </View>
-  );
-}
 
 export default function JobDocuments() {
   const router = useRouter();
@@ -147,10 +97,6 @@ export default function JobDocuments() {
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameItem, setRenameItem] = useState(null);
-
-  // preview modal
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewItem, setPreviewItem] = useState(null);
 
   const load = useCallback(async () => {
     if (!jobId) return;
@@ -169,6 +115,7 @@ export default function JobDocuments() {
   useEffect(() => {
     load();
   }, [load]);
+
   useFocusEffect(
     useCallback(() => {
       load();
@@ -237,11 +184,18 @@ export default function JobDocuments() {
     }
   };
 
-  /* ---------- open / preview ---------- */
+  /* ---------- open / preview (navigate to dedicated Preview screen) ---------- */
   const openRow = (row) => {
     if (!row?.url) return;
-    setPreviewItem(row);
-    setPreviewOpen(true);
+    router.push({
+      pathname: "/(app)/documents/preview",
+      params: {
+        url: row.url,
+        name: row.name || row.kind || "document",
+        mime: row.mime || "",
+        jobId, // for Back to return to this job
+      },
+    });
   };
 
   const externalOpen = (row) => {
@@ -281,7 +235,10 @@ export default function JobDocuments() {
     }
     try {
       setBusy(true);
-      const { error } = await supabase.from("documents").update({ name }).eq("id", renameItem.id);
+      const { error } = await supabase
+        .from("documents")
+        .update({ name })
+        .eq("id", renameItem.id);
       if (error) throw error;
       setRenameOpen(false);
       setRenameItem(null);
@@ -297,13 +254,19 @@ export default function JobDocuments() {
 
   return (
     <View style={s.screen}>
-      {/* header */}
+      {/* header (Back like previews) */}
       <View style={s.top}>
-        <TouchableOpacity style={s.back} onPress={() => router.replace(jobHref(jobId))}>
-          <ChevronLeft color={TEXT} size={20} />
-        </TouchableOpacity>
+        <Pressable
+          onPress={() => router.replace(jobHref(jobId))}
+          style={s.backBtn}
+          android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+        >
+          <ChevronLeft size={18} color={BRAND} />
+          <Text style={s.backTxt}>Back</Text>
+        </Pressable>
+
         <Text style={s.title}>Documents</Text>
-        <View style={{ width: 34 }} />
+        <View style={{ width: 72 }} />
       </View>
 
       {busy ? <ActivityIndicator style={{ marginTop: 8 }} color={BRAND} /> : null}
@@ -315,27 +278,41 @@ export default function JobDocuments() {
         onRefresh={load}
         contentContainerStyle={{ padding: 12, paddingBottom: 96 }}
         renderItem={({ item }) => (
-          <TouchableOpacity activeOpacity={0.85} onPress={() => openRow(item)} style={s.card}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => openRow(item)}
+            style={s.card}
+          >
             <View style={{ marginRight: 10 }}>{iconFor(item.mime, item.name)}</View>
             <View style={{ flex: 1 }}>
               <Text style={s.name} numberOfLines={1}>
                 {item.name || item.kind}
               </Text>
               <Text style={s.meta}>
-                {(item.mime || "file")} • {new Date(item.created_at).toLocaleString()}
+                {(item.mime || "file")} •{" "}
+                {new Date(item.created_at).toLocaleString()}
               </Text>
             </View>
 
-            <TouchableOpacity style={[s.iconBtn, { marginRight: 6 }]} onPress={() => externalOpen(item)}>
+            <TouchableOpacity
+              style={[s.iconBtn, { marginRight: 6 }]}
+              onPress={() => externalOpen(item)}
+            >
               <ExternalLink size={18} color={BRAND} />
             </TouchableOpacity>
 
-            <TouchableOpacity style={[s.iconBtn, { marginRight: 6 }]} onPress={() => startRename(item)}>
+            <TouchableOpacity
+              style={[s.iconBtn, { marginRight: 6 }]}
+              onPress={() => startRename(item)}
+            >
               <Pencil size={18} color={TEXT} />
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[s.iconBtn, { backgroundColor: "#fee2e2", borderColor: "#fecaca" }]}
+              style={[
+                s.iconBtn,
+                { backgroundColor: "#fee2e2", borderColor: "#fecaca" },
+              ]}
               onPress={() => removeRow(item)}
             >
               <Trash2 size={18} color={DANGER} />
@@ -345,14 +322,20 @@ export default function JobDocuments() {
         ListEmptyComponent={
           !busy ? (
             <View style={{ alignItems: "center", marginTop: 28 }}>
-              <Text style={{ color: MUTED, fontWeight: "800" }}>No documents yet.</Text>
+              <Text style={{ color: MUTED, fontWeight: "800" }}>
+                No documents yet.
+              </Text>
             </View>
           ) : null
         }
       />
 
       {/* Floating Add Button */}
-      <TouchableOpacity style={s.fab} onPress={() => setSheetOpen(true)} activeOpacity={0.9}>
+      <TouchableOpacity
+        style={s.fab}
+        onPress={() => setSheetOpen(true)}
+        activeOpacity={0.9}
+      >
         <Plus size={22} color="#fff" />
       </TouchableOpacity>
 
@@ -373,8 +356,13 @@ export default function JobDocuments() {
             <Text style={s.sheetBtnTxt}>Take photo</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={[s.sheetBtn, { marginTop: 8 }]} onPress={() => setSheetOpen(false)}>
-            <Text style={[s.sheetBtnTxt, { fontWeight: "900", color: MUTED }]}>Cancel</Text>
+          <TouchableOpacity
+            style={[s.sheetBtn, { marginTop: 8 }]}
+            onPress={() => setSheetOpen(false)}
+          >
+            <Text style={[s.sheetBtnTxt, { fontWeight: "900", color: MUTED }]}>
+              Cancel
+            </Text>
           </TouchableOpacity>
         </View>
       </Modal>
@@ -383,51 +371,39 @@ export default function JobDocuments() {
       <Modal visible={renameOpen} animationType="fade" transparent>
         <Pressable style={s.backdrop} onPress={() => setRenameOpen(false)} />
         <View style={s.renameBox}>
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
             <Text style={s.renameTitle}>Rename file</Text>
             <TouchableOpacity onPress={() => setRenameOpen(false)} style={s.iconBtn}>
               <X size={18} color={MUTED} />
             </TouchableOpacity>
           </View>
-          <TextInput value={renameValue} onChangeText={setRenameValue} placeholder="New file name" style={s.renameInput} />
+          <TextInput
+            value={renameValue}
+            onChangeText={setRenameValue}
+            placeholder="New file name"
+            placeholderTextColor={MUTED}
+            style={s.renameInput}
+          />
           <View style={{ flexDirection: "row", gap: 10 }}>
-            <TouchableOpacity style={[s.sheetBtn, { flex: 1, backgroundColor: "#eef2f7" }]} onPress={() => setRenameOpen(false)}>
+            <TouchableOpacity
+              style={[s.sheetBtn, { flex: 1, backgroundColor: "#eef2f7" }]}
+              onPress={() => setRenameOpen(false)}
+            >
               <Text style={[s.sheetBtnTxt, { color: TEXT }]}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[s.sheetBtn, { flex: 1, backgroundColor: BRAND, borderColor: BRAND }]} onPress={saveRename}>
+            <TouchableOpacity
+              style={[s.sheetBtn, { flex: 1, backgroundColor: BRAND, borderColor: BRAND }]}
+              onPress={saveRename}
+            >
               <Text style={[s.sheetBtnTxt, { color: "#fff" }]}>Save</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      </Modal>
-
-      {/* Preview modal (image zoom or in-app WebView for pdf/office/text) */}
-      <Modal visible={previewOpen} animationType="slide" transparent>
-        <View style={s.previewWrap}>
-          <View style={s.previewBar}>
-            <TouchableOpacity style={s.back} onPress={() => setPreviewOpen(false)}>
-              <ChevronLeft color={TEXT} size={20} />
-            </TouchableOpacity>
-            <Text style={s.previewTitle} numberOfLines={1}>
-              {previewItem?.name || "Preview"}
-            </Text>
-            <TouchableOpacity style={s.iconBtn} onPress={() => externalOpen(previewItem)}>
-              <ExternalLink size={18} color={BRAND} />
-            </TouchableOpacity>
-          </View>
-
-          {previewItem && isImageLike(previewItem.mime, previewItem.name) ? (
-            <ScrollView
-              style={{ flex: 1, backgroundColor: "#000" }}
-              maximumZoomScale={4}
-              minimumZoomScale={1}
-              contentContainerStyle={{ justifyContent: "center", alignItems: "center" }}
-            >
-              <Image source={{ uri: previewItem.url }} resizeMode="contain" style={{ width: "100%", height: "100%" }} />
-            </ScrollView>
-          ) : previewItem ? (
-            <DocPreview item={previewItem} onFallbackExternal={() => externalOpen(previewItem)} />
-          ) : null}
         </View>
       </Modal>
     </View>
@@ -437,17 +413,25 @@ export default function JobDocuments() {
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
 
-  top: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 10 },
-  back: {
-    height: 34,
-    width: 34,
-    borderRadius: 10,
+  top: {
+    height: 52,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: CARD,
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
   },
+  backBtn: {
+    minWidth: 72,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 6,
+    paddingRight: 8,
+    paddingLeft: 2,
+    borderRadius: 10,
+  },
+  backTxt: { color: BRAND, fontWeight: "800", fontSize: 16 },
+
   title: { flex: 1, textAlign: "center", fontSize: 18, fontWeight: "900", color: TEXT },
 
   card: {
@@ -511,7 +495,14 @@ const s = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: BORDER,
   },
-  sheetHandle: { alignSelf: "center", width: 44, height: 5, borderRadius: 999, backgroundColor: BORDER, marginBottom: 10 },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: BORDER,
+    marginBottom: 10,
+  },
   sheetTitle: { color: TEXT, fontWeight: "900", fontSize: 16, marginBottom: 6 },
   sheetBtn: {
     flexDirection: "row",
@@ -554,18 +545,4 @@ const s = StyleSheet.create({
     borderColor: BORDER,
     marginBottom: 12,
   },
-
-  /* Preview modal */
-  previewWrap: { flex: 1, backgroundColor: "#fff" },
-  previewBar: {
-    height: 48,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    borderBottomWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: CARD,
-  },
-  previewTitle: { flex: 1, textAlign: "center", color: TEXT, fontWeight: "900" },
 });

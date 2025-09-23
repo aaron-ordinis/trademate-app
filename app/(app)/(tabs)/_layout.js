@@ -1,6 +1,9 @@
-import React from "react";
-import { Tabs } from "expo-router";
+import React, { useEffect, useState } from "react";
+import { ActivityIndicator, View } from "react-native";
+import { Tabs, useRouter } from "expo-router";
 import { FileText, CalendarDays, ClipboardCheck } from "lucide-react-native";
+import { supabase } from "../../../lib/supabase";
+import { getPremiumStatus } from "../../../lib/premium";
 
 const ICON_COLOR = "#6b7280";
 const ACTIVE = "#2a86ff";
@@ -8,6 +11,76 @@ const BG = "#ffffff";
 const BORDER = "#e6e9ee";
 
 export default function TabsLayout() {
+  const [isReady, setIsReady] = useState(false);
+  const router = useRouter();
+
+  // Check if user should be in onboarding before showing tabs
+  useEffect(() => {
+    const checkOnboardingStatus = async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const user = data?.user;
+
+        if (!user) {
+          router.replace("/(auth)/login");
+          return;
+        }
+
+        // Check if profile is complete
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("business_name, hourly_rate, phone, address_line1, trial_ends_at, plan_tier, plan_status")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        // Check if user is blocked due to expired trial
+        const premiumStatus = getPremiumStatus(profile);
+        if (premiumStatus.isBlocked) {
+          router.replace("/(app)/trial-expired");
+          return;
+        }
+
+        const needsOnboarding =
+          !profile ||
+          !profile.business_name ||
+          profile.business_name.trim() === "" ||
+          profile.hourly_rate == null ||
+          profile.hourly_rate <= 0 ||
+          !profile.phone ||
+          profile.phone.trim() === "" ||
+          !profile.address_line1 ||
+          profile.address_line1.trim() === "";
+
+        if (needsOnboarding) {
+          router.replace("/(app)/onboarding");
+          return;
+        }
+
+        setIsReady(true);
+      } catch (error) {
+        console.error("Onboarding check error:", error);
+        router.replace("/(app)/onboarding");
+      }
+    };
+
+    checkOnboardingStatus();
+  }, [router]);
+
+  if (!isReady) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: "#f5f7fb",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <ActivityIndicator color="#2a86ff" size="large" />
+      </View>
+    );
+  }
+
   return (
     <Tabs
       initialRouteName="quotes/index"
@@ -30,7 +103,9 @@ export default function TabsLayout() {
         name="quotes/index"
         options={{
           title: "Quotes", // ✅ clean label
-          tabBarIcon: ({ color, size }) => <FileText size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => (
+            <FileText size={size} color={color} />
+          ),
         }}
       />
 
@@ -39,7 +114,9 @@ export default function TabsLayout() {
         name="jobs/index"
         options={{
           title: "Jobs",
-          tabBarIcon: ({ color, size }) => <CalendarDays size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => (
+            <CalendarDays size={size} color={color} />
+          ),
         }}
       />
 
@@ -48,7 +125,9 @@ export default function TabsLayout() {
         name="invoices/index"
         options={{
           title: "Invoices",
-          tabBarIcon: ({ color, size }) => <ClipboardCheck size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => (
+            <ClipboardCheck size={size} color={color} />
+          ),
         }}
       />
     </Tabs>

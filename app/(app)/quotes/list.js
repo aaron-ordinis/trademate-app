@@ -1,59 +1,107 @@
-// app/(app)/quotes/index.js (QuoteList)
-// UPDATED: invokes Edge Function to copy quote PDF when creating a job
-// and invokes extract-quote-expenses (server-side) to import only expense lines.
-
+// app/(app)/quotes/list.js
 import {
   loginHref,
   settingsHref,
   quoteCreateHref,
-  accountHref,
   quotePreviewHref,
-  quotesListHref,
-  quoteHref,
-  jobsTabHref,
+  jobHref,
 } from "../../../lib/nav";
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import TopBar, { IconBtn } from "../../../components/TopBar";
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, FlatList, TextInput,
-  Modal, Pressable, ActivityIndicator, Platform
-} from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
-import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
-import { supabase } from '../../../lib/supabase';
-import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  FlatList,
+  TextInput,
+  Modal,
+  Pressable,
+  ActivityIndicator,
+  Platform,
+  Switch,
+  Alert,
+} from "react-native";
+import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
+import { supabase } from "../../../lib/supabase";
 import {
-  Filter, Search, Plus, ChevronRight, CalendarDays, PoundSterling, Settings,
-  X as XIcon, Download, Share2, Trash2, Eye, Pencil, Copy, MapPin,
-  ChevronRight as Arrow, CalendarPlus
-} from 'lucide-react-native';
+  Search,
+  Plus,
+  ChevronRight,
+  CalendarDays,
+  PoundSterling,
+  Settings,
+  Trash2,
+  Eye,
+  CalendarPlus,
+  RefreshCcw,
+  MapPin,
+  Minus,
+  Plus as PlusIcon,
+} from "lucide-react-native";
+
+import SharedCalendar from "../../../components/SharedCalendar";
+import { getPremiumStatus } from "../../../lib/premium";
+import PaywallModal from "../../../components/PaywallModal";
 
 /* ---------- theme ---------- */
-const BRAND = '#2a86ff';
-const TEXT = '#0b1220';
-const MUTED = '#6b7280';
-const CARD = '#ffffff';
-const BG = '#f5f7fb';
-const BORDER = '#e6e9ee';
+const BRAND = "#2a86ff";
+const TEXT = "#0b1220";
+const MUTED = "#6b7280";
+const CARD = "#ffffff";
+const BG = "#f5f7fb";
+const BORDER = "#e6e9ee";
+const DANGER = "#dc2626";
+const ORANGE = "#f59e0b";
+const GREEN = "#16a34a";
+
+/* ---------- status helpers ---------- */
+const normalizeStatus = (s) =>
+  String(s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/^open$/, "scheduled");
+
+const STATUS_COLOR = {
+  scheduled: BRAND,
+  in_progress: ORANGE,
+  complete: GREEN,
+};
+
+const badgeColorForJobs = (arr = []) => {
+  const hasInProg = arr.some((j) => normalizeStatus(j.status) === "in_progress");
+  const hasDone = arr.some((j) => normalizeStatus(j.status) === "complete");
+  if (hasInProg) return STATUS_COLOR.in_progress;
+  if (hasDone) return STATUS_COLOR.complete;
+  return STATUS_COLOR.scheduled;
+};
 
 /* ---------- utils ---------- */
 const money = (v = 0) =>
-  '£' + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  "£" + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-const pad = (n) => (n < 10 ? '0' + n : String(n));
-const toYMD = (d) =>
-  d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
-const parseYMD = (s) => {
-  if (!s) return null;
-  const [y, m, d] = s.split('-').map((x) => parseInt(x, 10));
-  if (!y || !m || !d) return null;
-  const dt = new Date(y, m - 1, d);
-  dt.setHours(0, 0, 0, 0);
-  return dt;
+const displayQuoteId = (q) => {
+  const ref = String(q?.reference || "").trim();
+  if (ref) {
+    if (/^QUO-/i.test(ref)) return ref.toUpperCase();
+    const m = ref.match(/^[A-Z]{2,4}-(\d{4})\d{4}-?-(\d{1,4})$/);
+    if (m) return `QUO-${m[1]}-${m[2].padStart(4, "0")}`;
+  }
+  const num = q?.quote_number ?? 0;
+  const year = q?.created_at ? new Date(q.created_at).getFullYear() : new Date().getFullYear();
+  return "QUO-" + year + "-" + String(num).padStart(4, "0");
 };
-const toLocalMidnight = (d) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+
+const pad = (n) => (n < 10 ? "0" + n : String(n));
+const toYMD = (d) =>
+  d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+const toLocalMidnight = (d) => {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+};
 const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
 const addWorkingDays = (startDate, days, includeWeekends) => {
   const s = toLocalMidnight(startDate);
@@ -66,6 +114,96 @@ const addWorkingDays = (startDate, days, includeWeekends) => {
   }
   return cur;
 };
+const sameDay = (a, b) =>
+  a.getFullYear() === b.getFullYear() &&
+  a.getMonth() === b.getMonth() &&
+  a.getDate() === b.getDate();
+
+/* ---------- availability helpers ---------- */
+const atMidnight = (d) => {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+};
+const spanEnd = (start, days, includeWeekends) =>
+  addWorkingDays(start, Math.max(1, days), includeWeekends);
+
+const eachDay = (a, b, cb) => {
+  const cur = atMidnight(a),
+    end = atMidnight(b);
+  while (cur <= end) {
+    cb(new Date(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+};
+
+/* ---------- small helpers ---------- */
+const num = (v, d = 0) => {
+  if (v == null) return d;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? n : d;
+};
+const calcAmount = (it) => {
+  const direct = it.total ?? it.unit_total ?? it.line_total ?? it.amount;
+  if (direct != null) return num(direct, 0);
+  return +(num(it.unit_price ?? it.price ?? it.rate, 0) * num(it.qty ?? it.quantity ?? 1, 1)).toFixed(2);
+};
+const flattenItems = (src) => {
+  if (!src) return [];
+  let data = src;
+  if (typeof data === "string") {
+    try { data = JSON.parse(data); } catch { data = []; }
+  }
+  if (Array.isArray(data)) return data;
+
+  const flat = [];
+  for (const [k, v] of Object.entries(data || {})) {
+    if (Array.isArray(v)) flat.push(...v.map((x) => ({ ...x, group: k })));
+  }
+  return flat;
+};
+/** djb2 text hash → hex-ish fingerprint */
+const fingerprintOf = (txt) => {
+  let h = 5381;
+  for (let i = 0; i < txt.length; i++) h = ((h << 5) + h) + txt.charCodeAt(i);
+  return "fp_" + (h >>> 0).toString(16);
+};
+
+/* ---------- build rows that match public.expenses schema ---------- */
+const buildExpenseRows = ({ quote, jobId, userId, dateISO }) => {
+  const items = flattenItems(quote?.line_items);
+  const quoteId = quote?.id ?? quote?.source_quote_id ?? null;
+  const rows = [];
+
+  items.forEach((it, idx) => {
+    const type = String(it.type ?? "").toLowerCase();
+    if (type === "labour" || type === "labor") return;
+
+    const amount = calcAmount(it);
+    if (!(amount > 0)) return;
+
+    const title = it.title ?? it.name ?? it.description ?? "Expense";
+    const base = userId + "|" + jobId + "|" + (quoteId || "noquote") + "|" + title + "|" + amount.toFixed(2) + "|" + idx;
+    const fingerprint = fingerprintOf(base);
+
+    rows.push({
+      job_id: jobId,
+      user_id: userId,
+      title,
+      name: title || "Item",
+      amount: Number(amount),
+      total: Number(amount),
+      date: dateISO,
+      notes: it.description || null,
+      source_quote_id: quoteId,
+      fingerprint,
+      qty: num(it.qty ?? it.quantity, null) || null,
+      unit_cost: num(it.unit_price ?? it.price ?? it.rate, null) || null,
+    });
+  });
+
+  return rows;
+};
 
 /* ---------- component ---------- */
 export default function QuoteList() {
@@ -73,398 +211,387 @@ export default function QuoteList() {
 
   const [loading, setLoading] = useState(true);
   const [quotes, setQuotes] = useState([]);
+  const [query, setQuery] = useState("");
 
-  // tabs: all | draft | sent | accepted
-  const [tab, setTab] = useState('all');
-  const [query, setQuery] = useState('');
-
-  // filter drawer
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [sortBy, setSortBy] = useState('created_at_desc');
-  const [minTotal, setMinTotal] = useState('');
-  const [maxTotal, setMaxTotal] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
-  // date pickers
-  const [showFromPicker, setShowFromPicker] = useState(false);
-  const [showToPicker, setShowToPicker] = useState(false);
-
-  // action sheet
   const [actionOpen, setActionOpen] = useState(false);
   const [selectedQuote, setSelectedQuote] = useState(null);
 
-  // confirm
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmConfig, setConfirmConfig] = useState({ title: '', message: '', onConfirm: null });
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [pendingQuote, setPendingQuote] = useState(null);
 
-  // toast
-  const [toast, setToast] = useState('');
-
-  // premium (branding only)
-  const [isPremium, setIsPremium] = useState(false);
-
-  // create-job modal
-  const [createOpen, setCreateOpen] = useState(false);
   const [cjBusy, setCjBusy] = useState(false);
-  const [cjError, setCjError] = useState('');
-  const [cjStart, setCjStart] = useState(toLocalMidnight(new Date()));
-  const [cjShowPicker, setCjShowPicker] = useState(false);
+  const [cjError, setCjError] = useState("");
+  const [cjNotice, setCjNotice] = useState("");
   const [cjIncludeWeekends, setCjIncludeWeekends] = useState(false);
   const [cjDays, setCjDays] = useState(1);
-  const cjEnd = useMemo(
-    () => addWorkingDays(cjStart, Math.max(1, Math.floor(cjDays || 1)), cjIncludeWeekends),
+  const [cjStart, setCjStart] = useState(toLocalMidnight(new Date()));
+
+  const [userId, setUserId] = useState(null);
+  const [jobs, setJobs] = useState([]);
+  const [calMonth, setCalMonth] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
+    return d;
+  });
+
+  const [premiumStatus, setPremiumStatus] = useState({ isPremium: false, status: "no_profile" });
+  const [showPaywall, setShowPaywall] = useState(false);
+
+  const endDate = useMemo(
+    () => spanEnd(cjStart, Math.max(1, cjDays), cjIncludeWeekends),
     [cjStart, cjDays, cjIncludeWeekends]
   );
+  const spanBlocked = useMemo(
+    () => !isSpanFree(cjStart, cjDays, cjIncludeWeekends, jobs),
+    [cjStart, cjDays, cjIncludeWeekends, jobs]
+  );
 
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2200); };
+  const haptic = useRef(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const m = await import("expo-haptics");
+        haptic.current = m;
+      } catch {}
+    })();
+  }, []);
+  const buzz = (style = "selection") => {
+    const H = haptic.current;
+    if (!H) return;
+    style === "selection"
+      ? H.selectionAsync?.()
+      : H.impactAsync?.(H.ImpactFeedbackStyle.Light);
+  };
 
-  const load = useCallback(async () => {
+  const loadQuotes = useCallback(async () => {
+    setLoading(true);
     try {
-      setLoading(true);
+      const { data: auth } = await supabase.auth.getUser();
+      const user = auth?.user;
+      if (!user) {
+        router.replace(loginHref);
+        return;
+      }
+      setUserId(user.id);
 
-      const authRes = await supabase.auth.getUser();
-      const user = authRes?.data?.user;
-      if (!user) { router.replace(loginHref); return; }
-
-      // BRANDING ONLY: lock Edit/Duplicate on Free
-      const profileRes = await supabase
-        .from('profiles')
-        .select('branding')
-        .eq('id', user.id)
+      // profile → premium status
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("trial_ends_at, plan_tier, plan_status")
+        .eq("id", user.id)
         .maybeSingle();
-      const branding = profileRes?.data ? String(profileRes.data.branding || '') : '';
-      setIsPremium(branding.toLowerCase() === 'premium');
 
-      // quotes query
+      if (profile) {
+        const status = getPremiumStatus(profile);
+        setPremiumStatus(status);
+        if (status.isBlocked) {
+          router.replace("/(app)/trial-expired");
+          return;
+        }
+      }
+
       let q = supabase
-        .from('quotes')
-        .select('id, quote_number, client_name, total, created_at, pdf_url, client_address, status, job_summary, job_details, site_address')
-        .eq('user_id', user.id);
-
-      if (tab !== 'all') q = q.eq('status', tab);
+        .from("quotes")
+        .select(
+          "id, quote_number, reference, client_name, total, created_at, pdf_url, client_address, status, job_id"
+        )
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
 
       if (query.trim()) {
         const t = query.trim();
-        q = q.or('client_name.ilike.%' + t + '%,quote_number.ilike.%' + t + '%');
+        q = q.or(
+          "client_name.ilike.%"+t+"%,quote_number.ilike.%"+t+"%,reference.ilike.%"+t+"%"
+        );
       }
-
-      if (minTotal) q = q.gte('total', Number(minTotal || 0));
-      if (maxTotal) q = q.lte('total', Number(maxTotal || 0));
-      if (fromDate) q = q.gte('created_at', new Date(fromDate).toISOString());
-      if (toDate) q = q.lte('created_at', new Date(toDate).toISOString());
-
-      if (sortBy === 'created_at_desc') q = q.order('created_at', { ascending: false });
-      if (sortBy === 'created_at_asc') q = q.order('created_at', { ascending: true });
-      if (sortBy === 'total_desc') q = q.order('total', { ascending: false });
-      if (sortBy === 'total_asc') q = q.order('total', { ascending: true });
 
       const res = await q.limit(400);
       if (res.error) throw res.error;
-      setQuotes(res.data || []);
-    } catch (e) {
-      console.error('[TMQ][LIST] load error', e);
+      setQuotes((res.data || []).filter((x) => !x.job_id));
     } finally {
       setLoading(false);
     }
-  }, [router, tab, query, minTotal, maxTotal, fromDate, toDate, sortBy]);
+  }, [router, query]);
 
-  // initial + on focus refresh
-  useEffect(() => { load(); }, [load]);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  const loadJobs = useCallback(async () => {
+    if (!userId) return;
+    const { data, error } = await supabase
+      .from("jobs")
+      .select("id, title, start_date, end_date, status, include_weekends, user_id")
+      .eq("user_id", userId);
+    if (!error) setJobs(data || []);
+  }, [userId]);
 
-  const clearFilters = () => {
-    setMinTotal(''); setMaxTotal(''); setFromDate(''); setToDate(''); setSortBy('created_at_desc');
-  };
+  useEffect(() => {
+    loadQuotes();
+  }, [loadQuotes]);
+  useFocusEffect(
+    useCallback(() => {
+      loadQuotes();
+    }, [loadQuotes])
+  );
 
-  /* ---------- file actions ---------- */
-  const saveToDevice = async (q) => {
-    try {
-      if (!q?.pdf_url) { showToast('Generate the PDF first'); return; }
-      const filename = (q.quote_number || 'quote') + '.pdf';
-
-      if (Platform.OS === 'android') {
-        const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-        if (!perm.granted) { showToast('Storage permission declined'); return; }
-
-        const tmp = FileSystem.cacheDirectory + filename;
-        const dl = FileSystem.createDownloadResumable(q.pdf_url, tmp);
-        const dlRes = await dl.downloadAsync();
-
-        const base64 = await FileSystem.readAsStringAsync(dlRes.uri, { encoding: FileSystem.EncodingType.Base64 });
-        const targetUri = await FileSystem.StorageAccessFramework.createFileAsync(
-          perm.directoryUri, filename, 'application/pdf'
-        );
-        await FileSystem.writeAsStringAsync(targetUri, base64, { encoding: FileSystem.EncodingType.Base64 });
-        showToast('Saved to selected folder');
-      } else {
-        const tmp2 = FileSystem.cacheDirectory + filename;
-        const dl2 = FileSystem.createDownloadResumable(q.pdf_url, tmp2);
-        const dlRes2 = await dl2.downloadAsync();
-        await Sharing.shareAsync(dlRes2.uri, { UTI: 'com.adobe.pdf', mimeType: 'application/pdf', dialogTitle: 'Save to Files' });
-      }
-    } catch (e) {
-      console.error('[TMQ][LIST] saveToDevice error', e);
-      showToast('Save failed');
+  useEffect(() => {
+    if (!scheduleOpen) return;
+    if (!isSpanFree(cjStart, cjDays, cjIncludeWeekends, jobs)) {
+      const best = nextAvailableStart(cjStart, cjDays, cjIncludeWeekends, jobs);
+      setCjStart(best);
+      setCalMonth(new Date(best.getFullYear(), best.getMonth(), 1));
     }
+  }, [jobs, cjDays, cjIncludeWeekends, scheduleOpen, cjStart]);
+
+  const openActionFor = (q) => {
+    setSelectedQuote(q);
+    setActionOpen(true);
   };
-
-  const shareQuote = async (q) => {
-    try {
-      if (!q?.pdf_url) { showToast('Generate the PDF first'); return; }
-      const tmp = FileSystem.cacheDirectory + (q.quote_number || 'quote') + '.pdf';
-      const dl = FileSystem.createDownloadResumable(q.pdf_url, tmp);
-      const dlRes = await dl.downloadAsync();
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(dlRes.uri, { mimeType: 'application/pdf', dialogTitle: q.quote_number || 'Quote', UTI: 'com.adobe.pdf' });
-      } else {
-        showToast('Sharing not available');
-      }
-    } catch (e) {
-      console.error('[TMQ][LIST] share error', e);
-      showToast('Share failed');
-    }
-  };
-
-  /* ---------- duplicate ---------- */
-  const duplicateQuote = async (q) => {
-    try {
-      const authRes = await supabase.auth.getUser();
-      const user = authRes?.data?.user;
-      if (!user) { router.replace(loginHref); return; }
-
-      const nextRes = await supabase.rpc('next_quote_number', { p_user_id: user.id });
-      if (nextRes.error || !nextRes.data) throw new Error(nextRes.error?.message || 'Could not allocate a quote number');
-
-      const fullRes = await supabase.from('quotes').select('*').eq('id', q.id).single();
-      if (fullRes.error) throw fullRes.error;
-
-      const copy = { ...fullRes.data };
-      delete copy.id;
-      copy.quote_number = nextRes.data;
-      copy.status = 'draft';
-      copy.created_at = new Date().toISOString();
-      copy.updated_at = new Date().toISOString();
-      copy.pdf_url = null;
-
-      const insRes = await supabase.from('quotes').insert(copy);
-      if (insRes.error) throw insRes.error;
-
-      await load();
-      showToast('Duplicated as ' + nextRes.data);
-    } catch (e) {
-      console.error('[TMQ][LIST] duplicate error', e);
-      showToast('Duplicate failed');
-    }
-  };
-
-  /* ---------- create job ---------- */
-  const canCreateJob = (q) => String(q?.status || '').toLowerCase() !== 'draft';
 
   const openCreateJob = async (q) => {
-    try {
-      if (!q) return;
-      if (!canCreateJob(q)) { showToast('Generate the quote first'); return; }
-      setCjError('');
-      setCjBusy(true);
+    if (!q) return;
+    if (String(q?.status || "").toLowerCase() === "draft") {
+      buzz("impact");
+      return;
+    }
 
-      const fullRes = await supabase.from('quotes').select('*').eq('id', q.id).maybeSingle();
-      if (fullRes.error) throw fullRes.error;
-      const full = fullRes.data || q;
+    // premium gate
+    if (!premiumStatus.isPremium) {
+      setShowPaywall(true);
+      return;
+    }
 
-      // derive days from AI/meta if available
+    setCjBusy(true);
+    setCjError("");
+    setCjNotice("");
+
+    const { data: full, error } = await supabase
+      .from("quotes")
+      .select("*")
+      .eq("id", q.id)
+      .maybeSingle();
+
+    if (!error) {
       let days = 1;
       try {
-        const blob = typeof full.job_details === 'string' ? JSON.parse(full.job_details) : (full.job_details || {});
+        const blob =
+          typeof full?.job_details === "string"
+            ? JSON.parse(full.job_details)
+            : full?.job_details || {};
         const meta = blob?.ai_meta || blob?.meta || {};
         if (meta?.day_rate_calc) {
           const d = Number(meta.day_rate_calc.days || 0);
           const rem = Number(meta.day_rate_calc.remainder_hours || 0);
           days = Math.max(1, d + (rem > 0 ? 1 : 0));
         } else if (Number(meta?.estimated_hours)) {
-          const hpd = Number(meta?.hours_per_day || blob?.profile?.hours_per_day || 8) || 8;
+          const hpd =
+            Number(meta?.hours_per_day || blob?.profile?.hours_per_day || 8) ||
+            8;
           days = Math.max(1, Math.ceil(Number(meta.estimated_hours) / hpd));
         }
-      } catch { /* ignore parse errors */ }
-
-      setCjDays(days);
+      } catch {}
+      setPendingQuote(full || q);
+      setCjDays(Math.max(1, Math.floor(days || 1)));
       setCjIncludeWeekends(false);
-      setCjStart(toLocalMidnight(new Date()));
-      setSelectedQuote(full);
-      setCreateOpen(true);
-    } catch (e) {
-      console.error('[TMQ][LIST] openCreateJob error', e);
-      showToast('Could not open Create Job');
-    } finally {
-      setCjBusy(false);
+
+      await loadJobs();
+      const seed = toLocalMidnight(new Date());
+      const best = nextAvailableStart(seed, Math.max(1, days || 1), false, jobs);
+      setCjStart(best);
+      setCalMonth(new Date(best.getFullYear(), best.getMonth(), 1));
+      setScheduleOpen(true);
     }
+
+    setCjBusy(false);
   };
 
-  // Invokes Edge Function after job insert to copy PDF + create document
-  // then invokes extract-quote-expenses to import only expense lines.
-  const createJob = async () => {
+  const createJobInternal = async (
+    full,
+    days,
+    includeWeekends,
+    startDateOverride
+  ) => {
     try {
-      if (!selectedQuote?.id) return;
       setCjBusy(true);
-      setCjError('');
+      setCjError("");
+      setCjNotice("");
 
-      const authRes = await supabase.auth.getUser();
-      const user = authRes?.data?.user;
-      if (!user) { router.replace(loginHref); return; }
-
-      // ensure we have the full quote
-      let full = selectedQuote;
-      if (!('job_details' in full) || !('site_address' in full)) {
-        const fr = await supabase.from('quotes').select('*').eq('id', selectedQuote.id).maybeSingle();
-        if (fr.error) throw fr.error;
-        full = fr.data || selectedQuote;
+      const { data: auth } = await supabase.auth.getUser();
+      const user = auth?.user;
+      if (!user) {
+        router.replace(loginHref);
+        return;
       }
 
-      const start = toYMD(cjStart);
-      const end = toYMD(addWorkingDays(cjStart, Math.max(1, Math.floor(cjDays || 1)), cjIncludeWeekends));
+      const startDate = startDateOverride || cjStart;
+      const start = toYMD(startDate);
+      const end = toYMD(
+        addWorkingDays(
+          startDate,
+          Math.max(1, Math.floor(days || 1)),
+          includeWeekends
+        )
+      );
 
       const insert = {
         user_id: user.id,
-        title: full.job_summary || full.quote_number || 'Job',
-        client_name: full.client_name || 'Client',
+        title: full.job_summary || "Job",
+        client_name: full.client_name || "Client",
         client_address: full.client_address || null,
         site_address: full.site_address || full.client_address || null,
-        status: 'scheduled',
+        status: "scheduled",
         start_date: start,
         end_date: end,
-        duration_days: Math.max(1, Math.floor(cjDays || 1)),
-        include_weekends: cjIncludeWeekends,
+        duration_days: Math.max(1, Math.floor(days || 1)),
+        include_weekends: includeWeekends,
         total: Number(full.total || 0),
         cost: 0,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        // source_quote_id: full.id, // optional hard link
+        source_quote_id: full.id,
       };
 
-      const ins = await supabase.from('jobs').insert(insert).select('id').single();
+      const ins = await supabase
+        .from("jobs")
+        .insert(insert)
+        .select("id")
+        .single();
       if (ins.error) throw ins.error;
       const jobId = ins.data.id;
 
-      // mark quote accepted + link (non-blocking if it fails)
-      await supabase
-        .from('quotes')
-        .update({ status: 'accepted', updated_at: new Date().toISOString(), job_id: jobId })
-        .eq('id', full.id);
+      // ------- EXPENSES (schema-aligned) -------
+      const expenseRows = buildExpenseRows({
+        quote: full,
+        jobId,
+        userId: user.id,
+        dateISO: start,
+      });
 
-      // 🔔 1) copy the PDF and insert documents row
-      try {
-        const { data: fnData, error: fnErr } = await supabase.functions.invoke('copy-quote-pdf', {
-          body: { jobId, quoteId: full.id },
-        });
-        if (fnErr) {
-          console.warn('[QUOTES→JOB] copy-quote-pdf failed:', fnErr.message || fnErr);
-          showToast('Job created, but attaching the quote PDF failed.');
-        } else {
-          console.log('[QUOTES→JOB] copy-quote-pdf success:', fnData);
-        }
-      } catch (invokeErr) {
-        console.warn('[QUOTES→JOB] copy-quote-pdf invoke threw:', invokeErr?.message || invokeErr);
-        showToast('Job created, but attaching the quote PDF failed.');
+      if (expenseRows.length) {
+        const expRes = await supabase
+          .from("expenses")
+          .insert(expenseRows)
+          .select("id, amount");
+        if (expRes.error) throw expRes.error;
+
+        const created = expRes.data || [];
+        const totalExpenses = created.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+        setCjNotice(`Created ${created.length} expenses (£${totalExpenses.toFixed(2)})`);
+      } else {
+        setCjNotice("No non-labour items found to create expenses.");
       }
 
-      // 📥 2) server-side expense extraction (robust, expense-only)
-      try {
-        const { data: exData, error: exErr } = await supabase.functions.invoke('extract-quote-expenses', {
-          body: { jobId, quoteId: full.id }
-        });
-        if (exErr) {
-          console.warn('[QUOTES→JOB] extract-quote-expenses failed:', exErr.message || exErr);
-          showToast('Job created, but expense import failed.');
-        } else {
-          console.log('[QUOTES→JOB] expense import OK:', exData);
-        }
-      } catch (invokeErr) {
-        console.warn('[QUOTES→JOB] extract-quote-expenses threw:', invokeErr?.message || invokeErr);
-        showToast('Job created, but expense import failed.');
-      }
+      const upd = await supabase
+        .from("quotes")
+        .update({
+          status: "accepted",
+          updated_at: new Date().toISOString(),
+          job_id: jobId,
+        })
+        .eq("id", full.id);
+      if (upd.error) throw upd.error;
 
-      setCreateOpen(false);
-      showToast('Job created');
-      router.push(jobsTabHref);
+      setScheduleOpen(false);
+      setQuotes((prev) => prev.filter((x) => x.id !== full.id));
+      router.push(jobHref(jobId));
     } catch (e) {
-      console.error('[TMQ][LIST] createJob error', e);
-      setCjError(e?.message || 'Create job failed');
+      setCjError(e?.message || "Create job failed");
     } finally {
       setCjBusy(false);
     }
   };
 
-  /* ---------- UI ---------- */
-  if (loading) {
-    return (
-      <View style={[styles.screen, { alignItems: 'center', justifyContent: 'center' }]}>
-        <ActivityIndicator color={BRAND} />
-      </View>
-    );
-  }
+  const adjustIfBlocked = useCallback(
+    (nextDays, nextWeekends) => {
+      if (!isSpanFree(cjStart, nextDays, nextWeekends, jobs)) {
+        const best = nextAvailableStart(cjStart, nextDays, nextWeekends, jobs);
+        setCjStart(best);
+        setCalMonth(new Date(best.getFullYear(), best.getMonth(), 1));
+      }
+    },
+    [cjStart, jobs]
+  );
 
   const renderCard = ({ item }) => {
-    const address = item.client_address || '';
+    const address = item.client_address || "";
+    const dispId = displayQuoteId(item);
+
     return (
-      <Pressable
-        onPress={() => { setSelectedQuote(item); setActionOpen(true); }}
-        style={({ pressed }) => [styles.card, pressed && { transform: [{ scale: 0.995 }] }]}
-      >
-        {!!item.quote_number && (
-          <Text style={styles.quoteTiny} numberOfLines={1}>{item.quote_number}</Text>
+      <TouchableOpacity onPress={() => openActionFor(item)} activeOpacity={0.9} style={styles.card}>
+        <TouchableOpacity
+          style={styles.binBtn}
+          onPress={async () => {
+            Alert.alert(
+              "Delete quote?",
+              "This will permanently delete this quote.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Delete",
+                  style: "destructive",
+                  onPress: async () => {
+                    const del = await supabase.from("quotes").delete().eq("id", item.id);
+                    if (!del.error) {
+                      setQuotes((prev) => prev.filter((x) => x.id !== item.id));
+                    } else {
+                      Alert.alert("Delete failed", del.error.message || "Please try again.");
+                    }
+                  },
+                },
+              ]
+            );
+          }}
+          activeOpacity={0.85}
+        >
+          <Trash2 size={18} color="#b91c1c" />
+        </TouchableOpacity>
+
+        {!!dispId && (
+          <Text style={styles.quoteTiny} numberOfLines={1}>
+            {dispId}
+          </Text>
         )}
 
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <View style={{ flexShrink: 1, paddingRight: 110 }}>
-            <Text style={styles.clientName} numberOfLines={1}>{item.client_name || '—'}</Text>
+        <View style={{ flexShrink: 1, paddingRight: 110 }}>
+          <Text style={styles.clientName} numberOfLines={1}>
+            {item.client_name || "—"}
+          </Text>
 
-            <View style={styles.rowMini}>
-              <CalendarDays size={16} color={MUTED} />
-              <Text style={styles.rowMiniText}>{'  '}{new Date(item.created_at).toLocaleDateString()}</Text>
-            </View>
-
-            {!!address && (
-              <View style={styles.rowMini}>
-                <MapPin size={16} color={MUTED} />
-                <Text style={[styles.rowMiniText, { flexShrink: 1 }]} numberOfLines={1}>{'  '}{address}</Text>
-              </View>
-            )}
+          <View style={styles.rowMini}>
+            <CalendarDays size={16} color={MUTED} />
+            <Text style={styles.rowMiniText}>{"  "}{new Date(item.created_at).toLocaleDateString()}</Text>
           </View>
+
+          {!!address && (
+            <View style={styles.rowMini}>
+              <MapPin size={16} color={MUTED} />
+              <Text style={[styles.rowMiniText, { flexShrink: 1 }]} numberOfLines={1}>
+                {"  "}{address}
+              </Text>
+            </View>
+          )}
         </View>
 
         <Text style={styles.totalBottom}>{money(item.total || 0)}</Text>
-        <ChevronRight size={18} color={MUTED} style={{ position: 'absolute', right: 12, top: 12, opacity: 0.6 }} />
-      </Pressable>
-    );
-  };
-
-  const TabChip = ({ label, value }) => {
-    const active = tab === value;
-    return (
-      <TouchableOpacity onPress={() => setTab(value)} style={[styles.chip, active && styles.chipActive]}>
-        <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>{label}</Text>
+        <ChevronRight
+          size={18}
+          color={MUTED}
+          style={{ position: "absolute", right: 46, top: 12, opacity: 0.6 }}
+        />
       </TouchableOpacity>
     );
   };
 
-  const FilterRow = ({ label, right }) => (
-    <View style={styles.filterRow}>
-      <Text style={styles.filterLabel}>{label}</Text>
-      <View style={{ flex: 1 }} />
-      {right}
-    </View>
-  );
+  // dynamic label for Create button
+  const createBtnLabel = cjBusy ? "Creating..." : spanBlocked ? "Pick another start" : "Create";
 
   return (
     <View style={styles.screen}>
-      {/* Top bar */}
+      {/* Topbar */}
       <View style={styles.topbar}>
         <Text style={styles.h1}>Quotes</Text>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => setFiltersOpen(true)}>
-            <Filter size={20} color={MUTED} />
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <TouchableOpacity style={styles.iconBtn} onPress={loadQuotes}>
+            <RefreshCcw size={20} color={MUTED} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push(settingsHref)}>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/(app)/settings")}>
             <Settings size={20} color={MUTED} />
           </TouchableOpacity>
         </View>
@@ -480,449 +607,505 @@ export default function QuoteList() {
           placeholderTextColor={MUTED}
           style={styles.searchInput}
           returnKeyType="search"
-          onSubmitEditing={load}
+          onSubmitEditing={loadQuotes}
         />
       </View>
 
-      {/* Tabs */}
-      <View style={styles.tabsRow}>
-        <TabChip label="All" value="all" />
-        <TabChip label="Draft" value="draft" />
-        <TabChip label="Sent" value="sent" />
-        <TabChip label="Accepted" value="accepted" />
-      </View>
-
       {/* List */}
-      <FlatList
-        data={quotes}
-        keyExtractor={(it) => String(it.id)}
-        renderItem={renderCard}
-        contentContainerStyle={{ paddingBottom: 180 }}
-        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-        ListEmptyComponent={
-          <View style={{ paddingTop: 40, alignItems: 'center' }}>
-            <PoundSterling size={28} color={MUTED} />
-            <Text style={{ color: MUTED, marginTop: 8 }}>No quotes match your filters.</Text>
-          </View>
-        }
-        refreshing={loading}
-        onRefresh={load}
-      />
+      {loading ? (
+        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+          <ActivityIndicator color={BRAND} />
+        </View>
+      ) : (
+        <FlatList
+          data={quotes}
+          keyExtractor={(it) => String(it.id)}
+          renderItem={renderCard}
+          contentContainerStyle={{ paddingBottom: 180, paddingTop: 14, paddingHorizontal: 16 }}
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          ListEmptyComponent={
+            <View style={{ paddingTop: 40, alignItems: "center" }}>
+              <PoundSterling size={28} color={MUTED} />
+              <Text style={{ color: MUTED, marginTop: 8 }}>No quotes found.</Text>
+            </View>
+          }
+        />
+      )}
 
       {/* FAB */}
-      <TouchableOpacity
-        onPress={() => router.push(quoteCreateHref())}
-        style={styles.fab}
-        activeOpacity={0.9}
-      >
+      <TouchableOpacity onPress={() => router.push(quoteCreateHref())} style={styles.fab} activeOpacity={0.9}>
         <Plus size={24} color="#fff" />
       </TouchableOpacity>
 
-      {/* Filter / Sort Modal */}
-      <Modal visible={filtersOpen} animationType="slide" transparent>
-        <Pressable style={styles.modalBackdrop} onPress={() => setFiltersOpen(false)} />
-        <View style={styles.sheet}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>Filter & sort</Text>
-
-          <FilterRow
-            label="Sort by"
-            right={
-              <View style={styles.segment}>
-                {[
-                  ['Newest', 'created_at_desc'],
-                  ['Oldest', 'created_at_asc'],
-                  ['Total↑', 'total_asc'],
-                  ['Total↓', 'total_desc'],
-                ].map(([label, val]) => (
-                  <Pressable key={val} onPress={() => setSortBy(val)} style={[styles.segmentBtn, sortBy === val && styles.segmentBtnActive]}>
-                    <Text style={[styles.segmentText, sortBy === val && styles.segmentTextActive]}>{label}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            }
-          />
-
-          <FilterRow
-            label="Totals"
-            right={
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <TextInput
-                  style={[styles.smallInput, { width: 100 }]}
-                  placeholder="Min £"
-                  keyboardType="decimal-pad"
-                  value={minTotal}
-                  onChangeText={setMinTotal}
-                  placeholderTextColor={MUTED}
-                />
-                <TextInput
-                  style={[styles.smallInput, { width: 100 }]}
-                  placeholder="Max £"
-                  keyboardType="decimal-pad"
-                  value={maxTotal}
-                  onChangeText={setMaxTotal}
-                  placeholderTextColor={MUTED}
-                />
-              </View>
-            }
-          />
-
-          <FilterRow
-            label="Dates"
-            right={
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                {/* From */}
-                <View style={{ position: 'relative' }}>
-                  <TextInput
-                    style={[styles.smallInput, { width: 150, paddingRight: 38 }]}
-                    placeholder="From (YYYY-MM-DD)"
-                    value={fromDate}
-                    onChangeText={setFromDate}
-                    placeholderTextColor={MUTED}
-                  />
-                  <TouchableOpacity onPress={() => setShowFromPicker(true)} style={styles.inputIconBtn}>
-                    <CalendarDays size={18} color={MUTED} />
-                  </TouchableOpacity>
-                  {!!fromDate && (
-                    <TouchableOpacity onPress={() => setFromDate('')} style={[styles.clearBadge, { right: 34 }]}>
-                      <XIcon size={14} color="#667085" />
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                {/* To */}
-                <View style={{ position: 'relative' }}>
-                  <TextInput
-                    style={[styles.smallInput, { width: 150, paddingRight: 38 }]}
-                    placeholder="To (YYYY-MM-DD)"
-                    value={toDate}
-                    onChangeText={setToDate}
-                    placeholderTextColor={MUTED}
-                  />
-                  <TouchableOpacity onPress={() => setShowToPicker(true)} style={styles.inputIconBtn}>
-                    <CalendarDays size={18} color={MUTED} />
-                  </TouchableOpacity>
-                  {!!toDate && (
-                    <TouchableOpacity onPress={() => setToDate('')} style={[styles.clearBadge, { right: 34 }]}>
-                      <XIcon size={14} color="#667085" />
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-            }
-          />
-
-          {showFromPicker && (
-            <DateTimePicker
-              value={parseYMD(fromDate) || new Date()}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'inline' : 'default'}
-              onChange={(e, d) => { if (Platform.OS === 'android') setShowFromPicker(false); if (d) setFromDate(toYMD(d)); }}
-              maximumDate={parseYMD(toDate) || undefined}
-            />
-          )}
-          {showToPicker && (
-            <DateTimePicker
-              value={parseYMD(toDate) || new Date()}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'inline' : 'default'}
-              onChange={(e, d) => { if (Platform.OS === 'android') setShowToPicker(false); if (d) setToDate(toYMD(d)); }}
-              minimumDate={parseYMD(fromDate) || undefined}
-            />
-          )}
-
-          <View style={{ height: 12 }} />
-
-          <View style={{ flexDirection: 'row', gap: 10 }}>
-            <TouchableOpacity style={[styles.sheetBtn, { backgroundColor: '#eef2f7' }]} onPress={clearFilters}>
-              <Text style={[styles.sheetBtnText, { color: TEXT }]}>Clear</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.sheetBtn, { backgroundColor: BRAND, flex: 1 }]} onPress={() => { setFiltersOpen(false); load(); }}>
-              <Text style={[styles.sheetBtnText, { color: '#fff' }]}>Apply</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={{ height: Platform.OS === 'ios' ? 24 : 10 }} />
-        </View>
-      </Modal>
-
-      {/* Action Sheet */}
+      {/* Action Modal */}
       <Modal visible={actionOpen} animationType="fade" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => setActionOpen(false)} />
-        <View style={styles.sheet}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>{selectedQuote?.quote_number || 'Quote Actions'}</Text>
+        <View style={styles.centerWrap}>
+          <View style={styles.actionCard}>
+            <View style={styles.handle} />
+            <View style={styles.centerRow}>
+              <TouchableOpacity
+                style={[styles.centerBtn, styles.centerBtnPrimary]}
+                onPress={() => {
+                  setActionOpen(false);
+                  if (!selectedQuote) return;
+                  // ✅ Use helper that appends ?id=<uuid> (prevents "preview" as id)
+                  router.push(quotePreviewHref(selectedQuote.id));
+                }}
+                activeOpacity={0.9}
+              >
+                <Eye size={18} color="#fff" />
+                <Text style={[styles.centerBtnText, { color: "#fff" }]}>View</Text>
+              </TouchableOpacity>
 
-          {/* View */}
-          <Pressable
-            style={styles.rowAction}
-            onPress={() => {
-              setActionOpen(false);
-              router.push({
-                pathname: quotePreviewHref(selectedQuote.id),
-                params: {
-                  id: selectedQuote.id,
-                  url: encodeURIComponent(selectedQuote?.pdf_url || ''),
-                  name: (selectedQuote?.quote_number || 'quote') + '.pdf',
-                },
-              });
-            }}
-          >
-            <View style={styles.rowLeft}>
-              <Eye size={18} color={MUTED} />
-              <Text style={styles.rowText}>View</Text>
+              <TouchableOpacity
+                style={[styles.centerBtn, styles.centerBtnNeutral]}
+                onPress={async () => {
+                  setActionOpen(false);
+                  if (selectedQuote) await openCreateJob(selectedQuote);
+                }}
+                activeOpacity={0.9}
+              >
+                <CalendarPlus size={18} color={TEXT} />
+                <Text style={styles.centerBtnText}>Create job</Text>
+              </TouchableOpacity>
             </View>
-            <Arrow size={18} color={MUTED} />
-          </Pressable>
-
-          {/* Create Job */}
-          <Pressable
-            style={[styles.rowAction, !canCreateJob(selectedQuote) && { opacity: 0.5 }]}
-            disabled={!canCreateJob(selectedQuote)}
-            onPress={async () => {
-              setActionOpen(false);
-              if (!canCreateJob(selectedQuote)) { showToast('Generate the quote first'); return; }
-              await openCreateJob(selectedQuote);
-            }}
-          >
-            <View style={styles.rowLeft}>
-              <CalendarPlus size={18} color={MUTED} />
-              <Text style={styles.rowText}>Create job</Text>
-            </View>
-            <Arrow size={18} color={MUTED} />
-          </Pressable>
-
-          {/* Edit (locked on Free branding) */}
-          <Pressable
-            style={styles.rowAction}
-            onPress={() => {
-              setActionOpen(false);
-              if (!isPremium) {
-                router.push(accountHref);
-              } else {
-                router.push(quoteHref(selectedQuote.id));
-              }
-            }}
-          >
-            <View style={styles.rowLeft}>
-              <Pencil size={18} color={MUTED} />
-              <Text style={styles.rowText}>Edit</Text>
-            </View>
-            <Arrow size={18} color={MUTED} />
-          </Pressable>
+          </View>
         </View>
       </Modal>
 
-      {/* Create Job Modal */}
-      <Modal visible={createOpen} animationType="slide" transparent>
-        <Pressable style={styles.modalBackdrop} onPress={() => setCreateOpen(false)} />
+      {/* Schedule Modal */}
+      <Modal visible={scheduleOpen} animationType="fade" transparent>
+        <Pressable style={styles.modalBackdrop} onPress={() => setScheduleOpen(false)} />
         <View style={styles.sheet}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>Create job from {selectedQuote?.quote_number || 'quote'}</Text>
+          <Text style={styles.sheetTitle}>Create job</Text>
 
-          <Text style={styles.filterLabel}>Start date</Text>
-          <View style={{ position: 'relative', marginBottom: 10 }}>
-            <TextInput value={cjStart.toLocaleDateString()} editable={false} style={[styles.smallInput, { paddingRight: 38 }]} />
-            <TouchableOpacity onPress={() => setCjShowPicker(true)} style={styles.inputIconBtn}>
-              <CalendarDays size={18} color={MUTED} />
-            </TouchableOpacity>
-          </View>
-          {cjShowPicker && (
-            <DateTimePicker
-              value={cjStart}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'inline' : 'default'}
-              onChange={(e, d) => { if (Platform.OS === 'android') setCjShowPicker(false); if (d) setCjStart(toLocalMidnight(d)); }}
-            />
-          )}
-
-          <Text style={styles.filterLabel}>Duration (days)</Text>
-          <TextInput
-            style={[styles.smallInput, { width: 120 }]}
-            keyboardType="number-pad"
-            value={String(cjDays)}
-            onChangeText={(t) => setCjDays(Math.max(1, Math.floor(Number(String(t).replace(/[^0-9]/g, '')) || 1)))}
-            placeholderTextColor={MUTED}
+          <SharedCalendar
+            month={calMonth}
+            onChangeMonth={setCalMonth}
+            selectedDate={cjStart}
+            onSelectDate={(d) => setCjStart(d)}
+            jobs={jobs}
+            span={{ start: cjStart, days: cjDays, includeWeekends: cjIncludeWeekends }}
+            blockStarts
+            onDayLongPress={(day, jobsOnDay) => {
+              if (jobsOnDay?.length) router.push(jobHref(jobsOnDay[0].id));
+            }}
           />
 
-          <TouchableOpacity
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10 }}
-            onPress={() => setCjIncludeWeekends((v) => !v)}
-          >
-            <View style={[styles.checkboxBox, cjIncludeWeekends && styles.checkboxBoxChecked]}>
-              {cjIncludeWeekends ? <Text style={styles.checkboxTick}>✓</Text> : null}
+          {/* Duration */}
+          <View style={styles.durationBlock}>
+            <Text style={styles.controlHeader}>Duration</Text>
+            <View style={styles.spinRow}>
+              <TouchableOpacity
+                style={styles.spinBtn}
+                onPress={() => {
+                  const d = Math.max(1, cjDays - 1);
+                  setCjDays(d);
+                  adjustIfBlocked(d, cjIncludeWeekends);
+                }}
+              >
+                <Minus size={18} color={TEXT} />
+              </TouchableOpacity>
+              <Text style={styles.spinValue}>{cjDays} day{cjDays > 1 ? "s" : ""}</Text>
+              <TouchableOpacity
+                style={styles.spinBtn}
+                onPress={() => {
+                  const d = cjDays + 1;
+                  setCjDays(d);
+                  adjustIfBlocked(d, cjIncludeWeekends);
+                }}
+              >
+                <PlusIcon size={18} color={TEXT} />
+              </TouchableOpacity>
             </View>
-            <Text style={{ color: TEXT, fontWeight: '800' }}>Include weekends</Text>
-          </TouchableOpacity>
+          </View>
 
-          <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: BORDER }}>
-            <Text style={{ color: TEXT, fontWeight: '700' }}>
-              End date: {cjEnd.toLocaleDateString()} ({cjIncludeWeekends ? 'calendar days' : 'working days'})
+          {/* Weekends toggle */}
+          <View style={styles.weekendRow}>
+            <Text style={styles.controlHeader}>Include weekends</Text>
+            <Switch
+              value={cjIncludeWeekends}
+              onValueChange={(v) => {
+                setCjIncludeWeekends(v);
+                adjustIfBlocked(cjDays, v);
+              }}
+            />
+          </View>
+
+          {/* Start/End + hint */}
+          <Text style={styles.endPreview}>
+            Start: <Text style={styles.bold}>{toYMD(cjStart)}</Text>  •  End: <Text style={styles.bold}>{toYMD(endDate)}</Text>
+          </Text>
+          <Text style={[styles.endPreview, { textAlign: "left", opacity: 0.8 }]}>
+            {(() => {
+              const first = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
+              const last = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0);
+              let count = 0;
+              eachDay(first, last, (d) => {
+                if (!isSpanFree(d, cjDays, cjIncludeWeekends, jobs)) count++;
+              });
+              return `${count} starts blocked this month`;
+            })()}
+          </Text>
+
+          {spanBlocked && (
+            <Text style={styles.blockedWarn}>
+              This start overlaps an existing job. Pick a different date or change duration/weekends.
             </Text>
-          </View>
+          )}
+          {!!cjError && <Text style={[styles.blockedWarn, { marginTop: 6 }]}>{cjError}</Text>}
+          {!!cjNotice && !cjError && (
+            <Text style={{ marginTop: 8, color: "#065f46", fontWeight: "900" }}>
+              {cjNotice}
+            </Text>
+          )}
 
-          {!!cjError && <Text style={{ color: '#e11d48', fontWeight: '700', marginTop: 8 }}>{cjError}</Text>}
-
-          <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-            <TouchableOpacity style={[styles.sheetBtn, { backgroundColor: '#eef2f7' }]} onPress={() => setCreateOpen(false)}>
+          <View style={styles.sheetBtns}>
+            <TouchableOpacity style={[styles.sheetBtn, styles.sheetBtnGhost]} onPress={() => setScheduleOpen(false)} activeOpacity={0.9}>
               <Text style={[styles.sheetBtnText, { color: TEXT }]}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.sheetBtn, { backgroundColor: BRAND, flex: 1, opacity: cjBusy ? 0.7 : 1 }]}
-              onPress={createJob}
-              disabled={cjBusy}
+              style={[styles.sheetBtn, styles.sheetBtnPrimary, (cjBusy || spanBlocked) && { opacity: 0.55 }]}
+              activeOpacity={0.9}
+              disabled={cjBusy || spanBlocked}
+              onPress={async () => {
+                if (!pendingQuote) return;
+                await createJobInternal(pendingQuote, cjDays, cjIncludeWeekends, cjStart);
+              }}
+              accessibilityLabel={spanBlocked ? "Start date overlaps an existing job" : "Create job"}
             >
-              <Text style={[styles.sheetBtnText, { color: '#fff' }]}>{cjBusy ? 'Creating…' : 'Create job'}</Text>
+              <CalendarPlus size={18} color="#fff" />
+              <Text style={[styles.sheetBtnText, { color: "#fff" }]} numberOfLines={1}>{createBtnLabel}</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      </Modal>
 
-      {/* Confirm Dialog */}
-      <Modal visible={confirmOpen} animationType="fade" transparent>
-        <Pressable style={styles.modalBackdrop} onPress={() => setConfirmOpen(false)} />
-        <View style={styles.confirmBox}>
-          <Text style={styles.confirmTitle}>{confirmConfig.title}</Text>
-          <Text style={styles.confirmMessage}>{confirmConfig.message}</Text>
-          <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
-            <TouchableOpacity style={[styles.sheetBtn, { backgroundColor: '#eef2f7', flex: 1 }]} onPress={() => setConfirmOpen(false)}>
-              <Text style={[styles.sheetBtnText, { color: TEXT }]}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.sheetBtn, { backgroundColor: '#e11d48', flex: 1 }]}
-              onPress={() => {
-                if (typeof confirmConfig.onConfirm === 'function') confirmConfig.onConfirm();
-                else setConfirmOpen(false);
+          {spanBlocked && !cjError && (
+            <Text
+              style={{
+                color: MUTED,
+                fontSize: 12,
+                textAlign: "center",
+                marginTop: 6,
+                fontWeight: "800",
               }}
             >
-              <Text style={[styles.sheetBtnText, { color: '#fff' }]}>Delete</Text>
-            </TouchableOpacity>
-          </View>
+              Try a different start date or adjust duration/weekends.
+            </Text>
+          )}
         </View>
       </Modal>
 
-      {/* Toast */}
-      {!!toast && (
-        <View style={styles.toast}>
-          <Text style={styles.toastText}>{toast}</Text>
-        </View>
-      )}
+      {/* Paywall Modal */}
+      <PaywallModal
+        visible={showPaywall}
+        onClose={() => setShowPaywall(false)}
+        onSubscribe={() => {
+          setShowPaywall(false);
+          router.push("/(app)/billing");
+        }}
+        title="Premium Feature"
+        message={
+          premiumStatus.status === "expired"
+            ? "Your trial has ended. Subscribe to create jobs from quotes."
+            : "Job creation is a premium feature. Upgrade to unlock it."
+        }
+      />
     </View>
   );
 }
 
 /* ---------- styles ---------- */
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === 'android' ? 8 : 0 },
+  screen: {
+    flex: 1,
+    backgroundColor: BG,
+    paddingTop: Platform.OS === "android" ? 8 : 0,
+  },
 
   topbar: {
-    paddingHorizontal: 16, paddingTop: 10, paddingBottom: 8,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
-  h1: { color: TEXT, fontSize: 24, fontWeight: '800' },
+  h1: { color: TEXT, fontSize: 24, fontWeight: "800" },
 
   iconBtn: {
-    height: 38, width: 38, borderRadius: 10, borderWidth: 1, borderColor: BORDER,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: CARD,
+    height: 38,
+    width: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: CARD,
   },
 
   searchRow: {
-    marginTop: 14, marginHorizontal: 16, backgroundColor: CARD, borderRadius: 12,
-    borderWidth: 1, borderColor: BORDER, paddingHorizontal: 12, paddingVertical: 10,
-    flexDirection: 'row', alignItems: 'center',
+    marginTop: 14,
+    marginHorizontal: 16,
+    backgroundColor: CARD,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
   },
   searchInput: { flex: 1, color: TEXT },
 
-  tabsRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    gap: 8, paddingHorizontal: 16, marginTop: 12, marginBottom: 10,
-  },
-  chip: {
-    flexGrow: 1, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 10,
-    borderRadius: 999, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: BORDER,
-  },
-  chipActive: { backgroundColor: BRAND + '22', borderColor: BRAND + '55' },
-  chipText: { color: MUTED, fontWeight: '700' },
-  chipTextActive: { color: BRAND },
-
   card: {
-    backgroundColor: CARD, marginHorizontal: 16, padding: 14, borderRadius: 16,
-    borderWidth: 1, borderColor: BORDER, shadowColor: '#0b1220', shadowOpacity: 0.04,
-    shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 2, marginBottom: 2,
+    backgroundColor: CARD,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
+    minHeight: 78,
+    marginBottom: 10,
   },
   quoteTiny: {
-    position: 'absolute', right: 34, top: 14, color: MUTED, fontSize: 12, maxWidth: 180, textAlign: 'right',
+    position: "absolute",
+    right: 72,
+    top: 14,
+    color: MUTED,
+    fontSize: 12,
+    maxWidth: 200,
+    textAlign: "right",
+    fontWeight: "800",
   },
-  clientName: { color: TEXT, fontWeight: '900', fontSize: 16 },
-  rowMini: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+  clientName: { color: TEXT, fontWeight: "900", fontSize: 16 },
+  rowMini: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   rowMiniText: { color: MUTED },
 
-  totalBottom: { position: 'absolute', right: 16, bottom: 12, fontSize: 16, fontWeight: '900', color: TEXT },
+  totalBottom: {
+    position: "absolute",
+    right: 16,
+    bottom: 12,
+    fontSize: 16,
+    fontWeight: "900",
+    color: TEXT,
+  },
+
+  binBtn: {
+    position: "absolute",
+    right: 12,
+    top: 10,
+    height: 30,
+    width: 30,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fee2e2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    zIndex: 5,
+  },
 
   fab: {
-    position: 'absolute', right: 18, bottom: 18, width: 56, height: 56, borderRadius: 28,
-    backgroundColor: BRAND, alignItems: 'center', justifyContent: 'center',
-    shadowColor: BRAND, shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 6,
+    position: "absolute",
+    right: 18,
+    bottom: 18,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: BRAND,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: BRAND,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
 
-  modalBackdrop: { flex: 1, backgroundColor: '#0008' },
+  /* Overlay */
+  modalBackdrop: { flex: 1, backgroundColor: "#0009" },
+
+  /* Polished action modal (centered) */
+  centerWrap: {
+    position: "absolute",
+    top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  actionCard: {
+    width: "100%",
+    backgroundColor: CARD,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 16,
+    paddingTop: 12,
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.22,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 12,
+  },
+  handle: {
+    alignSelf: "center",
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#e5e7eb",
+    marginBottom: 10,
+  },
+  centerRow: { flexDirection: "row", gap: 10 },
+  centerBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    backgroundColor: "#f8fafc",
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  centerBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
+  centerBtnNeutral: { backgroundColor: "#f7f8fb" },
+  centerBtnText: { fontSize: 15, fontWeight: "900", color: TEXT },
+
+  /* Schedule sheet */
   sheet: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: CARD,
-    borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 16, borderTopWidth: 1, borderColor: BORDER,
+    position: "absolute",
+    alignSelf: "center",
+    top: "8%",
+    width: "92%",
+    backgroundColor: CARD,
+    borderRadius: 20,
+    padding: 14,
+    paddingBottom: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.14,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+    maxHeight: "86%",
+    overflow: "hidden",
   },
-  sheetHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 999, backgroundColor: BORDER, marginBottom: 10 },
-  sheetTitle: { color: TEXT, fontWeight: '900', fontSize: 18, marginBottom: 8 },
-
-  filterRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 10 },
-  filterLabel: { color: MUTED, fontWeight: '800' },
-
-  smallInput: {
-    backgroundColor: '#f6f7f9', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 10,
-    borderWidth: 1, borderColor: BORDER, color: TEXT,
-  },
-  inputIconBtn: {
-    position: 'absolute', right: 8, top: 8, height: 28, width: 28, borderRadius: 8,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: '#f3f4f6',
-    borderWidth: 1, borderColor: BORDER,
-  },
-  clearBadge: {
-    position: 'absolute', top: 8, height: 28, width: 28, borderRadius: 8,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8fafc',
-    borderWidth: 1, borderColor: BORDER,
+  sheetTitle: {
+    color: TEXT,
+    fontWeight: "900",
+    fontSize: 18,
+    textAlign: "center",
+    marginBottom: 8,
   },
 
-  segment: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
-  segmentBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: BORDER, backgroundColor: '#f7f8fb' },
-  segmentBtnActive: { backgroundColor: BRAND + '15', borderColor: BRAND + '66' },
-  segmentText: { color: MUTED, fontWeight: '700' },
-  segmentTextActive: { color: BRAND },
-
-  sheetBtn: { paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center' },
-  sheetBtnText: { fontWeight: '800' },
-
-  rowAction: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14, borderBottomWidth: 1, borderColor: BORDER },
-  rowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  rowText: { color: TEXT, fontWeight: '800' },
-
-  confirmBox: {
-    position: 'absolute', left: 16, right: 16, bottom: '25%', backgroundColor: CARD, borderRadius: 16,
-    padding: 18, borderWidth: 1, borderColor: BORDER, shadowColor: '#0b1220', shadowOpacity: 0.1,
-    shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 4,
+  endPreview: {
+    color: MUTED,
+    marginTop: 10,
+    textAlign: "right",
+    fontWeight: "800",
   },
-  confirmTitle: { color: TEXT, fontWeight: '900', fontSize: 18, marginBottom: 6 },
-  confirmMessage: { color: MUTED },
+  bold: { color: TEXT, fontWeight: "900" },
 
-  checkboxBox: {
-    width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: '#cbd5e1',
-    alignItems: 'center', justifyContent: 'center', backgroundColor: '#ffffff'
+  blockedWarn: {
+    marginTop: 8,
+    color: DANGER,
+    fontWeight: "900",
   },
-  checkboxBoxChecked: { backgroundColor: BRAND, borderColor: BRAND },
-  checkboxTick: { color: '#ffffff', fontWeight: '800' },
 
-  toast: {
-    position: 'absolute', bottom: 22, left: 16, right: 16, backgroundColor: '#111827',
-    paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12, alignItems: 'center',
-    shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 4,
+  durationBlock: { marginTop: 10, alignItems: "center", justifyContent: "center" },
+  weekendRow: { marginTop: 10, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  controlHeader: { color: TEXT, fontWeight: "900", fontSize: 15 },
+
+  spinRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 8 },
+  spinBtn: {
+    height: 40,
+    width: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#f7f8fb",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  toastText: { color: '#fff', fontWeight: '700' },
+  spinValue: { color: TEXT, fontWeight: "900", minWidth: 120, textAlign: "center", fontSize: 16 },
+
+  sheetBtns: { flexDirection: "row", gap: 10, marginTop: 14 },
+  sheetBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 10,
+  },
+  sheetBtnGhost: { backgroundColor: "#eef2f7", borderColor: BORDER },
+  sheetBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
+  sheetBtnText: { fontWeight: "900", fontSize: 15, includeFontPadding: false },
 });
+
+/** Return true if ANY working day of job intersects ANY working day in the proposed span. */
+const jobOverlapsWorking = (job, spanStart, spanDays, spanIncludeWeekends) => {
+  const js0 = job.start_date ? atMidnight(new Date(job.start_date)) : null;
+  const je0 = job.end_date ? atMidnight(new Date(job.end_date)) : js0;
+  if (!js0) return false;
+
+  const spanEndDate = spanEnd(spanStart, Math.max(1, spanDays), spanIncludeWeekends);
+
+  // Build a working-day Set for the span
+  const spanKeys = new Set();
+  eachDay(spanStart, spanEndDate, (d) => {
+    if (spanIncludeWeekends || !isWeekend(d)) {
+      spanKeys.add(d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate());
+    }
+  });
+
+  // Walk job days, respecting job.include_weekends
+  const jobIncWknd = !!job.include_weekends;
+  let hit = false;
+  eachDay(js0, je0, (d) => {
+    if (hit) return;
+    if (jobIncWknd || !isWeekend(d)) {
+      const k = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+      if (spanKeys.has(k)) hit = true;
+    }
+  });
+  return hit;
+};
+
+const isSpanFree = (start, days, includeWeekends, allJobs) => {
+  for (const j of allJobs) {
+    if (jobOverlapsWorking(j, start, days, includeWeekends)) return false;
+  }
+  return true;
+};
+
+const nextAvailableStart = (
+  fromDate,
+  days,
+  includeWeekends,
+  allJobs,
+  lookaheadDays = 365
+) => {
+  const start = atMidnight(fromDate);
+  for (let i = 0; i < lookaheadDays; i++) {
+    const tryDate = new Date(start);
+    tryDate.setDate(start.getDate() + i);
+    if (isSpanFree(tryDate, days, includeWeekends, allJobs)) return tryDate;
+    }
+  return start;
+};

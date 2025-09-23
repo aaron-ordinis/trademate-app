@@ -16,6 +16,11 @@ import Constants from 'expo-constants';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
+import { ChevronLeft } from 'lucide-react-native';
+
+// NEW: in-app legal modals
+import PolicyModal from '../../../components/PolicyModal';
+import { POLICIES } from '../../../lib/policies/registry';
 
 // ---- Brand tokens ----
 const BRAND = '#2a86ff';
@@ -26,7 +31,6 @@ const BG = '#f5f7fb';
 const BORDER = '#e6e9ee';
 
 // ---- Config ----
-const SUPPORT_EMAIL = 'support@tradematequotes.app';
 const DELETE_FN_URL = 'https://bvbjvxjtxfzipwvfkrrb.supabase.co/functions/v1/delete-account';
 
 export default function SupportScreen() {
@@ -36,6 +40,11 @@ export default function SupportScreen() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [working, setWorking] = useState(false);
 
+  // Which policy modal is open: 'privacy' | 'terms' | null
+  const [policyOpen, setPolicyOpen] = useState(null);
+
+  const getPolicy = (name) => POLICIES.find((p) => p.name === name);
+
   const openURL = async (url) => {
     try {
       const can = await Linking.canOpenURL(url);
@@ -44,38 +53,14 @@ export default function SupportScreen() {
     } catch {}
   };
 
-  const openMail = (subject, body) => {
-    const app =
-      Constants.expoConfig && Constants.expoConfig.name
-        ? Constants.expoConfig.name
-        : 'TradeMate Quotes';
-    const v =
-      Constants.expoConfig && Constants.expoConfig.version
-        ? Constants.expoConfig.version
-        : Constants.manifest && Constants.manifest.version
-        ? Constants.manifest.version
-        : '0.0.0';
-    const sys = Platform.OS + ' ' + Platform.Version;
-    const details =
-      (body || '') +
-      '\n\n---\nApp: ' +
-      app +
-      '\nVersion: ' +
-      v +
-      '\nOS: ' +
-      sys +
-      '\nDevice: ' +
-      (Constants.deviceName || 'Unknown') +
-      '\nBuild: ' +
-      (Constants.nativeBuildVersion || '-');
-    const url =
-      'mailto:' +
-      SUPPORT_EMAIL +
-      '?subject=' +
-      encodeURIComponent(subject || 'Support') +
-      '&body=' +
-      encodeURIComponent(details);
-    Linking.openURL(url).catch(() => {});
+  // Route to in-app Support chat (replace with your actual route if different)
+  const openSupportChat = () => {
+    try {
+      router.push('/(app)/support/chat');
+    } catch {
+      // fallback: website contact page if chat route not present yet
+      openURL('https://www.tradematequotes.com/contact');
+    }
   };
 
   const deleteAccount = async () => {
@@ -112,6 +97,15 @@ export default function SupportScreen() {
     }
   };
 
+  const appName =
+    (Constants.expoConfig && Constants.expoConfig.name) ||
+    (Constants.manifest && Constants.manifest.name) ||
+    'TradeMate';
+  const appVersion =
+    (Constants.expoConfig && Constants.expoConfig.version) ||
+    (Constants.manifest && Constants.manifest.version) ||
+    '0.0.0';
+
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.wrap}>
       <ScrollView
@@ -121,10 +115,20 @@ export default function SupportScreen() {
           paddingBottom: Math.max(insets.bottom, 28),
         }}
       >
+        {/* Back Button */}
+        <TouchableOpacity 
+          style={styles.backButton}
+          onPress={() => router.back()}
+          activeOpacity={0.7}
+        >
+          <ChevronLeft size={20} color={BRAND} />
+          <Text style={styles.backText}>Back</Text>
+        </TouchableOpacity>
+
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.h1}>Help & Support</Text>
-          <Text style={styles.hint}>Get help fast, or self-serve common issues.</Text>
+          <Text style={styles.hint}>Message us in-app, browse resources, or manage your data.</Text>
         </View>
 
         {/* Visit Website */}
@@ -159,28 +163,16 @@ export default function SupportScreen() {
           </View>
         </View>
 
-        {/* Contact us */}
+        {/* Contact us (in-app messaging) */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Contact us</Text>
           <TouchableOpacity
             style={styles.rowLink}
-            onPress={() => openMail('Support request', 'How can we help?')}
+            onPress={openSupportChat}
             activeOpacity={0.9}
           >
-            <Text style={styles.linkText}>Contact support</Text>
+            <Text style={styles.linkText}>Message support (in-app)</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.rowLink}
-            onPress={() => openMail('Bug report', 'Describe the issue…')}
-            activeOpacity={0.9}
-          >
-            <Text style={styles.linkText}>Report a bug</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Resources */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Resources</Text>
           <TouchableOpacity
             style={styles.rowLink}
             onPress={() => openURL('https://www.tradematequotes.com/faqs')}
@@ -190,30 +182,35 @@ export default function SupportScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Data & legal */}
+        {/* Data & legal (open in-app modals) */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Data & legal</Text>
+
           <TouchableOpacity
             style={styles.rowLink}
-            onPress={() => openURL('https://www.tradematequotes.com/privacy')}
+            onPress={() => setPolicyOpen('privacy')}
             activeOpacity={0.9}
           >
-            <Text style={styles.linkText}>Privacy Policy</Text>
+            <Text style={styles.linkText}>Privacy Policy (in-app)</Text>
           </TouchableOpacity>
+
           <TouchableOpacity
             style={styles.rowLink}
-            onPress={() => openURL('https://www.tradematequotes.com/terms')}
+            onPress={() => setPolicyOpen('terms')}
             activeOpacity={0.9}
           >
-            <Text style={styles.linkText}>Terms & Conditions</Text>
+            <Text style={styles.linkText}>Terms & Conditions (in-app)</Text>
           </TouchableOpacity>
+
+          {/* Keep Cookies on website for now (unless you add a cookies policy markdown) */}
           <TouchableOpacity
             style={styles.rowLink}
             onPress={() => openURL('https://www.tradematequotes.com/cookies')}
             activeOpacity={0.9}
           >
-            <Text style={styles.linkText}>Cookies Policy</Text>
+            <Text style={styles.linkText}>Cookies Policy (website)</Text>
           </TouchableOpacity>
+
           <TouchableOpacity
             style={[styles.rowLink, { borderColor: '#dc2626' }]}
             onPress={() => setConfirmOpen(true)}
@@ -228,15 +225,7 @@ export default function SupportScreen() {
         {/* About / build info */}
         <View style={styles.metaCard}>
           <Text style={styles.metaText}>
-            {(Constants.expoConfig && Constants.expoConfig.name
-              ? Constants.expoConfig.name
-              : 'TradeMate Quotes') +
-              ' • v' +
-              (Constants.expoConfig && Constants.expoConfig.version
-                ? Constants.expoConfig.version
-                : Constants.manifest && Constants.manifest.version
-                ? Constants.manifest.version
-                : '0.0.0')}
+            {`${appName} • v${appVersion}`}
           </Text>
         </View>
       </ScrollView>
@@ -277,6 +266,18 @@ export default function SupportScreen() {
           </TouchableOpacity>
         </View>
       </Modal>
+
+      {/* In-app legal modals */}
+      {policyOpen && (
+        <PolicyModal
+          visible
+          title={getPolicy(policyOpen)?.title || 'Policy'}
+          content={getPolicy(policyOpen)?.content || ''}
+          websiteUrl={getPolicy(policyOpen)?.url}
+          showAccept={false} // read-only here; acceptance handled on app launch gate
+          onClose={() => setPolicyOpen(null)}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -284,6 +285,22 @@ export default function SupportScreen() {
 // --- styles ---
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: BG },
+  
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    marginLeft: -8,
+    marginBottom: 8,
+  },
+  backText: {
+    color: BRAND,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  
   header: { alignItems: 'center', marginBottom: 12 },
   h1: { color: TEXT, fontSize: 24, fontWeight: '800' },
   hint: { color: MUTED, marginTop: 4 },

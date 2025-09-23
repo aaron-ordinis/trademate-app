@@ -103,34 +103,12 @@ export default function Login() {
       });
       if (error) throw error;
 
-      const user = data.user;
-      const { data: profile, error: pErr } = await supabase
-        .from('profiles')
-        .select('business_name, hourly_rate, materials_markup_pct')
-        .eq('id', user.id)
-        .maybeSingle();
-      if (pErr) throw pErr;
-
-      // Defensive: treat empty string or null as not set
-      const needsOnboarding =
-        !profile ||
-        !profile.business_name ||
-        profile.business_name === '' ||
-        profile.hourly_rate == null ||
-        profile.hourly_rate === '';
-
-      // Use replace for navigation
-      if (needsOnboarding) {
-        router.replace(onboardingHref);
-      } else {
-        // TODO: Add quotesTabHref if needed
-        router.replace('/(app)/(tabs)/quotes');
-      }
+      // Navigate to onboarding route first - it will redirect if profile is complete
+      router.replace('/(app)/onboarding');
     } catch (e) {
       const nice = mapSupabaseError(e);
       setAuthError(nice);
       Alert.alert('Login failed', nice);
-      console.error('[TMQ][LOGIN] Error', e);
     } finally {
       setLoading(false);
     }
@@ -176,8 +154,8 @@ export default function Login() {
           style={styles.logo}
           resizeMode="contain"
         />
-        <Text style={styles.title}>TradeMate Quotes</Text>
-        <Text style={styles.subtitle}>Sign in to start creating quotes</Text>
+        <Text style={styles.title}>TradeMate</Text>
+        <Text style={styles.subtitle}>Sign in to start managing your trade business</Text>
 
         {!!authError && <Text style={styles.errorText}>{authError}</Text>}
 

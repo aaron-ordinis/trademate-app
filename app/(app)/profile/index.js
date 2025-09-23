@@ -20,7 +20,10 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
+import { getPremiumStatus, getTrialStatusText } from "../../../lib/premium";
+import { ChevronLeft } from 'lucide-react-native';
 
 const BUCKET = 'logos';
 const NAME_LOCK_DAYS = 28;
@@ -74,7 +77,8 @@ async function resolveStorageUrl(pathInBucket) {
   throw new Error(pubErr?.message || sErr?.message || 'Could not get logo URL');
 }
 
-export default function ProfileScreen() {
+export default function Profile() {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
@@ -123,6 +127,21 @@ export default function ProfileScreen() {
   const hasLogo = !!String(form.custom_logo_url || '').trim();
   const isPdfLogo = hasLogo && /\.pdf($|\?)/i.test(form.custom_logo_url || '');
 
+  const [premiumStatus, setPremiumStatus] = useState({ isPremium: false, status: 'no_profile' });
+  const [profileData, setProfileData] = useState(null);
+
+  /* -------------------- Helper to calculate trial days remaining -------------------- */
+  const getTrialDaysRemaining = () => {
+    if (!profileData?.trial_ends_at) return 0;
+    const trialEnd = new Date(profileData.trial_ends_at);
+    const now = new Date();
+    const diffTime = trialEnd - now;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return Math.max(0, diffDays);
+  };
+
+  const trialDaysLeft = getTrialDaysRemaining();
+
   /* ---------- load profile ---------- */
   useEffect(() => {
     (async () => {
@@ -133,7 +152,7 @@ export default function ProfileScreen() {
         const { data, error } = await supabase
           .from('profiles')
           .select(
-            'business_name, business_name_last_changed_at, trade_type, hourly_rate, materials_markup_pct, vat_registered, payment_terms, warranty_text, travel_rate_per_mile, address_line1, city, postcode, custom_logo_url'
+            'business_name, business_name_last_changed_at, trade_type, hourly_rate, materials_markup_pct, vat_registered, payment_terms, warranty_text, travel_rate_per_mile, address_line1, city, postcode, custom_logo_url, plan_tier, plan_status, trial_ends_at'
           )
           .eq('id', user.id)
           .maybeSingle();
@@ -141,6 +160,7 @@ export default function ProfileScreen() {
         if (error) throw error;
 
         if (data) {
+          setProfileData(data);
           setForm((prev) => ({
             ...prev,
             ...data,
@@ -152,6 +172,10 @@ export default function ProfileScreen() {
           }));
           setOriginalBusinessName(data.business_name || '');
           setNameLastChangedAt(data.business_name_last_changed_at || null);
+
+          // Update premium status
+          const status = getPremiumStatus(data);
+          setPremiumStatus(status);
         }
       } catch (e) {
         Alert.alert('Error', e?.message ?? 'Could not load profile.');
@@ -186,8 +210,7 @@ export default function ProfileScreen() {
       else if (ext === 'webp') contentType = 'image/webp';
       else if (file.mimeType) contentType = file.mimeType;
 
-      const { data: { user: currentUser } } = await supabase.auth.getUser();
-      if (!currentUser) throw new Error('Not signed in');
+      // Use the already declared currentUser variable above
 
       // Read file as base64 (safe for content:// and ph://)
       const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
@@ -346,11 +369,60 @@ export default function ProfileScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.header}>
-            <Text style={styles.h1}>Business Profile</Text>
-            <Text style={styles.hintHeader}>Keep your information up to date. This appears on your quotes.</Text>
+            <TouchableOpacity 
+              style={styles.backButton}
+              onPress={() => router.back()}
+              activeOpacity={0.7}
+            >
+              <ChevronLeft size={20} color={BRAND} />
+              <Text style={styles.backText}>Back</Text>
+            </TouchableOpacity>
+            
+            <View style={styles.headerContent}>
+              <Text style={styles.h1}>Business Profile</Text>
+              <Text style={styles.hintHeader}>Keep your information up to date. This appears on your quotes.</Text>
+            </View>
           </View>
 
-          {/* Logo card — MIRRORS SETTINGS */}
+          {/* Trial Status Banner */}
+          <View style={[
+            styles.trialBanner,
+            {
+              flexDirection: premiumStatus?.isPremium ? 'row' : 'column',
+              justifyContent: premiumStatus?.isPremium ? 'center' : 'space-between',
+            }
+          ]}>
+            <Text style={[
+              styles.trialStatusText,
+              {
+                color: premiumStatus.isPremium ? '#16a34a' :
+                       premiumStatus.status === 'expired' ? '#dc2626' : 
+                       '#f59e0b',
+                textAlign: 'center',
+                flex: premiumStatus?.isPremium ? 1 : 0,
+              }
+            ]}>
+              {premiumStatus.isPremium 
+                ? "You're on Premium"
+                : trialDaysLeft > 0 
+                  ? `${trialDaysLeft} day${trialDaysLeft === 1 ? '' : 's'} left on your trial`
+                  : 'Trial expired'
+              }
+            </Text>
+            {!premiumStatus.isPremium && (
+              <TouchableOpacity 
+                style={styles.subscribeButton}
+                onPress={() => router.push("/(app)/account")}
+                activeOpacity={0.9}
+              >
+                <Text style={styles.subscribeButtonText}>
+                  {trialDaysLeft > 0 ? 'Subscribe' : 'Reactivate'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Logo card */}
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Company Logo</Text>
 
@@ -374,11 +446,18 @@ export default function ProfileScreen() {
 
               {hasLogo && (
                 <TouchableOpacity onPress={() => Linking.openURL(form.custom_logo_url)} style={{ marginTop: 8 }}>
-                  <Text style={{ color: MUTED }}>Open current logo</Text>
+                  <Text style={styles.linkText}>View current logo</Text>
                 </TouchableOpacity>
               )}
 
-              {!hasLogo && <Text style={styles.hint}>PNG/JPEG (or PDF). Square works best.</Text>}
+              {!hasLogo && (
+                <View style={{ alignItems: 'center', marginTop: 8 }}>
+                  <Text style={styles.hint}>PNG/JPEG (or PDF). Square works best.</Text>
+                  <Text style={[styles.hint, { fontWeight: '600', color: '#2563eb' }]}>
+                    For best results, use PNG with transparent background
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
 
@@ -603,49 +682,130 @@ const styles = StyleSheet.create({
   loadingWrap: { flex: 1, backgroundColor: BG, alignItems: 'center', justifyContent: 'center' },
   wrap: { flex: 1, backgroundColor: BG },
 
-  header: { alignItems: 'center', marginBottom: 6 },
+  header: { 
+    marginBottom: 6,
+  },
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    marginLeft: -8,
+    marginBottom: 12,
+  },
+  backText: {
+    color: BRAND,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  headerContent: {
+    alignItems: 'center',
+  },
   h1: { color: TEXT, fontSize: 24, fontWeight: '800' },
   hintHeader: { color: MUTED, marginTop: 4, textAlign: 'center' },
 
   card: {
-    backgroundColor: CARD, borderRadius: 16, padding: 16,
-    borderWidth: 1, borderColor: BORDER, marginBottom: 14,
-    shadowColor: '#0b1220', shadowOpacity: 0.05, shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 }, elevation: 2,
-  },
-  cardTitle: { color: TEXT, fontWeight: '800', marginBottom: 6 },
-
-  /* Circular avatar (same as Settings) */
-  avatarWrap: { position: 'relative', alignItems: 'center', justifyContent: 'center' },
-  avatar: {
-    width: 64, height: 64, borderRadius: 32, backgroundColor: BRAND + '15',
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: BORDER, marginBottom: 10,
-  },
-  avatarImg: {
-    width: 64, height: 64, borderRadius: 32, borderWidth: 1, borderColor: BORDER, marginBottom: 10,
-  },
-  avatarText: { color: BRAND, fontWeight: '900', fontSize: 20 },
-  editBadge: {
-    position: 'absolute', right: -2, bottom: 6, height: 22, width: 22, borderRadius: 11,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: BRAND, borderWidth: 1, borderColor: '#ffffff',
-  },
-  editBadgeText: { color: '#fff', fontWeight: '900', fontSize: 12 },
-
-  // Fields
-  field: { marginBottom: 10 },
-  label: { color: TEXT, marginBottom: 6, fontWeight: '700' },
-  input: {
-    backgroundColor: '#f9fafb',
-    color: TEXT,
-    borderRadius: 12,
-    padding: 12,
+    backgroundColor: CARD,
+    borderRadius: 16,
+    padding: 20, // Increased padding for more professional look
     borderWidth: 1,
     borderColor: BORDER,
+    marginBottom: 16, // Consistent spacing
+    shadowColor: '#0b1220',
+    shadowOpacity: 0.06, // Slightly stronger shadow
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  cardTitle: {
+    color: TEXT,
+    fontWeight: '800',
+    fontSize: 18, // Larger title
+    marginBottom: 8,
+  },
+
+  /* Circular avatar (same as Settings) */
+  avatarWrap: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  avatar: {
+    width: 80, // Larger avatar
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: BRAND + '10',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2, // Thicker border
+    borderColor: '#e2e8f0',
+    marginBottom: 12,
+  },
+  avatarImg: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    marginBottom: 12,
+  },
+  avatarText: {
+    color: BRAND,
+    fontWeight: '900',
+    fontSize: 24, // Larger text
+  },
+  editBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: 8,
+    height: 28, // Larger badge
+    width: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: BRAND,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    shadowColor: '#0b1220',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  editBadgeText: {
+    color: '#fff',
+    fontWeight: '900',
+    fontSize: 14,
+  },
+
+  // Fields
+  field: {
+    marginBottom: 16, // More consistent spacing
+  },
+  label: {
+    color: TEXT,
+    marginBottom: 8,
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  input: {
+    backgroundColor: '#f8fafc',
+    color: TEXT,
+    borderRadius: 12,
+    padding: 14, // Increased padding
+    borderWidth: 1,
+    borderColor: BORDER,
+    fontSize: 16,
   },
   inputDisabled: { opacity: 0.6 },
-  hint: { color: MUTED, fontSize: 12, marginTop: 6 },
+  hint: {
+    color: MUTED,
+    fontSize: 13,
+    marginTop: 6,
+    lineHeight: 18,
+  },
 
   // Grid
   row2: { flexDirection: 'row', gap: 10 },
@@ -656,10 +816,22 @@ const styles = StyleSheet.create({
 
   // Buttons
   btnSave: {
-    backgroundColor: BRAND, borderRadius: 14, padding: 14, alignItems: 'center',
-    shadowColor: BRAND, shadowOpacity: 0.2, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 3,
+    backgroundColor: BRAND,
+    borderRadius: 14,
+    padding: 16, // Increased padding
+    alignItems: 'center',
+    marginTop: 8,
+    shadowColor: BRAND,
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
-  btnSaveText: { color: '#fff', fontWeight: '900' },
+  btnSaveText: {
+    color: '#fff',
+    fontWeight: '900',
+    fontSize: 16,
+  },
 
   // Modal / bottom sheet (copied from Settings)
   modalBackdrop: { flex: 1, backgroundColor: '#0008' },
@@ -688,4 +860,52 @@ const styles = StyleSheet.create({
     marginTop: 10, backgroundColor: '#eef2f7', borderRadius: 12, paddingVertical: 12, alignItems: 'center',
   },
   secondaryBtnText: { color: TEXT, fontWeight: '800' },
+
+  // Trial status banner - updated for professional look
+  trialBanner: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    flexDirection: 'column', // Remove premiumStatus reference
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    shadowColor: '#0b1220',
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  trialStatusText: {
+    fontSize: 16,
+    fontWeight: '800',
+    flex: 0, // Remove premiumStatus reference
+  },
+  subscribeButton: {
+    backgroundColor: '#2a86ff',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
+    shadowColor: '#2a86ff',
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  subscribeButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+
+  // Updated link text style for logo
+  linkText: {
+    color: '#2a86ff',
+    fontSize: 14,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
 });

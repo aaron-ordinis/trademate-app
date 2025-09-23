@@ -1,6 +1,7 @@
-import { loginHref, accountHref, profileHref, supportHref } from "../../../lib/nav";
 /* app/(app)/settings/index.js */
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { loginHref, accountHref, profileHref, supportHref } from "../../../lib/nav";
+
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -13,14 +14,17 @@ import {
   Pressable,
   Platform,
   Linking,
-} from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
-import { useRouter, useFocusEffect } from 'expo-router';
-import { supabase } from '../../../lib/supabase';
+} from "react-native";
+  // SafeArea + navigation
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 
-// Icons (About removed)
+  // Files + Supabase
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system";
+import { supabase } from "../../../lib/supabase";
+
+  // Icons
 import {
   ChevronRight,
   Crown,
@@ -33,23 +37,25 @@ import {
   Pencil,
   Trash2,
   ExternalLink,
-} from 'lucide-react-native';
+  ChevronLeft,
+} from "lucide-react-native";
 
-const BRAND = '#2a86ff';
-const TEXT = '#0b1220';
-const MUTED = '#6b7280';
-const CARD = '#ffffff';
-const BG = '#f5f7fb';
-const BORDER = '#e6e9ee';
+/* ---------------- theme ---------------- */
+const BRAND = "#2a86ff";
+const TEXT = "#0b1220";
+const MUTED = "#6b7280";
+const CARD = "#ffffff";
+const BG = "#f5f7fb";
+const BORDER = "#e6e9ee";
 
-/** Pure-JS base64 → Uint8Array (no atob/Buffer) */
+/* -------- helpers -------- */
 function base64ToBytes(b64) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const lookup = new Uint8Array(256);
   for (let i = 0; i < alphabet.length; i++) lookup[alphabet.charCodeAt(i)] = i;
-  const clean = b64.replace(/[^A-Za-z0-9+/=]/g, '');
+  const clean = b64.replace(/[^A-Za-z0-9+/=]/g, "");
   const len = clean.length;
-  const pads = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+  const pads = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
   const bytesLen = ((len * 3) >> 2) - pads;
   const out = new Uint8Array(bytesLen);
   let p = 0, i = 0;
@@ -68,17 +74,42 @@ function base64ToBytes(b64) {
 
 /** Try to produce a usable URL for a storage object (public bucket OR signed). */
 async function resolveStorageUrl(pathInBucket) {
-  const { data: pub, error: pubErr } = supabase.storage.from('logos').getPublicUrl(pathInBucket);
+  const { data: pub, error: pubErr } = supabase.storage.from("logos").getPublicUrl(pathInBucket);
   if (!pubErr && pub?.publicUrl) return pub.publicUrl;
 
-  // Signed URL fallback (long-lived)
   const expiresIn = 60 * 60 * 24 * 365 * 5; // 5 years
   const { data: signed, error: sErr } = await supabase.storage
-    .from('logos')
+    .from("logos")
     .createSignedUrl(pathInBucket, expiresIn);
   if (!sErr && signed?.signedUrl) return signed.signedUrl;
 
-  throw new Error(pubErr?.message || sErr?.message || 'Could not get file URL');
+  throw new Error(pubErr?.message || sErr?.message || "Could not get file URL");
+}
+
+/** Premium/trial badge + access logic */
+function getPremiumStatus(profile) {
+  if (!profile) return { isPremium: false, chip: "Expired", color: "#9ca3af" };
+
+  const tier = String(profile.plan_tier || "").toLowerCase();
+  const status = String(profile.plan_status || "").toLowerCase();
+
+  // Active subscription wins
+  if (tier === "pro" && status === "active") {
+    return { isPremium: true, chip: "Premium", color: "#10b981" };
+  }
+
+  // Trial window
+  if (profile.trial_ends_at) {
+    const ends = new Date(profile.trial_ends_at);
+    const now = new Date();
+    if (ends > now) {
+      const days = Math.ceil((ends.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      return { isPremium: true, chip: "Trial · " + days + "d left", color: "#2a86ff" };
+    }
+  }
+
+  // Otherwise expired
+  return { isPremium: false, chip: "Expired", color: "#9ca3af" };
 }
 
 export default function SettingsHome() {
@@ -86,58 +117,59 @@ export default function SettingsHome() {
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState(null);
-  const [userEmail, setUserEmail] = useState('');
-  const [userId, setUserId] = useState('');
+  const [userProfileData, setUserProfileData] = useState(null);
+  const [userEmail, setUserEmail] = useState("");
+  const [userId, setUserId] = useState("");
   const [working, setWorking] = useState(false);
 
   const [logoModalOpen, setLogoModalOpen] = useState(false);
-  const [errBanner, setErrBanner] = useState('');
+  const [errBanner, setErrBanner] = useState("");
 
   const showError = (msg) => {
-    setErrBanner(msg || 'Something went wrong');
-    setTimeout(() => setErrBanner(''), 5000);
-    console.warn('[Settings] ERROR:', msg);
+    setErrBanner(msg || "Something went wrong");
+    setTimeout(() => setErrBanner(""), 5000);
+    console.warn("[Settings] ERROR:", msg);
   };
 
   const normalizeLogo = (val) => {
     if (val == null) return null;
     const v = String(val).trim();
-    if (!v || v.toUpperCase() === 'EMPTY' || v.toUpperCase() === 'NULL') return null;
+    if (!v || v.toUpperCase() === "EMPTY" || v.toUpperCase() === "NULL") return null;
     return v;
   };
 
-  // — Load profile with tiny retry
+  // Load the profile row (columns aligned to your table)
   const loadProfile = useCallback(async () => {
-    const attempt = async () => {
-      const { data: { user }, error: uErr } = await supabase.auth.getUser();
-      if (uErr) throw uErr;
-  if (!user) { router.replace(loginHref); return null; }
-      setUserEmail(user.email || '');
+    async function attempt() {
+      const authRes = await supabase.auth.getUser();
+      const user = authRes?.data?.user;
+      if (!user) { router.replace(loginHref); return null; }
+      setUserEmail(user.email || "");
       setUserId(user.id);
 
+      // NOTE: single string (no template literals or comments) - removed reminder columns
       const { data, error } = await supabase
-        .from('profiles')
-        .select('id, branding, business_name, trade_type, custom_logo_url')
-        .eq('id', user.id)
+        .from("profiles")
+        .select("id,business_name,trade_type,custom_logo_url,plan_tier,plan_status,trial_ends_at")
+        .eq("id", user.id)
         .maybeSingle();
       if (error) throw error;
 
       const cleaned = { ...(data || {}) };
       cleaned.custom_logo_url = normalizeLogo(cleaned.custom_logo_url);
       return cleaned;
-    };
+    }
 
     try {
       setLoading(true);
-      let p = await attempt();
+      const p = await attempt();
       if (!p) return;
-      setProfile(p);
+      setUserProfileData(p);
     } catch (e1) {
       try {
-        let p = await attempt();
+        const p = await attempt();
         if (!p) return;
-        setProfile(p);
+        setUserProfileData(p);
       } catch (e2) {
         showError(e2?.message || String(e2));
       }
@@ -146,38 +178,49 @@ export default function SettingsHome() {
     }
   }, [router]);
 
+  // Load once + on focus
   useEffect(() => { loadProfile(); }, [loadProfile]);
-  useFocusEffect(useCallback(() => { loadProfile(); }, [loadProfile]));
+  useEffect(() => {
+    const unsub = router.addListener?.("focus", loadProfile);
+    return () => { try { unsub && unsub(); } catch {} };
+  }, [router, loadProfile]);
 
-  const isPremium = useMemo(() => {
-    const tier = String(profile?.branding ?? 'free').toLowerCase();
-    return tier === 'premium';
-  }, [profile?.branding]);
+  const planInfo = useMemo(() => getPremiumStatus(userProfileData), [userProfileData]);
+  const isPremium = planInfo.isPremium;
+  const planLabel = planInfo.chip;
 
   const initials = useMemo(() => {
-    const src = String(profile?.business_name || userEmail || '')
-      .replace(/[^a-zA-Z ]/g, ' ')
+    const src = String(userProfileData?.business_name || userEmail || "")
+      .replace(/[^a-zA-Z ]/g, " ")
       .trim();
-    if (!src) return 'U';
+    if (!src) return "U";
     const parts = src.split(/\s+/).slice(0, 2);
-    return parts.map(p => p.charAt(0).toUpperCase()).join('') || 'U';
-  }, [profile?.business_name, userEmail]);
+    return parts.map((p) => p.charAt(0).toUpperCase()).join("") || "U";
+  }, [userProfileData?.business_name, userEmail]);
 
-  const hasLogo = !!normalizeLogo(profile?.custom_logo_url);
-  const isPdfLogo = hasLogo && /\.pdf($|\?)/i.test(profile?.custom_logo_url || '');
-  const planLabel = isPremium ? 'Premium' : 'Free';
+  const hasLogo = !!normalizeLogo(userProfileData?.custom_logo_url);
+  const isPdfLogo = hasLogo && /\.pdf($|\?)/i.test(userProfileData?.custom_logo_url || "");
+
+  // Human summary for reminder prefs
+  const reminderSummary = useMemo(() => {
+    if (!userProfileData) return "Configure when to chase invoices";
+    const dueOn = (userProfileData.reminder_due_enabled ?? true)
+      ? "Due: " + String(userProfileData.reminder_days_before ?? 2) + "d before"
+      : "Due: off";
+    const overOn = (userProfileData.reminder_overdue_enabled ?? true)
+      ? "Overdue: every " + String(userProfileData.reminder_overdue_every_days ?? 7) + "d"
+      : "Overdue: off";
+    const hour = Number(userProfileData.reminder_send_hour_utc ?? 9);
+    return dueOn + " • " + overOn + " • " + hour + ":00 UTC";
+  }, [userProfileData]);
 
   const onLogout = async () => {
     try { await supabase.auth.signOut(); }
     catch (e) { showError(e?.message || String(e)); }
-  finally { router.replace(loginHref); }
+    finally { router.replace(loginHref); }
   };
 
-  /**
-   * FIXED UPLOADER:
-   * - Always save under logos/users/<uid>/logo.<ext>
-   * - Works with your RLS that checks the users/<uid>/ prefix
-   */
+  /** Upload / replace logo to logos/users/<uid>/logo.<ext> */
   const pickAndUploadLogo = async () => {
     try {
       setWorking(true);
@@ -185,53 +228,44 @@ export default function SettingsHome() {
       const result = await DocumentPicker.getDocumentAsync({
         multiple: false,
         copyToCacheDirectory: true,
-        type: ['image/*', 'application/pdf'],
+        type: ["image/*", "application/pdf"],
       });
       if (result.canceled) return;
 
       const file = result.assets[0];
       const uri = file.uri;
-      const name = file.name || (Platform.OS === 'ios' ? uri.split('/').pop() : 'upload');
-      const ext = (name?.split('.').pop() || '').toLowerCase();
+      const name = file.name || (Platform.OS === "ios" ? uri.split("/").pop() : "upload");
+      const ext = (name?.split(".").pop() || "").toLowerCase();
 
-      // Choose content-type
-      let contentType = 'application/octet-stream';
-      if (ext === 'pdf') contentType = 'application/pdf';
-      else if (ext === 'jpg' || ext === 'jpeg') contentType = 'image/jpeg';
-      else if (ext === 'png') contentType = 'image/png';
-      else if (ext === 'webp') contentType = 'image/webp';
-      else if (file.mimeType) contentType = file.mimeType; // fallback
+      let contentType = "application/octet-stream";
+      if (ext === "pdf") contentType = "application/pdf";
+      else if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
+      else if (ext === "png") contentType = "image/png";
+      else if (ext === "webp") contentType = "image/webp";
+      else if (file.mimeType) contentType = file.mimeType;
 
-      // Read file as base64 (safe for content:// and ph://)
       const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-      if (!base64) throw new Error('Could not read file data');
+      if (!base64) throw new Error("Could not read file data");
 
-      // Convert to bytes and upload
       const bytes = base64ToBytes(base64);
+      const suffix = ext ? ext : "bin";
+      const pathInBucket = "users/" + userId + "/logo." + suffix;
 
-      // IMPORTANT: path that matches RLS: users/<uid>/logo.<ext>
-      const suffix = ext ? ext : 'bin';
-      const pathInBucket = 'users/' + userId + '/logo.' + suffix;
+      const up = await supabase.storage.from("logos").upload(pathInBucket, bytes, {
+        contentType,
+        upsert: true,
+      });
+      if (up.error) throw up.error;
 
-      const { error: upErr } = await supabase
-        .storage
-        .from('logos')
-        .upload(pathInBucket, bytes, {
-          contentType,
-          upsert: true, // replace existing
-        });
-      if (upErr) throw upErr;
-
-      // URL (public or signed)
       const publicishUrl = await resolveStorageUrl(pathInBucket);
 
-      const { error: updErr } = await supabase
-        .from('profiles')
+      const upd = await supabase
+        .from("profiles")
         .update({ custom_logo_url: publicishUrl })
-        .eq('id', userId);
-      if (updErr) throw updErr;
+        .eq("id", userId);
+      if (upd.error) throw upd.error;
 
-      setProfile((p) => ({ ...(p || {}), custom_logo_url: publicishUrl }));
+      setUserProfileData((p) => ({ ...(p || {}), custom_logo_url: publicishUrl }));
     } catch (e) {
       showError(e?.message || String(e));
     } finally {
@@ -245,35 +279,28 @@ export default function SettingsHome() {
       if (!hasLogo) { setLogoModalOpen(false); return; }
       setWorking(true);
 
-      const url = String(profile?.custom_logo_url || '');
+      const url = String(userProfileData?.custom_logo_url || "");
       let storagePath = null;
-
-      // Robustly detect the path after the /logos/ segment (covers public & signed URLs)
       const anchors = [
-        '/storage/v1/object/public/logos/',
-        '/object/public/logos/',
-        '/logos/',
+        "/storage/v1/object/public/logos/",
+        "/object/public/logos/",
+        "/logos/",
       ];
-      for (const anchor of anchors) {
-        const idx = url.indexOf(anchor);
+      for (let i = 0; i < anchors.length; i++) {
+        const idx = url.indexOf(anchors[i]);
         if (idx !== -1) {
-          storagePath = url.substring(idx + anchor.length);
+          storagePath = url.substring(idx + anchors[i].length);
           break;
         }
       }
+      if (!storagePath) storagePath = "users/" + userId + "/logo.png";
 
-      // If parsing failed, fall back to canonical path where we save logos
-      if (!storagePath) storagePath = 'users/' + userId + '/logo.png';
+      await supabase.storage.from("logos").remove([storagePath]).catch(() => {});
 
-      await supabase.storage.from('logos').remove([storagePath]).catch(() => {});
+      const upd = await supabase.from("profiles").update({ custom_logo_url: null }).eq("id", userId);
+      if (upd.error) throw upd.error;
 
-      const { error: updErr } = await supabase
-        .from('profiles')
-        .update({ custom_logo_url: null })
-        .eq('id', userId);
-      if (updErr) throw updErr;
-
-      setProfile((p) => ({ ...(p || {}), custom_logo_url: null }));
+      setUserProfileData((p) => ({ ...(p || {}), custom_logo_url: null }));
     } catch (e) {
       showError(e?.message || String(e));
     } finally {
@@ -284,14 +311,14 @@ export default function SettingsHome() {
 
   if (loading) {
     return (
-      <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.loading}>
+      <SafeAreaView edges={["top", "left", "right", "bottom"]} style={styles.loading}>
         <ActivityIndicator color={BRAND} />
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={styles.wrap}>
+    <SafeAreaView edges={["top", "left", "right", "bottom"]} style={styles.wrap}>
       <ScrollView
         contentContainerStyle={{
           paddingHorizontal: 16,
@@ -299,6 +326,16 @@ export default function SettingsHome() {
           paddingBottom: Math.max(insets.bottom, 28),
         }}
       >
+        {/* Back Button */}
+        <TouchableOpacity 
+          style={styles.backButton}
+          onPress={() => router.back()}
+          activeOpacity={0.7}
+        >
+          <ChevronLeft size={20} color={BRAND} />
+          <Text style={styles.backText}>Back</Text>
+        </TouchableOpacity>
+
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.h1}>Settings</Text>
@@ -308,15 +345,11 @@ export default function SettingsHome() {
         {/* Profile / hero card */}
         <View style={styles.centerRow}>
           <View style={styles.profileCard}>
-            <TouchableOpacity
-              activeOpacity={0.9}
-              onPress={() => setLogoModalOpen(true)}
-              style={styles.avatarWrap}
-            >
+            <TouchableOpacity activeOpacity={0.9} onPress={() => setLogoModalOpen(true)} style={styles.avatarWrap}>
               {hasLogo && !isPdfLogo ? (
-                <Image source={{ uri: profile.custom_logo_url }} style={styles.avatarImg} resizeMode="cover" />
+                <Image source={{ uri: userProfileData.custom_logo_url }} style={styles.avatarImg} resizeMode="cover" />
               ) : hasLogo && isPdfLogo ? (
-                <View style={[styles.avatar, { backgroundColor: '#fef3c7', borderColor: '#fde68a' }]}>
+                <View style={[styles.avatar, { backgroundColor: "#fef3c7", borderColor: "#fde68a" }]}>
                   <FileText size={22} color="#92400e" />
                 </View>
               ) : (
@@ -330,26 +363,23 @@ export default function SettingsHome() {
             </TouchableOpacity>
 
             <Text style={styles.bizName} numberOfLines={1}>
-              {profile?.business_name || 'Your Business'}
+              {userProfileData?.business_name || "Your Business"}
             </Text>
             <Text style={styles.email} numberOfLines={1}>{userEmail}</Text>
 
             <View style={styles.badgesRow}>
-              <View style={[styles.badge, isPremium ? styles.badgePremium : styles.badgeFree]}>
+              <View style={[styles.badge, { backgroundColor: planInfo.color }]}>
                 <Text style={styles.badgeText}>{planLabel}</Text>
               </View>
-              {!!profile?.trade_type && (
+              {!!userProfileData?.trade_type && (
                 <View style={[styles.badge, styles.badgeMuted]}>
-                  <Text style={styles.badgeText}>{String(profile.trade_type).trim()}</Text>
+                  <Text style={styles.badgeText}>{String(userProfileData.trade_type).trim()}</Text>
                 </View>
               )}
             </View>
 
             {hasLogo && (
-              <TouchableOpacity
-                onPress={() => Linking.openURL(profile.custom_logo_url)}
-                style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}
-              >
+              <TouchableOpacity onPress={() => Linking.openURL(userProfileData.custom_logo_url)} style={{ flexDirection: "row", alignItems: "center", marginTop: 10 }}>
                 <ExternalLink size={16} color={MUTED} />
                 <Text style={{ color: MUTED, marginLeft: 6 }}>Open current logo</Text>
               </TouchableOpacity>
@@ -357,7 +387,7 @@ export default function SettingsHome() {
           </View>
         </View>
 
-        {/* Upsell banner (only for Free) */}
+        {/* Upsell banner (only if not actively subscribed) */}
         {!isPremium && (
           <View style={styles.upgradeCard}>
             <View style={styles.upgradeLeft}>
@@ -377,31 +407,16 @@ export default function SettingsHome() {
           </View>
         )}
 
-        {/* Sections (About removed; keep Plan & Billing + Business Profile + Support) */}
+        {/* Sections */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Account</Text>
-          <Row
-            icon={<CreditCard size={18} color={MUTED} />}
-            title="Plan & Billing"
-            subtitle="Manage / Upgrade"
-            onPress={() => router.push(accountHref)}
-          />
-          <Row
-            icon={<Building2 size={18} color={MUTED} />}
-            title="Business Profile"
-            subtitle="Edit details & branding"
-            onPress={() => router.push(profileHref)}
-          />
+          <Row icon={<CreditCard size={18} color={MUTED} />} title="Plan & Billing" subtitle="Manage / Upgrade" onPress={() => router.push(accountHref)} />
+          <Row icon={<Building2 size={18} color={MUTED} />} title="Business Profile" subtitle="Edit details & branding" onPress={() => router.push(profileHref)} />
         </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Support</Text>
-          <Row
-            icon={<HelpCircle size={18} color={MUTED} />}
-            title="Help & Support"
-            subtitle="FAQs, guides, contact us"
-            onPress={() => router.push(supportHref)}
-          />
+          <Row icon={<HelpCircle size={18} color={MUTED} />} title="Help & Support" subtitle="FAQs, guides, contact us" onPress={() => router.push(supportHref)} />
         </View>
 
         <TouchableOpacity style={[styles.logoutBtn]} activeOpacity={0.9} onPress={onLogout}>
@@ -410,7 +425,6 @@ export default function SettingsHome() {
         </TouchableOpacity>
       </ScrollView>
 
-      {/* Error banner */}
       {!!errBanner && (
         <View style={styles.errBanner}>
           <Text style={styles.errText}>{errBanner}</Text>
@@ -422,21 +436,16 @@ export default function SettingsHome() {
         <Pressable style={styles.modalBackdrop} onPress={() => !working && setLogoModalOpen(false)} />
         <View style={styles.sheet}>
           <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>{hasLogo ? 'Update your logo' : 'Upload a logo'}</Text>
+          <Text style={styles.sheetTitle}>{hasLogo ? "Update your logo" : "Upload a logo"}</Text>
           <Text style={styles.sheetSub}>Supported: JPG, PNG, or PDF.</Text>
 
-          <TouchableOpacity
-            style={[styles.primaryBtn, working && { opacity: 0.6 }]}
-            disabled={working}
-            onPress={pickAndUploadLogo}
-            activeOpacity={0.9}
-          >
+          <TouchableOpacity style={[styles.primaryBtn, working && { opacity: 0.6 }]} disabled={working} onPress={pickAndUploadLogo} activeOpacity={0.9}>
             {working ? (
               <ActivityIndicator color="#fff" />
             ) : (
               <>
                 <ImageIcon size={18} color="#fff" style={{ marginRight: 8 }} />
-                <Text style={styles.primaryBtnText}>{hasLogo ? 'Choose new logo' : 'Choose logo'}</Text>
+                <Text style={styles.primaryBtnText}>{hasLogo ? "Choose new logo" : "Choose logo"}</Text>
               </>
             )}
           </TouchableOpacity>
@@ -448,12 +457,7 @@ export default function SettingsHome() {
             </TouchableOpacity>
           )}
 
-          <TouchableOpacity
-            style={styles.secondaryBtn}
-            onPress={() => setLogoModalOpen(false)}
-            disabled={working}
-            activeOpacity={0.9}
-          >
+          <TouchableOpacity style={styles.secondaryBtn} onPress={() => setLogoModalOpen(false)} disabled={working} activeOpacity={0.9}>
             <Text style={styles.secondaryBtnText}>Cancel</Text>
           </TouchableOpacity>
         </View>
@@ -462,7 +466,7 @@ export default function SettingsHome() {
   );
 }
 
-/* ----- Row component (kept outside SettingsHome) ----- */
+/* ----- Row component ----- */
 function Row({ icon, title, subtitle, onPress }) {
   return (
     <TouchableOpacity style={rowStyles.row} activeOpacity={0.9} onPress={onPress}>
@@ -478,137 +482,139 @@ function Row({ icon, title, subtitle, onPress }) {
   );
 }
 
-/* ------------------ main styles ------------------ */
+/* ------------------ styles ------------------ */
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: BG },
-  loading: { flex: 1, backgroundColor: BG, alignItems: 'center', justifyContent: 'center' },
-
-  header: { alignItems: 'center', marginBottom: 12 },
-  h1: { color: TEXT, fontSize: 24, fontWeight: '800' },
+  loading: { flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" },
+  
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    marginLeft: -8,
+    marginBottom: 8,
+  },
+  backText: {
+    color: BRAND,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  
+  header: { alignItems: "center", marginBottom: 12 },
+  h1: { color: TEXT, fontSize: 24, fontWeight: "800" },
   hint: { color: MUTED, marginTop: 4 },
 
-  centerRow: { alignItems: 'center', marginTop: 6 },
-
+  centerRow: { alignItems: "center", marginTop: 6 },
   profileCard: {
-    width: '100%', maxWidth: 520, backgroundColor: CARD, borderRadius: 16,
+    width: "100%", maxWidth: 520, backgroundColor: CARD, borderRadius: 16,
     paddingVertical: 18, paddingHorizontal: 16, borderWidth: 1, borderColor: BORDER,
-    alignItems: 'center',
-    shadowColor: '#0b1220', shadowOpacity: 0.05, shadowRadius: 14,
+    alignItems: "center", shadowColor: "#0b1220", shadowOpacity: 0.05, shadowRadius: 14,
     shadowOffset: { width: 0, height: 8 }, elevation: 2,
   },
-
-  avatarWrap: { position: 'relative' },
+  avatarWrap: { position: "relative" },
   avatar: {
-    width: 64, height: 64, borderRadius: 32, backgroundColor: BRAND + '15',
-    alignItems: 'center', justifyContent: 'center',
+    width: 64, height: 64, borderRadius: 32, backgroundColor: BRAND + "15",
+    alignItems: "center", justifyContent: "center",
     borderWidth: 1, borderColor: BORDER, marginBottom: 10,
   },
   avatarImg: {
     width: 64, height: 64, borderRadius: 32, borderWidth: 1, borderColor: BORDER, marginBottom: 10,
   },
-  avatarText: { color: BRAND, fontWeight: '900', fontSize: 20 },
+  avatarText: { color: BRAND, fontWeight: "900", fontSize: 20 },
   editBadge: {
-    position: 'absolute', right: -2, bottom: 6, height: 22, width: 22, borderRadius: 11,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: BRAND, borderWidth: 1, borderColor: '#ffffff',
+    position: "absolute", right: -2, bottom: 6, height: 22, width: 22, borderRadius: 11,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: BRAND, borderWidth: 1, borderColor: "#ffffff",
   },
-
-  bizName: { color: TEXT, fontWeight: '900', fontSize: 18 },
+  bizName: { color: TEXT, fontWeight: "900", fontSize: 18 },
   email: { color: MUTED, marginTop: 4 },
-
-  badgesRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  badgesRow: { flexDirection: "row", gap: 8, marginTop: 12 },
   badge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
-  badgeText: { color: '#fff', fontWeight: '800', fontSize: 12 },
-  badgePremium: { backgroundColor: '#10b981' },
-  badgeFree: { backgroundColor: '#9ca3af' },
-  badgeMuted: { backgroundColor: '#6b7280' },
+  badgeText: { color: "#fff", fontWeight: "800", fontSize: 12 },
+  badgeMuted: { backgroundColor: "#6b7280" },
 
   upgradeCard: {
-    width: '100%', maxWidth: 520, alignSelf: 'center', marginTop: 14, backgroundColor: CARD,
-    borderRadius: 16, borderWidth: 1, borderColor: BORDER, padding: 14, flexDirection: 'row',
-    alignItems: 'center', justifyContent: 'space-between',
-    shadowColor: '#0b1220', shadowOpacity: 0.05, shadowRadius: 14,
+    width: "100%", maxWidth: 520, alignSelf: "center", marginTop: 14, backgroundColor: CARD,
+    borderRadius: 16, borderWidth: 1, borderColor: BORDER, padding: 14, flexDirection: "row",
+    alignItems: "center", justifyContent: "space-between",
+    shadowColor: "#0b1220", shadowOpacity: 0.05, shadowRadius: 14,
     shadowOffset: { width: 0, height: 8 }, elevation: 2,
   },
-  upgradeLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flexShrink: 1 },
+  upgradeLeft: { flexDirection: "row", alignItems: "center", gap: 12, flexShrink: 1 },
   crownWrap: {
-    height: 34, width: 34, borderRadius: 17, backgroundColor: BRAND + '15',
-    borderWidth: 1, borderColor: BORDER, alignItems: 'center', justifyContent: 'center',
+    height: 34, width: 34, borderRadius: 17, backgroundColor: BRAND + "15",
+    borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center",
   },
-  upTitle: { color: TEXT, fontWeight: '900' },
+  upTitle: { color: TEXT, fontWeight: "900" },
   upSub: { color: MUTED, marginTop: 2 },
-
   upBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: BRAND },
-  upBtnText: { color: '#fff', fontWeight: '800' },
+  upBtnText: { color: "#fff", fontWeight: "800" },
 
   section: {
-    width: '100%', maxWidth: 520, alignSelf: 'center', backgroundColor: CARD,
+    width: "100%", maxWidth: 520, alignSelf: "center", backgroundColor: CARD,
     borderRadius: 16, borderWidth: 1, borderColor: BORDER, paddingVertical: 8, marginTop: 16,
-    shadowColor: '#0b1220', shadowOpacity: 0.05, shadowRadius: 14,
+    shadowColor: "#0b1220", shadowOpacity: 0.05, shadowRadius: 14,
     shadowOffset: { width: 0, height: 8 }, elevation: 2,
   },
-  sectionTitle: { color: MUTED, fontWeight: '900', fontSize: 12, paddingHorizontal: 14, paddingTop: 6, paddingBottom: 4 },
+  sectionTitle: { color: MUTED, fontWeight: "900", fontSize: 12, paddingHorizontal: 14, paddingTop: 6, paddingBottom: 4 },
 
   logoutBtn: {
-    width: '100%', maxWidth: 520, alignSelf: 'center', marginTop: 16,
-    backgroundColor: '#dc2626', borderRadius: 14, padding: 14,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#dc2626', shadowOpacity: 0.25, shadowRadius: 12,
+    width: "100%", maxWidth: 520, alignSelf: "center", marginTop: 16,
+    backgroundColor: "#dc2626", borderRadius: 14, padding: 14,
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    shadowColor: "#dc2626", shadowOpacity: 0.25, shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 }, elevation: 3,
   },
-  logoutText: { color: '#fff', fontWeight: '900' },
+  logoutText: { color: "#fff", fontWeight: "900" },
 
-  // Error banner
   errBanner: {
-    position: 'absolute', left: 16, right: 16, bottom: 18,
-    backgroundColor: '#111827', paddingVertical: 10, paddingHorizontal: 14,
-    borderRadius: 12, alignItems: 'center',
-    shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 12,
+    position: "absolute", left: 16, right: 16, bottom: 18,
+    backgroundColor: "#111827", paddingVertical: 10, paddingHorizontal: 14,
+    borderRadius: 12, alignItems: "center",
+    shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 }, elevation: 4,
   },
-  errText: { color: '#fff', fontWeight: '700' },
+  errText: { color: "#fff", fontWeight: "700" },
 
-  // Modal / bottom sheet
-  modalBackdrop: { flex: 1, backgroundColor: '#0008' },
+  modalBackdrop: { flex: 1, backgroundColor: "#0008" },
   sheet: {
-    position: 'absolute', left: 0, right: 0, bottom: 0,
+    position: "absolute", left: 0, right: 0, bottom: 0,
     backgroundColor: CARD, borderTopLeftRadius: 18, borderTopRightRadius: 18,
     padding: 16, borderTopWidth: 1, borderColor: BORDER,
   },
-  sheetHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 999, backgroundColor: BORDER, marginBottom: 10 },
-  sheetTitle: { color: TEXT, fontWeight: '900', fontSize: 18 },
+  sheetHandle: { alignSelf: "center", width: 44, height: 5, borderRadius: 999, backgroundColor: BORDER, marginBottom: 10 },
+  sheetTitle: { color: TEXT, fontWeight: "900", fontSize: 18 },
   sheetSub: { color: MUTED, marginTop: 6, marginBottom: 12 },
 
   primaryBtn: {
     backgroundColor: BRAND, borderRadius: 12, paddingVertical: 12,
-    alignItems: 'center', flexDirection: 'row', justifyContent: 'center',
+    alignItems: "center", flexDirection: "row", justifyContent: "center",
   },
-  primaryBtnText: { color: '#fff', fontWeight: '800' },
+  primaryBtnText: { color: "#fff", fontWeight: "800" },
 
   dangerBtn: {
-    marginTop: 10, backgroundColor: '#ef4444', borderRadius: 12,
-    paddingVertical: 12, alignItems: 'center', flexDirection: 'row', justifyContent: 'center',
+    marginTop: 10, backgroundColor: "#ef4444", borderRadius: 12,
+    paddingVertical: 12, alignItems: "center", flexDirection: "row", justifyContent: "center",
   },
-  dangerBtnText: { color: '#fff', fontWeight: '800' },
+  dangerBtnText: { color: "#fff", fontWeight: "800" },
 
-  secondaryBtn: {
-    marginTop: 10, backgroundColor: '#eef2f7', borderRadius: 12, paddingVertical: 12, alignItems: 'center',
-  },
-  secondaryBtnText: { color: TEXT, fontWeight: '800' },
+  secondaryBtn: { marginTop: 10, backgroundColor: "#eef2f7", borderRadius: 12, paddingVertical: 12, alignItems: "center" },
+  secondaryBtnText: { color: TEXT, fontWeight: "800" },
 });
 
-/* ----- Row styles (outside component) ----- */
 const rowStyles = StyleSheet.create({
   row: {
     paddingHorizontal: 12, paddingVertical: 12, marginHorizontal: 8, marginVertical: 4,
-    borderRadius: 12, borderWidth: 1, borderColor: BORDER, backgroundColor: '#f9fafb',
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    borderRadius: 12, borderWidth: 1, borderColor: BORDER, backgroundColor: "#f9fafb",
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
   },
-  left: { flexDirection: 'row', alignItems: 'center', gap: 12, flexShrink: 1 },
+  left: { flexDirection: "row", alignItems: "center", gap: 12, flexShrink: 1 },
   iconWrap: {
-    height: 34, width: 34, borderRadius: 10, backgroundColor: '#f3f4f6',
-    borderWidth: 1, borderColor: BORDER, alignItems: 'center', justifyContent: 'center',
+    height: 34, width: 34, borderRadius: 10, backgroundColor: "#f3f4f6",
+    borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center",
   },
-  title: { color: TEXT, fontWeight: '900' },
+  title: { color: TEXT, fontWeight: "900" },
   sub: { color: MUTED, marginTop: 2, fontSize: 12 },
 });

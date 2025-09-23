@@ -11,21 +11,37 @@ import {
   Alert,
   ScrollView,
   DeviceEventEmitter,
+  Modal,
+  Pressable,
+  Linking,
+  Switch,
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import * as Haptics from "expo-haptics";
 import { supabase } from "../../../lib/supabase";
-import { jobDocsHref, jobExpensesHref, loginHref } from "../../../lib/nav";
+import { jobDocsHref, jobExpensesHref, loginHref, invoiceWizardHref } from "../../../lib/nav";
 import {
   Pencil,
   Save,
   CalendarDays,
   FileText,
-  Image as ImageIcon,
   Receipt,
+  Check,
+  Mail,
+  Phone,
+  MapPin,
+  User,
   ChevronRight,
-  Trash2,
+  CornerUpLeft,
+  ChevronLeft,
+  ChevronRight as ChevronRightIcon,
+  Minus,
+  Plus as PlusIcon,
 } from "lucide-react-native";
+
+import SharedCalendar from "../../../components/SharedCalendar";
+import { getPremiumStatus } from "../../../lib/premium";
 
 /* ---- theme ---- */
 const BG = "#f5f7fb";
@@ -33,36 +49,43 @@ const CARD = "#ffffff";
 const TEXT = "#0b1220";
 const MUTED = "#6b7280";
 const BORDER = "#e6e9ee";
-const BRAND = "#2a86ff";
-const DANGER = "#e11d48";
-const SUCCESS = "#16a34a";
-const WARN = "#f59e0b";
+const BRAND = "#2a86ff";      // "scheduled" blue
+const SUCCESS = "#16a34a";    // green for complete
+const WARN = "#f59e0b";       // used in UI
+const DANGER = "#ef4444";     // blocked/overlap
+const ORANGE = "#f59e0b";     // in-progress orange
+
+/* ---- color map for statuses ---- */
+const normalizeStatus = (s) =>
+  String(s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/^open$/, "scheduled"); // treat 'open' as 'scheduled'
+
+const STATUS_COLOR = {
+  scheduled: BRAND,          // blue
+  in_progress: ORANGE,       // orange
+  complete: SUCCESS,         // green
+};
+
+/* ---- routes ---- */
+const jobsIndexHref = "/(tabs)/jobs";
 
 /* ---- date helpers ---- */
 const pad = (n) => String(n).padStart(2, "0");
-const toYMD = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const toLocalMidnight = (d) => {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-};
+const toYMD = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+const toLocalMidnight = (d) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
 const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
 const addWorkingDays = (start, days, includeWeekends) => {
   const s = toLocalMidnight(start);
   if (days <= 1) return s;
   let r = days - 1;
   const cur = new Date(s);
-  while (r > 0) {
-    cur.setDate(cur.getDate() + 1);
-    if (includeWeekends || !isWeekend(cur)) r--;
-  }
+  while (r > 0) { cur.setDate(cur.getDate() + 1); if (includeWeekends || !isWeekend(cur)) r--; }
   return cur;
 };
-const money = (v = 0) =>
-  "£" +
-  Number(v || 0)
-    .toFixed(2)
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const money = (v = 0) => "£" + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 // detect “column does not exist” from Postgres
 const isMissingColumn = (err) =>
@@ -80,82 +103,96 @@ export default function JobDetails() {
 
   const [job, setJob] = useState(null);
 
-  // keep a guard so we don't re-enter load()
-  const inFlight = useRef(false);
-
   // editable fields
   const [title, setTitle] = useState("");
   const [client, setClient] = useState("");
   const [start, setStart] = useState(toLocalMidnight(new Date()));
-  const [showPicker, setShowPicker] = useState(false);
+  const [showPicker, setShowPicker] = useState(false); // native fallback
   const [dur, setDur] = useState(1);
   const [weekends, setWeekends] = useState(false);
-  const end = useMemo(
-    () => addWorkingDays(start, Math.max(1, Math.floor(dur || 1)), weekends),
-    [start, dur, weekends]
-  );
+  const end = useMemo(() => addWorkingDays(start, Math.max(1, Math.floor(dur || 1)), weekends), [start, dur, weekends]);
 
-  // dashboard summary
+  // summary
   const [docsCount, setDocsCount] = useState(0);
   const [expCount, setExpCount] = useState(0);
   const [expTotal, setExpTotal] = useState(0);
 
-  // ---- expense summary (new + legacy) + sync jobs.cost ----
+  // client modal
+  const [showClient, setShowClient] = useState(false);
+  const [clientEdit, setClientEdit] = useState(false);
+  const [clientInfo, setClientInfo] = useState({ id: null, name: "", email: "", phone: "", address: "" });
+
+  // status checkboxes
+  const [isInProgress, setIsInProgress] = useState(false);
+  const [isCompleted, setIsCompleted] = useState(false);
+
+  const inFlight = useRef(false);
+
+  // calendar state
+  const [userId, setUserId] = useState(null);
+  const [jobs, setJobs] = useState([]); // all OTHER jobs (exclude this job)
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [calMonth, setCalMonth] = useState(()=>{const d=new Date(); d.setDate(1); return d;});
+
+  // ---- expense summary + sync jobs.cost ----
   const loadExpenseSummary = useCallback(async () => {
-    let total = 0;
-    let count = 0;
-
-    // Count (fast; head=true)
-    const countQ = await supabase
-      .from("expenses")
-      .select("id", { count: "exact", head: true })
-      .eq("job_id", jobId);
-    if (countQ.error) throw countQ.error;
-    count = countQ.count || 0;
-
-    // First: query NEW schema fields only
-    const newQ = await supabase
-      .from("expenses")
-      .select("id,total,qty,unit_cost")
-      .eq("job_id", jobId);
-    if (newQ.error) throw newQ.error;
-
-    for (const r of newQ.data || []) {
-      const t = Number(r.total);
-      if (Number.isFinite(t)) {
-        total += t;
-      } else {
-        const q = Number(r.qty);
-        const u = Number(r.unit_cost);
-        if (Number.isFinite(q) && Number.isFinite(u)) total += q * u;
-      }
-    }
-
-    // Best-effort legacy add (ignore errors if column missing)
     try {
-      const legQ = await supabase
+      // Get count
+      const countQ = await supabase.from("expenses").select("id", { count: "exact", head: true }).eq("job_id", jobId);
+      if (countQ.error && !isMissingColumn(countQ.error)) throw countQ.error;
+      const count = countQ.count || 0;
+
+      // Calculate total from all expense records
+      let total = 0;
+      const expensesQ = await supabase
         .from("expenses")
-        .select("id,amount")
+        .select("amount, total, qty, unit_cost")
         .eq("job_id", jobId);
-      if (!legQ.error) {
-        for (const r of legQ.data || []) {
-          const a = Number(r.amount);
-          if (Number.isFinite(a)) total += a;
+      
+      if (expensesQ.error && !isMissingColumn(expensesQ.error)) throw expensesQ.error;
+      
+      for (const expense of expensesQ.data || []) {
+        // Try different total fields in order of preference
+        let expenseTotal = 0;
+        
+        if (expense.amount && Number.isFinite(Number(expense.amount))) {
+          expenseTotal = Number(expense.amount);
+        } else if (expense.total && Number.isFinite(Number(expense.total))) {
+          expenseTotal = Number(expense.total);
+        } else if (expense.qty && expense.unit_cost) {
+          const qty = Number(expense.qty) || 0;
+          const unitCost = Number(expense.unit_cost) || 0;
+          if (Number.isFinite(qty) && Number.isFinite(unitCost)) {
+            expenseTotal = qty * unitCost;
+          }
         }
+        
+        total += expenseTotal;
       }
-    } catch {}
 
-    setExpCount(count);
-    setExpTotal(total);
+      setExpCount(count);
+      setExpTotal(total);
 
-    // Keep jobs.cost in sync (do NOT emit here; the expenses screen will)
-    try {
-      const nowIso = new Date().toISOString();
-      const upd = await supabase.from("jobs").update({ cost: total, updated_at: nowIso }).eq("id", jobId);
-      if (upd.error && isMissingColumn(upd.error)) {
-        // old schema without cost — ignore
+      // Update job cost
+      try {
+        const nowIso = new Date().toISOString();
+        const { error: updateError } = await supabase
+          .from("jobs")
+          .update({ cost: total, updated_at: nowIso })
+          .eq("id", jobId);
+        
+        if (updateError && !isMissingColumn(updateError)) {
+          console.warn("Failed to update job cost:", updateError);
+        }
+      } catch (e) {
+        console.warn("Failed to sync job cost:", e);
       }
-    } catch {}
+    } catch (e) {
+      console.error("Failed to load expense summary:", e);
+      // Set defaults on error
+      setExpCount(0);
+      setExpTotal(0);
+    }
   }, [jobId]);
 
   const load = useCallback(async () => {
@@ -167,29 +204,92 @@ export default function JobDetails() {
 
       const auth = await supabase.auth.getUser();
       const user = auth?.data?.user;
-      if (!user) {
-        router.replace(loginHref);
-        return;
+      if (!user) { router.replace(loginHref); return; }
+      setUserId(user.id);
+
+      // Check if user is blocked due to expired trial
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("trial_ends_at, plan_tier, plan_status")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (profile) {
+        const status = getPremiumStatus(profile);
+        if (status.isBlocked) {
+          router.replace("/(app)/trial-expired");
+          return;
+        }
       }
 
-      // job
       const res = await supabase
         .from("jobs")
-        .select(
-          "id, user_id, title, client_name, start_date, end_date, duration_days, include_weekends, total, cost, status, notes"
-        )
-        .eq("id", jobId)
-        .eq("user_id", user.id)
-        .maybeSingle();
+        .select("id,user_id,title,client_name,client_email,client_phone,client_address,client_id,start_date,end_date,duration_days,include_weekends,total,cost,status,notes")
+        .eq("id", jobId).eq("user_id", user.id).maybeSingle();
       if (res.error) throw res.error;
-      if (!res.data) {
-        Alert.alert("Not found", "This job does not exist.");
-        router.back();
-        return;
-      }
+      if (!res.data) { Alert.alert("Not found","This job does not exist."); router.back(); return; }
 
       const j = res.data;
       setJob(j);
+      
+      // ✅ Check if this job was created from a quote and auto-populate expenses
+      // First check if expenses already exist to avoid duplicates
+      const { data: existingExpenses } = await supabase
+        .from("expenses")
+        .select("id")
+        .eq("job_id", jobId)
+        .limit(1);
+
+      // Only auto-populate if no expenses exist yet
+      if (!existingExpenses || existingExpenses.length === 0) {
+        try {
+          // Find the quote that created this job using reverse lookup
+          const { data: sourceQuote } = await supabase
+            .from("quotes")
+            .select("line_items")
+            .eq("job_id", jobId)
+            .maybeSingle();
+
+          if (sourceQuote?.line_items) {
+            const lineItems = Array.isArray(sourceQuote.line_items) ? sourceQuote.line_items : [];
+            const expenseItems = lineItems.filter(
+              (item) =>
+                item.type === "materials" ||
+                item.type === "other" ||
+                (item.type !== "labour" && item.description && item.total > 0)
+            );
+
+            if (expenseItems.length > 0) {
+              const expenseRows = expenseItems.map((item) => ({
+                job_id: jobId,
+                user_id: user.id,
+                description: item.description || "Quote expense",
+                amount: Number(item.total || 0),
+                category: item.type === "materials" ? "materials" : "other",
+                date: j.start_date || new Date().toISOString().split("T")[0],
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              }));
+
+              const { error: expErr } = await supabase.from("expenses").insert(expenseRows);
+              if (!expErr) {
+                // Update job cost
+                const totalExpenses = expenseRows.reduce((sum, exp) => sum + exp.amount, 0);
+                await supabase
+                  .from("jobs")
+                  .update({ cost: totalExpenses })
+                  .eq("id", jobId);
+                
+                // Update local job data
+                setJob(prev => ({ ...prev, cost: totalExpenses }));
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to auto-populate expenses from quote:", e);
+        }
+      }
+
       setTitle(j.title || "");
       setClient(j.client_name || "");
       const s = j.start_date ? new Date(j.start_date) : new Date();
@@ -197,11 +297,32 @@ export default function JobDetails() {
       setDur(Math.max(1, Number(j.duration_days || 1)));
       setWeekends(!!j.include_weekends);
 
-      // summary: docs + expenses
-      const docsQ = await supabase
-        .from("documents")
-        .select("id", { count: "exact", head: true })
-        .eq("job_id", jobId);
+      const status = normalizeStatus(j.status || "scheduled");
+      setIsInProgress(status === "in_progress");
+      setIsCompleted(status === "complete");
+
+      if (j.client_id) {
+        const cQ = await supabase.from("clients").select("id,name,email,phone,address").eq("id", j.client_id).maybeSingle();
+        if (!cQ.error && cQ.data) {
+          setClientInfo({
+            id: cQ.data.id,
+            name: cQ.data.name || j.client_name || "",
+            email: cQ.data.email || j.client_email || "",
+            phone: cQ.data.phone || j.client_phone || "",
+            address: cQ.data.address || j.client_address || "",
+          });
+        }
+      } else {
+        setClientInfo({
+          id: null,
+          name: j.client_name || "",
+          email: j.client_email || "",
+          phone: j.client_phone || "",
+          address: j.client_address || "",
+        });
+      }
+
+      const docsQ = await supabase.from("documents").select("id", { count: "exact", head: true }).eq("job_id", jobId);
       if (docsQ.error) throw docsQ.error;
       setDocsCount(docsQ.count || 0);
 
@@ -215,220 +336,208 @@ export default function JobDetails() {
     }
   }, [jobId, router, loadExpenseSummary]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(()=>{ load(); }, [load]);
+  useEffect(()=>{ const sub = DeviceEventEmitter.addListener("jobs:changed", ()=>{ if(!inFlight.current) load(); }); return ()=>sub.remove(); }, [load]);
 
-  // Listen for external changes; call ONLY load() to avoid double work
+  const loadJobs = useCallback(async () => {
+    if (!userId) return;
+    const { data, error } = await supabase
+      .from("jobs")
+      .select("id,title,start_date,end_date,status,user_id")
+      .eq("user_id", userId);
+    if (!error) setJobs((data || []).filter((j)=> j.id !== jobId));
+  }, [userId, jobId]);
+
+  /* ---- live-refresh when status changes & calendar open ---- */
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener("jobs:changed", () => {
-      if (!inFlight.current) load();
-    });
-    return () => sub.remove();
-  }, [load]);
+    if (scheduleOpen) loadJobs();
+  }, [isInProgress, isCompleted, scheduleOpen, loadJobs]);
+
+  /* ---------- auto-save for date-related fields ---------- */
+  const saveDatesOnly = useCallback(
+    async (s = start, d = dur, w = weekends) => {
+      if (!job) return;
+      try {
+        const payload = {
+          start_date: toYMD(s),
+          end_date: toYMD(addWorkingDays(s, Math.max(1, Math.floor(dur || 1)), w)),
+          duration_days: Math.max(1, Math.floor(dur || 1)),
+          include_weekends: !!w,
+          updated_at: new Date().toISOString(),
+        };
+        const { error } = await supabase.from("jobs").update(payload).eq("id", job.id);
+        if (error) throw error;
+        DeviceEventEmitter.emit("jobs:changed");
+      } catch (e) {
+        console.error("[job details] auto-save dates", e);
+      }
+    },
+    [job, start, dur, weekends]
+  );
+
+  useEffect(() => {
+    if (!scheduleOpen) return;
+    (async () => {
+      await loadJobs();
+      setCalMonth(new Date(start.getFullYear(), start.getMonth(), 1));
+    })();
+  }, [scheduleOpen]); // eslint-disable-line
 
   const save = useCallback(async () => {
+    // Save NON-date fields (title/client) — dates save themselves
     try {
       if (!job) return;
-      if (!title.trim()) {
-        Alert.alert("Missing", "Enter a job title.");
-        return;
-      }
-      if (!client.trim()) {
-        Alert.alert("Missing", "Enter the client name.");
-        return;
-      }
+      if (!title.trim()) { Alert.alert("Missing","Enter a job title."); return; }
+      if (!client.trim()) { Alert.alert("Missing","Enter the client name."); return; }
       setSaving(true);
-      const payload = {
-        title: title.trim(),
-        client_name: client.trim(),
-        start_date: toYMD(start),
-        end_date: toYMD(end),
-        duration_days: Math.max(1, Math.floor(Number(dur || 1))),
-        include_weekends: !!weekends,
-        updated_at: new Date().toISOString(),
-      };
+      const payload = { title: title.trim(), client_name: client.trim(), updated_at: new Date().toISOString() };
       const { error } = await supabase.from("jobs").update(payload).eq("id", job.id);
       if (error) throw error;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setEdit(false);
       await load();
     } catch (e) {
       console.error("[job details] save", e);
       Alert.alert("Save failed", e?.message || "Could not save changes.");
-    } finally {
-      setSaving(false);
-    }
-  }, [job, title, client, start, end, dur, weekends, load]);
+    } finally { setSaving(false); }
+  }, [job, title, client, load]);
 
-  const changeStatus = async (next) => {
+  const goToInvoiceWizard = useCallback(() => {
+    Haptics.selectionAsync();
+    router.push(invoiceWizardHref({ jobId }));
+  }, [router, jobId]);
+
+  const writeStatus = async (next) => {
     try {
-      if (!job) return;
       setSaving(true);
-      const { error } = await supabase
-        .from("jobs")
-        .update({ status: next, updated_at: new Date().toISOString() })
-        .eq("id", job.id);
+      const allowed = normalizeStatus(next); // safety
+      const toWrite = allowed === "complete" || allowed === "in_progress" || allowed === "scheduled" ? allowed : "scheduled";
+      const { error } = await supabase.from("jobs").update({ status: toWrite, updated_at: new Date().toISOString() }).eq("id", job.id);
       if (error) throw error;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setIsInProgress(toWrite === "in_progress");
+      setIsCompleted(toWrite === "complete");
       await load();
-    } catch (e) {
-      Alert.alert("Update failed", e?.message || "Could not update status.");
-    } finally {
-      setSaving(false);
-    }
+    } catch (e) { Alert.alert("Update failed", e?.message || "Could not update status."); }
+    finally { setSaving(false); }
   };
 
-  /** Delete job (with cascading deletes for documents & expenses) */
-  const confirmDeleteJob = useCallback(() => {
-    if (!job) return;
-    Alert.alert(
-      "Delete job?",
-      "This will permanently delete this job AND all of its documents and expenses.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              setSaving(true);
+  const onToggleInProgress = async () => {
+    Haptics.selectionAsync();
+    const next = isInProgress ? (isCompleted ? "complete" : "scheduled") : "in_progress";
+    await writeStatus(next);
+  };
+  const onToggleCompleted = async () => {
+    Haptics.selectionAsync();
+    const next = isCompleted ? (isInProgress ? "in_progress" : "scheduled") : "complete";
+    await writeStatus(next);
+  };
 
-              // Delete related rows first (manual cascade for safety)
-              const [d1, d2] = await Promise.all([
-                supabase.from("documents").delete().eq("job_id", job.id),
-                supabase.from("expenses").delete().eq("job_id", job.id),
-              ]);
-              if (d1.error) throw d1.error;
-              if (d2.error) throw d2.error;
+  // client modal
+  const openClientModal = () => { Haptics.selectionAsync(); setShowClient(true); };
+  const saveClient = async () => {
+    try {
+      setSaving(true);
+      const payload = {
+        name: clientInfo.name?.trim() || "",
+        email: clientInfo.email?.trim() || null,
+        phone: clientInfo.phone?.trim() || null,
+        address: clientInfo.address?.trim() || null,
+        updated_at: new Date().toISOString(),
+      };
+      if (clientInfo.id) {
+        const { error } = await supabase.from("clients").update(payload).eq("id", clientInfo.id);
+        if (error) throw error;
+      } else if (job) {
+        const { error } = await supabase.from("jobs").update({
+          client_name: payload.name, client_email: payload.email, client_phone: payload.phone,
+          client_address: payload.address, updated_at: new Date().toISOString(),
+        }).eq("id", job.id);
+        if (error) throw error;
+        setClient(payload.name);
+      }
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      setClientEdit(false);
+      await load();
+    } catch (e) { console.error("[client] save", e); Alert.alert("Save failed", e?.message || "Could not save client."); }
+    finally { setSaving(false); }
+  };
+  const linkTo = (type, value) => {
+    if (!value) return;
+    if (type === "mail") Linking.openURL(`mailto:${value}`);
+    if (type === "tel") Linking.openURL(`tel:${value}`);
+    if (type === "maps") Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(value)}`);
+  };
 
-              // Delete the job
-              const { error: delErr } = await supabase.from("jobs").delete().eq("id", job.id);
-              if (delErr) throw delErr;
+  // calendar open
+  const openStartDatePicker = async () => { if (!edit) return; Haptics.selectionAsync(); setScheduleOpen(true); };
 
-              // notify jobs list to refresh and go back
-              DeviceEventEmitter.emit("jobs:changed");
-              router.back();
-            } catch (e) {
-              console.error("[job details] delete", e);
-              Alert.alert("Delete failed", e?.message || "Could not delete this job.");
-            } finally {
-              setSaving(false);
-            }
-          },
-        },
-      ]
-    );
-  }, [job, router]);
+  // this job’s span/accent color
+  const spanColor = isInProgress
+    ? STATUS_COLOR.in_progress
+    : isCompleted
+    ? STATUS_COLOR.complete
+    : STATUS_COLOR.scheduled;
 
   if (loading || !job) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <ActivityIndicator color={BRAND} />
-      </View>
-    );
+    return (<View style={[styles.screen, styles.center]}><ActivityIndicator color={BRAND} /></View>);
   }
-
-  const status = String(job.status || "scheduled");
-  const statusColor =
-    status === "completed" ? SUCCESS : status === "in_progress" ? WARN : BRAND;
 
   return (
     <View style={styles.screen}>
       {/* Header */}
       <View style={styles.top}>
-        <Text style={styles.h1} numberOfLines={1}>
-          {job.title || "Job"}
-        </Text>
-        <TouchableOpacity onPress={edit ? save : () => setEdit(true)} style={styles.iconBtn}>
-          {edit ? <Save size={18} color={MUTED} /> : <Pencil size={18} color={MUTED} />}
+        <Pressable onPress={() => router.back()} style={styles.backBtn} android_ripple={{ color: "rgba(0,0,0,0.06)" }}>
+          <ChevronLeft size={18} color={BRAND} />
+          <Text style={styles.backTxt}>Back</Text>
+        </Pressable>
+        <Text style={styles.h1} numberOfLines={1}>{job.title || "Job"}</Text>
+        <View style={{ width: 36 }} />
+      </View>
+
+      {/* Status */}
+      <View style={styles.actionBar}>
+        <TouchableOpacity style={[styles.tileBtn, styles.tileNeutral]} onPress={onToggleInProgress} activeOpacity={0.9}>
+          <View style={[styles.checkbox, isInProgress && styles.checkboxChecked]}>{isInProgress ? <Check size={16} color="#fff" /> : null}</View>
+          <Text style={styles.tileNeutralTxt}>In progress</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.tileBtn, styles.tileNeutral]} onPress={onToggleCompleted} activeOpacity={0.9}>
+          <View style={[styles.checkbox, isCompleted && styles.checkboxChecked]}>{isCompleted ? <Check size={16} color="#fff" /> : null}</View>
+          <Text style={styles.tileNeutralTxt}>Completed</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
-        {/* Status chips */}
-        <View style={styles.statusRow}>
-          {[
-            ["scheduled", "Scheduled"],
-            ["in_progress", "In progress"],
-            ["completed", "Completed"],
-          ].map(([key, label]) => {
-            const active = status === key;
-            return (
-              <TouchableOpacity
-                key={key}
-                onPress={() => changeStatus(key)}
-                disabled={saving}
-                style={[
-                  styles.statusChip,
-                  active && { backgroundColor: statusColor + "22", borderColor: statusColor + "66" },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.dot,
-                    { backgroundColor: key === "completed" ? SUCCESS : key === "in_progress" ? WARN : BRAND },
-                  ]}
-                />
-                <Text style={[styles.statusTxt, active && { color: statusColor }]}>{label}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {/* Timeline strip */}
+      <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
+        {/* ---- Details FIRST ---- */}
         <View style={styles.card}>
-          <Text style={styles.section}>Timeline</Text>
-          <Timeline start={start} end={end} weekends={weekends} />
-        </View>
+          <TouchableOpacity onPress={edit ? save : () => { Haptics.selectionAsync(); setEdit(true); }} style={styles.cardEditBtn} activeOpacity={0.85}>
+            {edit ? <Save size={18} color={MUTED} /> : <Pencil size={18} color={MUTED} />}
+          </TouchableOpacity>
 
-        {/* Summary */}
-        <View style={styles.row2}>
-          <SummaryCard
-            icon={<FileText size={18} color={BRAND} />}
-            title="Documents"
-            value={docsCount}
-            onPress={() => router.replace(jobDocsHref(jobId))}
-          />
-          <SummaryCard
-            icon={<Receipt size={18} color={WARN} />}
-            title="Expenses"
-            value={`${expCount} • ${money(expTotal)}`}
-            onPress={() => router.replace(jobExpensesHref(jobId))}
-          />
-        </View>
-
-        {/* Details / edit */}
-        <View style={styles.card}>
           <Text style={styles.section}>Details</Text>
 
           <Text style={styles.label}>Job title</Text>
-          <TextInput
-            style={styles.input}
-            value={title}
-            onChangeText={setTitle}
-            editable={edit}
-            placeholder="e.g. Kitchen install"
-          />
+          <TextInput style={[styles.input, !edit && styles.inputReadonly]} value={title} onChangeText={setTitle} editable={edit} placeholder="e.g. Kitchen install" />
 
           <Text style={styles.label}>Client</Text>
-          <TextInput
-            style={styles.input}
-            value={client}
-            onChangeText={setClient}
-            editable={edit}
-            placeholder="Client name"
-          />
+          <TouchableOpacity onPress={openClientModal} activeOpacity={0.85}>
+            <View>
+              <TextInput style={[styles.input, styles.inputReadonly, { paddingLeft: 38, paddingRight: 34 }]} value={client} editable={false} pointerEvents="none" />
+              <View style={styles.leftIcon}><User size={16} color={MUTED} /></View>
+              <View style={styles.rightIcon}><ChevronRight size={16} color={MUTED} /></View>
+            </View>
+          </TouchableOpacity>
 
           <Text style={styles.label}>Start date</Text>
           <View style={{ position: "relative" }}>
-            <TextInput style={styles.input} editable={false} value={start.toLocaleDateString()} />
-            <TouchableOpacity
-              disabled={!edit}
-              onPress={() => setShowPicker(true)}
-              style={styles.inputIcon}
-            >
-              <CalendarDays size={18} color={MUTED} />
-            </TouchableOpacity>
+            <TextInput style={[styles.input, !edit && styles.inputReadonly]} editable={false} value={start.toLocaleDateString()} placeholder="Pick a date" />
+            {edit ? (
+              <TouchableOpacity onPress={openStartDatePicker} style={styles.inputIcon}>
+                <CalendarDays size={18} color={MUTED} />
+              </TouchableOpacity>
+            ) : null}
           </View>
+
           {showPicker ? (
             <DateTimePicker
               value={start}
@@ -437,8 +546,9 @@ export default function JobDetails() {
               onChange={(e, d) => {
                 if (Platform.OS === "android") setShowPicker(false);
                 if (d) {
-                  const clean = toLocalMidnight(d);
-                  setStart(clean);
+                  const ns = toLocalMidnight(d);
+                  setStart(ns);
+                  saveDatesOnly(ns, dur, weekends); // auto-save
                 }
               }}
               maximumDate={new Date(2199, 11, 31)}
@@ -447,112 +557,227 @@ export default function JobDetails() {
 
           <Text style={styles.label}>Duration (days)</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, !edit && styles.inputReadonly]}
             value={String(dur)}
-            onChangeText={(t) =>
-              setDur(Math.max(1, Math.floor(Number(String(t).replace(/[^0-9]/g, "")) || 1)))
-            }
+            onChangeText={(t) => {
+              const val = Math.max(1, Math.floor(Number(String(t).replace(/[^0-9]/g, "")) || 1));
+              setDur(val);
+              if (edit) saveDatesOnly(start, val, weekends); // auto-save
+            }}
             keyboardType="number-pad"
             editable={edit}
           />
 
-          <TouchableOpacity
-            disabled={!edit}
-            style={styles.checkRow}
-            onPress={() => setWeekends((v) => !v)}
-          >
-            <View style={[styles.checkboxBox, weekends && styles.checkboxBoxChecked]}>
-              {weekends ? <Text style={styles.checkboxTick}>✓</Text> : null}
-            </View>
-            <Text style={{ color: TEXT, fontWeight: "800" }}>Include weekends</Text>
-          </TouchableOpacity>
+          {edit ? (
+            <TouchableOpacity
+              style={styles.checkRow}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setWeekends((prev) => {
+                  const v = !prev;
+                  saveDatesOnly(start, dur, v); // auto-save
+                  return v;
+                });
+              }}
+              activeOpacity={0.9}
+            >
+              <View style={[styles.checkboxSmall, weekends && styles.checkboxSmallChecked]}>{weekends ? <Text style={styles.checkboxTick}>✓</Text> : null}</View>
+              <Text style={{ color: TEXT, fontWeight: "800" }}>Include weekends</Text>
+            </TouchableOpacity>
+          ) : null}
 
-          <View style={styles.infoBox}>
+          <View style={[styles.infoBox, !edit && styles.inputReadonly]}>
             <Text style={{ color: TEXT, fontWeight: "800" }}>
-              Ends: {end.toLocaleDateString()} ({weekends ? "calendar days" : "working days"})
+              Ends: {addWorkingDays(start, Math.max(1, Math.floor(dur || 1)), weekends).toLocaleDateString()} ({weekends ? "calendar days" : "working days"})
+            </Text>
+          </View>
+        </View>
+
+        {/* ---- Expenses & Documents (after Details) ---- */}
+        <View style={styles.row2}>
+          <SummaryCard
+            icon={<Receipt size={18} color={WARN} />}
+            title="Expenses"
+            value={`${expCount} • ${money(expTotal)}`}
+            onPress={() => { Haptics.selectionAsync(); router.replace(jobExpensesHref(jobId)); }}
+          />
+          <SummaryCard
+            icon={<FileText size={18} color={BRAND} />}
+            title="Documents"
+            value={docsCount}
+            onPress={() => { Haptics.selectionAsync(); router.replace(jobDocsHref(jobId)); }}
+          />
+        </View>
+
+        {/* ---- Create Invoice at BOTTOM ---- */}
+        <View style={{ paddingHorizontal: 14, marginTop: 14 }}>
+          <TouchableOpacity style={[styles.tileBtn, styles.tilePrimary]} onPress={goToInvoiceWizard} activeOpacity={0.9}>
+            <FileText size={18} color="#fff" />
+            <Text style={styles.tilePrimaryTxt}>Create Invoice</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+
+      {/* Client modal */}
+      <Modal visible={showClient} transparent animationType="fade" onRequestClose={() => setShowClient(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowClient(false)}>
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <TouchableOpacity onPress={clientEdit ? saveClient : () => setClientEdit(true)} style={styles.cardEditBtn} activeOpacity={0.85}>
+              {clientEdit ? <Save size={18} color={MUTED} /> : <Pencil size={18} color={MUTED} />}
+            </TouchableOpacity>
+
+            <Text style={[styles.modalTitle, { paddingRight: 42 }]}>Client</Text>
+            <View style={{ height: 8 }} />
+
+            <Text style={styles.label}>Name</Text>
+            <TextInput style={[styles.input, !clientEdit && styles.inputReadonly]} editable={clientEdit} value={clientInfo.name} onChangeText={(t)=>setClientInfo((p)=>({...p,name:t}))} />
+
+            <Text style={styles.label}>Email</Text>
+            <View style={styles.linkRow}>
+              <TextInput style={[styles.input, styles.linkInput, !clientEdit && styles.inputReadonly]} editable={clientEdit} value={clientInfo.email || ""} onChangeText={(t)=>setClientInfo((p)=>({...p,email:t}))} keyboardType="email-address" autoCapitalize="none" />
+              {!clientEdit && !!clientInfo.email && (
+                <TouchableOpacity style={styles.linkBtn} onPress={() => linkTo("mail", clientInfo.email)}>
+                  <Mail size={16} color={BRAND} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <Text style={styles.label}>Phone</Text>
+            <View style={styles.linkRow}>
+              <TextInput style={[styles.input, styles.linkInput, !clientEdit && styles.inputReadonly]} editable={clientEdit} value={clientInfo.phone || ""} onChangeText={(t)=>setClientInfo((p)=>({...p,phone:t}))} keyboardType="phone-pad" />
+              {!clientEdit && !!clientInfo.phone && (
+                <TouchableOpacity style={styles.linkBtn} onPress={() => linkTo("tel", clientInfo.phone)}>
+                  <Phone size={16} color={BRAND} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <Text style={styles.label}>Address</Text>
+            <View style={styles.linkRow}>
+              <TextInput
+                style={[styles.input, styles.linkInput, !clientEdit && styles.inputReadonly, { height: 70, textAlignVertical: "top" }]}
+                editable={clientEdit}
+                value={clientInfo.address || ""}
+                onChangeText={(t)=>setClientInfo((p)=>({...p,address:t}))}
+                multiline
+              />
+              {!clientEdit && !!clientInfo.address && (
+                <TouchableOpacity style={styles.linkBtn} onPress={() => linkTo("maps", clientInfo.address)}>
+                  <MapPin size={16} color={BRAND} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Calendar modal (shared component) */}
+      <Modal visible={scheduleOpen} animationType="fade" transparent>
+        <Pressable style={styles.calBackdrop} onPress={() => setScheduleOpen(false)} />
+        <View style={styles.sheet}>
+          <Text style={styles.sheetTitle}>Pick start date</Text>
+
+          <SharedCalendar
+            month={calMonth}
+            onChangeMonth={(d) => {
+              setCalMonth(d);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+            selectedDate={start}
+            onSelectDate={(d) => {
+              const ns = toLocalMidnight(d);
+              setStart(ns);
+              saveDatesOnly(ns, dur, weekends); // auto-save
+              Haptics.selectionAsync();
+            }}
+            jobs={jobs} // other jobs (this job excluded) for blocking & bands
+            span={{ start, days: Math.max(1, Math.floor(dur || 1)), includeWeekends: weekends }}
+            blockStarts
+            accentColor={spanColor} // span color follows this job status
+          />
+
+          {/* Duration + Weekends */}
+          <View style={styles.durationBlock}>
+            <Text style={styles.controlHeader}>Duration</Text>
+            <View style={styles.spinRow}>
+              <TouchableOpacity
+                style={styles.spinBtn}
+                onPress={()=>{
+                  const d = Math.max(1, Math.floor(dur)-1);
+                  setDur(d);
+                  saveDatesOnly(start, d, weekends); // auto-save
+                }}
+              >
+                <Minus size={18} color={TEXT} />
+              </TouchableOpacity>
+              <Text style={styles.spinValue}>{dur} day{dur>1?"s":""}</Text>
+              <TouchableOpacity
+                style={styles.spinBtn}
+                onPress={()=>{
+                  const d = Math.max(1, Math.floor(dur)+1);
+                  setDur(d);
+                  saveDatesOnly(start, d, weekends); // auto-save
+                }}
+              >
+                <PlusIcon size={18} color={TEXT} />
+              </TouchableOpacity>
+            </View>
+          </View>
+          <View style={styles.weekendRow}>
+            <Text style={styles.controlHeader}>Include weekends</Text>
+            <Switch
+              value={weekends}
+              onValueChange={(v)=>{ setWeekends(v); saveDatesOnly(start, dur, v); }}
+            />
+          </View>
+
+          {/* Start / End */}
+          <View style={styles.endRow}>
+            <Text style={styles.endText}>
+              Start: <Text style={styles.bold}>{toYMD(start)}</Text>
+            </Text>
+            <Text style={styles.endText}>
+              End: <Text style={styles.bold}>{toYMD(addWorkingDays(start, Math.max(1, Math.floor(dur || 1)), weekends))}</Text>
             </Text>
           </View>
 
-          {/* Quick actions */}
-          <View style={{ height: 10 }} />
-          <QuickLink
-            icon={<FileText size={18} color={BRAND} />}
-            label="Open Documents"
-            onPress={() => router.replace(jobDocsHref(jobId))}
-          />
-          <QuickLink
-            icon={<ImageIcon size={18} color={"#0891b2"} />}
-            label="Add/Review Photos"
-            onPress={() => router.replace(jobDocsHref(jobId))}
-          />
-          <QuickLink
-            icon={<Receipt size={18} color={WARN} />}
-            label="Track Expenses"
-            right={money(expTotal)}
-            onPress={() => router.replace(jobExpensesHref(jobId))}
-          />
-        </View>
+          {/* Footer buttons */}
+          <View style={styles.calFooter}>
+            <TouchableOpacity
+              style={[styles.calBtn, styles.calBtnGhost]}
+              activeOpacity={0.9}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setScheduleOpen(false);
+              }}
+            >
+              <Text style={[styles.calBtnText, { color: TEXT }]}>Close</Text>
+            </TouchableOpacity>
 
-        {/* Danger zone */}
-        <View style={[styles.card, { borderColor: "#fecaca" }]}>
-          <Text style={[styles.section, { color: DANGER }]}>Danger zone</Text>
-          <TouchableOpacity
-            disabled={saving}
-            onPress={confirmDeleteJob}
-            style={styles.deleteBtn}
-            activeOpacity={0.85}
-          >
-            <Trash2 size={18} color="#fff" />
-            <Text style={styles.deleteTxt}>{saving ? "Deleting…" : "Delete job"}</Text>
-          </TouchableOpacity>
-          <Text style={styles.deleteHelp}>
-            This will delete the job and all of its documents and expenses. This action cannot be undone.
-          </Text>
+            <TouchableOpacity
+              style={[styles.calBtn, styles.calBtnPrimary]}
+              activeOpacity={0.9}
+              onPress={() => {
+                // Already auto-saved; just feedback and close
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                setScheduleOpen(false);
+              }}
+            >
+              <Text style={[styles.calBtnText, { color: "#fff" }]}>Save</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      </ScrollView>
+      </Modal>
     </View>
   );
 }
 
 /* ---- small bits ---- */
-const Timeline = ({ start, end, weekends }) => {
-  const today = toLocalMidnight(new Date());
-  const totalMs = end.getTime() - start.getTime();
-  const doneMs = Math.max(0, Math.min(totalMs, today.getTime() - start.getTime()));
-  const pct = totalMs > 0 ? doneMs / totalMs : 0;
-
-  return (
-    <View>
-      <View style={styles.timelineHeader}>
-        <Text style={styles.metaTxt}>{start.toLocaleDateString()}</Text>
-        <Text style={[styles.metaTxt, { fontWeight: "900" }]}>{weekends ? "Calendar days" : "Working days"}</Text>
-        <Text style={styles.metaTxt}>{end.toLocaleDateString()}</Text>
-      </View>
-      <View style={styles.timelineBar}>
-        <View style={[styles.timelineFill, { flex: Math.max(0.03, pct) }]} />
-        <View style={{ flex: Math.max(0, 1 - pct) }} />
-      </View>
-    </View>
-  );
-};
-
 const SummaryCard = ({ icon, title, value, onPress }) => (
-  <TouchableOpacity style={styles.summary} onPress={onPress} activeOpacity={0.85}>
+  <TouchableOpacity style={[styles.summary, styles.deepShadow]} onPress={onPress} activeOpacity={0.85}>
     <View style={styles.summaryIcon}>{icon}</View>
     <Text style={styles.summaryTitle}>{title}</Text>
-    <Text style={styles.summaryValue} numberOfLines={1}>
-      {value}
-    </Text>
-  </TouchableOpacity>
-);
-
-const QuickLink = ({ icon, label, right, onPress }) => (
-  <TouchableOpacity style={styles.quick} onPress={onPress} activeOpacity={0.9}>
-    <View style={styles.quickIcon}>{icon}</View>
-    <Text style={styles.quickLabel}>{label}</Text>
-    <View style={{ flex: 1 }} />
-    {right ? <Text style={[styles.metaTxt, { marginRight: 8 }]}>{right}</Text> : null}
-    <ChevronRight size={18} color={MUTED} />
+    <Text style={styles.summaryValue} numberOfLines={1}>{value}</Text>
   </TouchableOpacity>
 );
 
@@ -561,186 +786,82 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
   center: { alignItems: "center", justifyContent: "center" },
 
-  top: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
+  top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14, paddingVertical: 12 },
+  backBtn: { minWidth: 72, flexDirection: "row", alignItems: "center", paddingVertical: 6, paddingLeft: 2, paddingRight: 8, borderRadius: 10 },
+  backTxt: { color: BRAND, fontWeight: "800", fontSize: 16 },
   h1: { color: TEXT, fontWeight: "900", fontSize: 22 },
-  iconBtn: {
-    height: 34,
-    width: 34,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: CARD,
-  },
 
-  /* status */
-  statusRow: { flexDirection: "row", gap: 8, paddingHorizontal: 14, marginBottom: 8 },
-  statusChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#f7f8fb",
-  },
-  statusTxt: { color: MUTED, fontWeight: "900" },
-  dot: { width: 8, height: 8, borderRadius: 999 },
+  /* action bar — status checkboxes */
+  actionBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, marginBottom: 6 },
+  tileBtn: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 14, borderWidth: 1, shadowColor: "#0b1220", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 3 },
+  tilePrimary: { backgroundColor: BRAND, borderColor: "#2a86ff" },
+  tilePrimaryTxt: { color: "#fff", fontWeight: "900" },
+  tileNeutral: { backgroundColor: CARD, borderColor: BORDER },
+  tileNeutralTxt: { color: TEXT, fontWeight: "900" },
 
-  /* shared sections */
-  section: { color: TEXT, fontWeight: "900", fontSize: 16, marginBottom: 8 },
-
-  card: {
-    backgroundColor: CARD,
-    marginHorizontal: 14,
-    marginTop: 10,
-    padding: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: BORDER,
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.03,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 1,
-  },
-
-  /* timeline */
-  timelineHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
-  metaTxt: { color: MUTED, fontWeight: "800" },
-  timelineBar: {
-    height: 10,
-    borderRadius: 999,
-    overflow: "hidden",
-    backgroundColor: "#eef2f7",
-    borderWidth: 1,
-    borderColor: BORDER,
-    flexDirection: "row",
-  },
-  timelineFill: { backgroundColor: BRAND, borderRightWidth: 0 },
+  checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: "#cbd5e1", backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  checkboxChecked: { backgroundColor: SUCCESS, borderColor: SUCCESS },
 
   /* summary row */
   row2: { flexDirection: "row", gap: 8, marginTop: 10, paddingHorizontal: 14 },
-  summary: {
-    flex: 1,
-    backgroundColor: CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 14,
-    padding: 12,
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.03,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 1,
-  },
-  summaryIcon: {
-    height: 34,
-    width: 34,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#f3f4f6",
-    borderWidth: 1,
-    borderColor: BORDER,
-    marginBottom: 8,
-  },
+  summary: { flex: 1, backgroundColor: CARD, borderWidth: 1, borderColor: BORDER, borderRadius: 14, padding: 12 },
+  summaryIcon: { height: 34, width: 34, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "#f3f4f6", borderWidth: 1, borderColor: BORDER, marginBottom: 8 },
   summaryTitle: { color: MUTED, fontWeight: "800" },
   summaryValue: { color: TEXT, fontWeight: "900", marginTop: 2 },
 
-  /* details */
+  /* details card + edit */
+  card: { backgroundColor: CARD, marginHorizontal: 14, marginTop: 10, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: BORDER, shadowColor: "#0b1220", shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 3, position: "relative" },
+  cardEditBtn: { position: "absolute", top: 10, right: 10, height: 34, width: 34, borderRadius: 10, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: BORDER, backgroundColor: CARD, shadowColor: "#0b1220", shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 3, zIndex: 5 },
+
+  /* inputs */
+  section: { color: TEXT, fontWeight: "900", fontSize: 16, marginBottom: 8 },
   label: { color: MUTED, fontWeight: "800", marginTop: 8, marginBottom: 6 },
-  input: {
-    backgroundColor: "#fff",
-    color: TEXT,
-    borderRadius: 10,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
-  inputIcon: {
-    position: "absolute",
-    right: 6,
-    top: 6,
-    height: 30,
-    width: 30,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#f3f4f6",
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
-  checkRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 2, marginBottom: 6 },
-  checkboxBox: {
-    width: 20,
-    height: 20,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: "#cbd5e1",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#ffffff",
-  },
-  checkboxBoxChecked: { backgroundColor: BRAND, borderColor: BRAND },
+  input: { backgroundColor: "#fff", color: TEXT, borderRadius: 10, padding: 10, borderWidth: 1, borderColor: BORDER, shadowColor: "#0b1220", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 1 },
+  inputReadonly: { backgroundColor: "#eef2f6", shadowOpacity: 0, elevation: 0 },
+  inputIcon: { position: "absolute", right: 6, top: 6, height: 30, width: 30, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#f3f4f6", borderWidth: 1, borderColor: BORDER },
+
+  leftIcon: { position: "absolute", left: 10, top: 10, height: 20, width: 20, alignItems: "center", justifyContent: "center" },
+  rightIcon: { position: "absolute", right: 8, top: 10, height: 20, width: 20, alignItems: "center", justifyContent: "center" },
+
+  checkRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 },
+  checkboxSmall: { width: 20, height: 20, borderRadius: 6, borderWidth: 1.5, borderColor: "#cbd5e1", alignItems: "center", justifyContent: "center", backgroundColor: "#ffffff" },
+  checkboxSmallChecked: { backgroundColor: BRAND, borderColor: BRAND },
   checkboxTick: { color: "#ffffff", fontWeight: "800" },
-  infoBox: {
-    marginTop: 8,
-    padding: 10,
-    borderRadius: 10,
-    backgroundColor: "#f8fafc",
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
 
-  /* quick links */
-  quick: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#fff",
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    marginTop: 8,
-  },
-  quickIcon: {
-    height: 30,
-    width: 30,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#f3f4f6",
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
-  quickLabel: { color: TEXT, fontWeight: "900" },
+  infoBox: { marginTop: 8, padding: 10, borderRadius: 10, backgroundColor: "#f8fafc", borderWidth: 1, borderColor: BORDER },
 
-  /* danger zone */
-  deleteBtn: {
-    flexDirection: "row",
-    gap: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: DANGER,
-    borderWidth: 1,
-    borderColor: "#fecaca",
-    marginTop: 4,
-  },
-  deleteTxt: { color: "#fff", fontWeight: "900" },
-  deleteHelp: { color: MUTED, fontWeight: "800", marginTop: 8 },
+  /* client modal */
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.25)", alignItems: "center", justifyContent: "center", paddingHorizontal: 18 },
+  modalCard: { width: "100%", maxWidth: 520, backgroundColor: "#fff", borderRadius: 16, padding: 16, borderWidth: 1, borderColor: BORDER, shadowColor: "#0b1220", shadowOpacity: 0.15, shadowRadius: 18, shadowOffset: { width: 0, height: 10 }, elevation: 8, position: "relative" },
+  modalTitle: { color: TEXT, fontWeight: "900", fontSize: 18 },
+  linkRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  linkInput: { flex: 1 },
+  linkBtn: { height: 36, width: 36, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "#eef6ff", borderWidth: 1, borderColor: "#dbeafe" },
+
+  /* calendar sheet */
+  calBackdrop: { flex: 1, backgroundColor: "#0009" },
+  sheet: { position: "absolute", alignSelf: "center", top: "8%", width: "92%", backgroundColor: CARD, borderRadius: 20, padding: 14, paddingBottom: 16, borderWidth: 1, borderColor: BORDER, elevation: 0, shadowOpacity: 0, maxHeight: "86%", overflow: "hidden" },
+  sheetTitle: { color: TEXT, fontWeight: "900", fontSize: 18, textAlign: "center", marginBottom: 8 },
+
+  durationBlock: { marginTop: 10, alignItems: "center", justifyContent: "center" },
+  weekendRow: { marginTop: 10, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  controlHeader: { color: TEXT, fontWeight: "900", fontSize: 15 },
+
+  spinRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 8 },
+  spinBtn: { height: 40, width: 40, borderRadius: 12, borderWidth: 1, borderColor: BORDER, backgroundColor: "#f7f8fb", alignItems: "center", justifyContent: "center" },
+  spinValue: { color: TEXT, fontWeight: "900", minWidth: 120, textAlign: "center", fontSize: 16 },
+
+  /* Start / End row */
+  endRow: { marginTop: 10, flexDirection: "row", justifyContent: "space-between" },
+  endText: { color: MUTED, fontWeight: "800" },
+  bold: { color: TEXT, fontWeight: "900" },
+
+  calFooter: { flexDirection: "row", gap: 10, marginTop: 14 },
+  calBtn: { flex: 1, height: 48, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  calBtnGhost: { backgroundColor: "#eef2f7", borderColor: BORDER },
+  calBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
+  calBtnText: { fontWeight: "900", fontSize: 15, includeFontPadding: false },
+
+  /* extras */
+  deepShadow: { shadowColor: "#0b1220", shadowOpacity: 0.1, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 4 },
 });

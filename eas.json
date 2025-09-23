@@ -8,17 +8,26 @@
       "developmentClient": true,
       "distribution": "internal",
       "android": { "buildType": "apk" },
-      "env": { "EXPO_NO_TELEMETRY": "1" }
+      "env": {
+        "EXPO_PUBLIC_VERIFY_URL": "https://bvbjvxjtxfzipwvfkrrb.supabase.co/functions/v1/verify-google"
+      },
+      "autoIncrement": false
     },
     "preview": {
       "distribution": "internal",
       "channel": "preview",
-      "env": { "EXPO_NO_TELEMETRY": "1" }
+      "env": {
+        "EXPO_PUBLIC_VERIFY_URL": "https://bvbjvxjtxfzipwvfkrrb.supabase.co/functions/v1/verify-google"
+      },
+      "autoIncrement": true
     },
     "production": {
       "channel": "production",
       "android": { "buildType": "app-bundle" },
-      "env": { "EXPO_NO_TELEMETRY": "1" }
+      "env": {
+        "EXPO_PUBLIC_VERIFY_URL": "https://bvbjvxjtxfzipwvfkrrb.supabase.co/functions/v1/verify-google"
+      },
+      "autoIncrement": true
     }
   },
   "submit": {

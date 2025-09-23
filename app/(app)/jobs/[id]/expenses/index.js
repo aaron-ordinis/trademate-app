@@ -17,7 +17,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { supabase } from "../../../../../lib/supabase";
 import { jobHref } from "../../../../../lib/nav";
-import { Plus, Trash2, X, ChevronLeft, Pencil } from "lucide-react-native";
+import { Plus, Trash2, X, Pencil, ChevronLeft } from "lucide-react-native";
 
 const BG = "#f5f7fb",
   CARD = "#ffffff",
@@ -325,12 +325,19 @@ export default function JobExpenses() {
 
   return (
     <View style={s.screen}>
-      {/* Top bar */}
+      {/* Top bar with unified Back button */}
       <View style={s.top}>
-        <TouchableOpacity style={s.back} onPress={goBackToJob}>
-          <ChevronLeft color={TEXT} size={20} />
-        </TouchableOpacity>
+        <Pressable
+          onPress={goBackToJob}
+          style={s.backBtn}
+          android_ripple={{ color: "rgba(0,0,0,0.06)" }}
+        >
+          <ChevronLeft size={18} color={BRAND} />
+          <Text style={s.backTxt}>Back</Text>
+        </Pressable>
+
         <Text style={s.title}>Expenses</Text>
+
         <View style={s.totalPill}>
           <Text style={s.totalPillTxt}>Total {money(total)}</Text>
         </View>
@@ -348,7 +355,6 @@ export default function JobExpenses() {
         renderItem={({ item }) => (
           <View style={s.card}>
             <View style={{ flex: 1 }}>
-              {/* show full wording (wrap up to 2 lines to stay compact) */}
               <Text style={s.name} numberOfLines={2}>
                 {item.title || "Expense"}
               </Text>
@@ -441,18 +447,29 @@ const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
 
   /* top */
-  top: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 10, gap: 8 },
-  back: {
-    height: 34,
-    width: 34,
-    borderRadius: 10,
+  top: {
+    height: 52,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: CARD,
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
   },
+
+  // unified Back button (icon + label)
+  backBtn: {
+    minWidth: 72,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 6,
+    paddingRight: 8,
+    paddingLeft: 2,
+    borderRadius: 10,
+  },
+  backTxt: { color: BRAND, fontWeight: "800", fontSize: 16 },
+
   title: { flex: 1, textAlign: "center", fontSize: 18, fontWeight: "900", color: TEXT },
+
   totalPill: {
     paddingHorizontal: 10,
     paddingVertical: 6,
