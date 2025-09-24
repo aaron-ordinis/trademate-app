@@ -62,7 +62,8 @@ export default function AccountScreen() {
   const isPremium = plan === 'premium';
 
   // IAP state
-  const [subs, setSubs] = useState([]); 
+  const [subs, setSubs] = useState([]);           // ProductDetails[]
+  const [iapReady, setIapReady] = useState(false);
   const updateListenerRef = useRef(null);
   const errorListenerRef  = useRef(null);
 
@@ -107,12 +108,17 @@ export default function AccountScreen() {
         if (RNIap.flushFailedPurchasesCachedAsPendingAndroid) {
           try { await RNIap.flushFailedPurchasesCachedAsPendingAndroid(); } catch {}
         }
+        // Fetch ProductDetails for subscriptions (includes base plans & offers)
         const products = await RNIap.getSubscriptions({
           skus: [WEEKLY_PRODUCT_ID, MONTHLY_PRODUCT_ID],
         });
-        if (mounted) setSubs(Array.isArray(products) ? products : []);
+        if (mounted) {
+          setSubs(Array.isArray(products) ? products : []);
+          setIapReady(true);
+        }
       } catch (e) {
         console.warn('IAP init error', e);
+        if (mounted) setIapReady(false);
       }
     })();
 
@@ -164,14 +170,58 @@ export default function AccountScreen() {
     };
   }, [loadProfile]);
 
+  // Helper: choose an offer token for a product
+  const pickOfferToken = (product) => {
+    const offers = product?.subscriptionOfferDetails || [];
+    if (!offers.length) return null;
+
+    // Prefer an offer with an introductory phase if available (trial/intro pricing)
+    const withIntro = offers.find(o =>
+      o.pricingPhases?.pricingPhaseList?.some(ph => ['FREE_TRIAL','INTRODUCTORY'].includes(ph?.offerPaymentMode))
+    );
+    return (withIntro || offers[0])?.offerToken || null;
+  };
+
   const buy = async (productId) => {
     if (!IS_ANDROID) {
       Alert.alert('Android only', 'Purchases are handled via Google Play on Android.');
       return;
     }
     try {
+      if (!iapReady) {
+        Alert.alert('Please wait', 'Store not ready yet. Try again in a moment.');
+        return;
+      }
       setBusy(true);
-      await RNIap.requestSubscription({ sku: productId });
+
+      // Ensure we have the latest details (avoid stale tokens)
+      let details = subs.find(p => p.productId === productId);
+      if (!details) {
+        const fresh = await RNIap.getSubscriptions({ skus: [productId] });
+        details = Array.isArray(fresh) ? fresh.find(p => p.productId === productId) : null;
+      }
+      if (!details) {
+        setBusy(false);
+        Alert.alert('Unavailable', 'This plan is not available right now for your account.');
+        return;
+      }
+
+      const offerToken = pickOfferToken(details);
+      if (!offerToken) {
+        setBusy(false);
+        Alert.alert(
+          'Offer not ready',
+          'No active base plan/offer is available for this product. Check Play Console base plans & offers for your tester account/region.'
+        );
+        return;
+      }
+
+      await RNIap.requestSubscription({
+        sku: details.productId,
+        subscriptionOffers: [{ sku: details.productId, offerToken }],
+        // You can also pass obfuscatedAccountIdAndroid if you want:
+        // obfuscatedAccountIdAndroid: (await supabase.auth.getUser()).data.user.id
+      });
     } catch (e) {
       setBusy(false);
       console.warn('requestSubscription error', e);
@@ -288,7 +338,7 @@ export default function AccountScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Why TradeMate Section - Moved below plans */}
+        {/* Why TradeMate Section */}
         <View style={styles.whySection}>
           <Text style={styles.whyTitle}>Why TradeMate?</Text>
           <View style={styles.benefitsList}>
@@ -361,13 +411,11 @@ export default function AccountScreen() {
 
         {/* Footer with Policy Links and Restore Button */}
         <View style={styles.footerSection}>
-          {/* Legal Links Row */}
           <View style={styles.legalRow}>
             <Text style={styles.legalLink} onPress={() => Linking.openURL(PRIVACY_URL)}>Privacy Policy</Text>
             <Text style={styles.legalLink} onPress={() => Linking.openURL(TERMS_URL)}>User Agreement</Text>
           </View>
 
-          {/* Restore Button */}
           <View style={styles.restoreContainer}>
             <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={restore} disabled={busy || !IS_ANDROID}>
               <Text style={styles.btnGhostText}>Restore purchase</Text>
@@ -420,236 +468,54 @@ const styles = StyleSheet.create({
     borderRadius: 12, 
     padding: 12, 
     marginBottom: 12,
-    alignItems: 'center', // ✅ Center banner content
+    alignItems: 'center',
   },
-  bannerTitle: { 
-    color: TEXT, 
-    fontWeight: '900', 
-    marginBottom: 4,
-    textAlign: 'center', // ✅ Center text
-  },
-  bannerText: { 
-    color: MUTED, 
-    marginBottom: 8,
-    textAlign: 'center', // ✅ Center text
-    lineHeight: 20,
-  },
-  bannerBtn: { 
-    backgroundColor: BRAND, 
-    paddingHorizontal: 12, 
-    paddingVertical: 8, 
-    borderRadius: 10,
-    alignSelf: 'center', // ✅ Center button
-  },
-  bannerBtnText: { 
-    color: '#fff', 
-    fontWeight: '800',
-    textAlign: 'center', // ✅ Center text
-  },
+  bannerTitle: { color: TEXT, fontWeight: '900', marginBottom: 4, textAlign: 'center' },
+  bannerText: { color: MUTED, marginBottom: 8, textAlign: 'center', lineHeight: 20 },
+  bannerBtn: { backgroundColor: BRAND, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, alignSelf: 'center' },
+  bannerBtnText: { color: '#fff', fontWeight: '800', textAlign: 'center' },
   card: { 
-    backgroundColor: CARD, 
-    borderRadius: 16, 
-    padding: 16, 
-    borderWidth: 1, 
-    borderColor: BORDER, 
-    shadowColor: '#0b1220', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 14, 
-    shadowOffset: { width: 0, height: 8 }, 
-    elevation: 2,
-    alignItems: 'center', // ✅ Center all content in card
+    backgroundColor: CARD, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: BORDER, 
+    shadowColor: '#0b1220', shadowOpacity: 0.05, shadowRadius: 14, shadowOffset: { width: 0, height: 8 }, elevation: 2,
+    alignItems: 'center',
   },
-  lead: { 
-    color: TEXT, 
-    fontWeight: '700', 
-    marginBottom: 8,
-    textAlign: 'center', // ✅ Center text
-  },
-  subtle: { 
-    color: MUTED,
-    textAlign: 'center', // ✅ Center text
-  },
+  lead: { color: TEXT, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
+  subtle: { color: MUTED, textAlign: 'center' },
   btn: { borderRadius: 12, padding: 12, alignItems: 'center' },
   btnManage: { backgroundColor: '#2563eb' },
   btnText: { color: '#fff', fontWeight: '800' },
   metaGrid: { borderWidth: 1, borderColor: BORDER, borderRadius: 12, padding: 12, backgroundColor: '#f9fafb', rowGap: 6, columnGap: 8 },
   metaLabel: { color: MUTED },
   metaValue: { color: TEXT, fontWeight: '700' },
-  whySection: {
-    paddingVertical: 20,
-    paddingHorizontal: 16,
-    alignItems: 'center', // ✅ Center the section
-  },
-  whyTitle: {
-    fontSize: 24,
-    fontWeight: '900',
-    color: TEXT,
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  benefitsList: {
-    alignItems: 'center', // ✅ Center bullet points
-    alignSelf: 'stretch',
-  },
-  benefitItem: {
-    flexDirection: 'row',
-    alignItems: 'center', // ✅ Center items vertically
-    justifyContent: 'center', // ✅ Center items horizontally
-    marginBottom: 8,
-    paddingHorizontal: 20,
-  },
-  bulletPoint: {
-    fontSize: 16,
-    color: TEXT,
-    fontWeight: '900',
-    marginRight: 8,
-  },
-  benefitText: {
-    fontSize: 16,
-    color: TEXT,
-    textAlign: 'center', // ✅ Center text
-    lineHeight: 22,
-  },
-  planGrid: { 
-    flexDirection: 'row', 
-    gap: 12,
-    justifyContent: 'center',
-    alignItems: 'stretch', // ✅ Make cards equal height
-    paddingHorizontal: 16,
-    marginBottom: 20,
-    marginTop: 10,
-  },
+  whySection: { paddingVertical: 20, paddingHorizontal: 16, alignItems: 'center' },
+  whyTitle: { fontSize: 24, fontWeight: '900', color: TEXT, textAlign: 'center', marginBottom: 16 },
+  benefitsList: { alignItems: 'center', alignSelf: 'stretch' },
+  benefitItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 8, paddingHorizontal: 20 },
+  bulletPoint: { fontSize: 16, color: TEXT, fontWeight: '900', marginRight: 8 },
+  benefitText: { fontSize: 16, color: TEXT, textAlign: 'center', lineHeight: 22 },
+  planGrid: { flexDirection: 'row', gap: 12, justifyContent: 'center', alignItems: 'stretch', paddingHorizontal: 16, marginBottom: 20, marginTop: 10 },
   planCard: { 
-    flex: 1,
-    backgroundColor: CARD, 
-    borderRadius: 16, 
-    padding: 16, 
-    borderWidth: 1, 
-    borderColor: BORDER, 
-    alignItems: 'center', // ✅ Center all content
-    justifyContent: 'center', // ✅ Center vertically
-    shadowColor: '#0b1220', 
-    shadowOpacity: 0.08, 
-    shadowRadius: 12, 
-    shadowOffset: { width: 0, height: 4 }, 
-    elevation: 4,
-    position: 'relative',
-    minHeight: 160, // ✅ Ensure consistent height
+    flex: 1, backgroundColor: CARD, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: BORDER, 
+    alignItems: 'center', justifyContent: 'center', shadowColor: '#0b1220', shadowOpacity: 0.08, shadowRadius: 12, 
+    shadowOffset: { width: 0, height: 4 }, elevation: 4, position: 'relative', minHeight: 160,
   },
-  planCardBest: { 
-    borderColor: BRAND, 
-    borderWidth: 2,
-    paddingTop: 24, // Extra padding for the badge
-  },
-  
-  bestBadge: { 
-    position: 'absolute', 
-    top: -8, 
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    zIndex: 10,
-  },
-  bestBadgeText: { 
-    backgroundColor: BRAND,
-    color: '#fff', 
-    fontWeight: '800', 
-    fontSize: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  
-  planTitle: { 
-    color: TEXT, 
-    fontWeight: '800', 
-    fontSize: 16,
-    marginBottom: 8,
-    textAlign: 'center', // ✅ Center text
-  },
-  planTitleWithBadge: {
-    marginTop: 4,
-  },
-  priceContainer: {
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  priceMain: { 
-    color: TEXT, 
-    fontWeight: '900', 
-    fontSize: 20,
-    textAlign: 'center', // ✅ Center text
-  },
-  vatText: {
-    fontSize: 12,
-    color: MUTED,
-    marginBottom: 4,
-    fontWeight: '500',
-    textAlign: 'center', // ✅ Center text
-  },
-  priceSub: { 
-    color: MUTED, 
-    fontSize: 14,
-    textAlign: 'center',
-  },
-
-  additionalInfo: {
-    alignItems: 'center',
-    paddingVertical: 16,
-  },
-  infoText: {
-    fontSize: 14,
-    color: MUTED,
-    textAlign: 'center',
-    marginBottom: 6,
-    lineHeight: 18,
-  },
-  
+  planCardBest: { borderColor: BRAND, borderWidth: 2, paddingTop: 24 },
+  bestBadge: { position: 'absolute', top: -8, left: 0, right: 0, alignItems: 'center', zIndex: 10 },
+  bestBadgeText: { backgroundColor: BRAND, color: '#fff', fontWeight: '800', fontSize: 12, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, overflow: 'hidden' },
+  planTitle: { color: TEXT, fontWeight: '800', fontSize: 16, marginBottom: 8, textAlign: 'center' },
+  planTitleWithBadge: { marginTop: 4 },
+  priceContainer: { alignItems: 'center', marginBottom: 4 },
+  priceMain: { color: TEXT, fontWeight: '900', fontSize: 20, textAlign: 'center' },
+  vatText: { fontSize: 12, color: MUTED, marginBottom: 4, fontWeight: '500', textAlign: 'center' },
+  priceSub: { color: MUTED, fontSize: 14, textAlign: 'center' },
+  additionalInfo: { alignItems: 'center', paddingVertical: 16 },
+  infoText: { fontSize: 14, color: MUTED, textAlign: 'center', marginBottom: 6, lineHeight: 18 },
   androidHint: { marginTop: 8, color: MUTED, fontSize: 12 },
-
-  // ✅ New styles for footer with policy links
-  footerSection: {
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    alignItems: 'center', // ✅ Center footer content
-  },
-  
-  // Legal row (centered between policy links)
-  legalRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center', // ✅ Center the links
-    width: '100%',
-    marginBottom: 16,
-    gap: 20, // ✅ Add consistent spacing between links
-  },
-  
-  legalLink: {
-    color: BRAND,
-    fontWeight: '700',
-    fontSize: 14,
-    textAlign: 'center', // ✅ Center text
-  },
-  
-  restoreContainer: {
-    alignItems: 'center',
-    width: '100%',
-  },
-
-  btnGhost: { 
-    borderRadius: 12, 
-    padding: 12, 
-    alignItems: 'center',
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: BORDER,
-    minWidth: 160, // ✅ Ensure consistent button width
-  },
-  
-  btnGhostText: { 
-    color: TEXT, 
-    fontWeight: '800',
-    textAlign: 'center', // ✅ Center text
-  },
+  footerSection: { paddingHorizontal: 16, paddingVertical: 20, alignItems: 'center' },
+  legalRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 16, gap: 20 },
+  legalLink: { color: BRAND, fontWeight: '700', fontSize: 14, textAlign: 'center' },
+  restoreContainer: { alignItems: 'center', width: '100%' },
+  btnGhost: { borderRadius: 12, padding: 12, alignItems: 'center', backgroundColor: 'transparent', borderWidth: 1, borderColor: BORDER, minWidth: 160 },
+  btnGhostText: { color: TEXT, fontWeight: '800', textAlign: 'center' },
+  busyOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, top: 0, backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center' },
 });

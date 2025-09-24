@@ -5,12 +5,12 @@ import {
   ActivityIndicator, Alert
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { supabase } from '../../../../lib/supabase';
-import { Lock } from 'lucide-react-native';
+import { supabase } from '../../../lib/supabase';
 
 /* ---------- small utils ---------- */
-const money = (v = 0) =>
-  `£${Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+const money = (v = 0) => {
+  return `£${Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+};
 const clone = (x) => JSON.parse(JSON.stringify(x ?? null));
 
 /* ---------- storage helpers ---------- */
@@ -109,14 +109,13 @@ const extractTotals = (raw) => {
 export default function QuoteDetails() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  // Normalize id (Expo Router can give string[] for catch-all)
   const id = Array.isArray(params?.id) ? params.id[0] : params?.id;
 
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
 
   const [profile, setProfile] = useState(null);
-  const [isPremium, setIsPremium] = useState(false);
+  const [isPremium, setIsPremium] = useState(false); // kept only for branding/footer logic
 
   const [quote, setQuote] = useState(null);
   const [jobSummary, setJobSummary] = useState('');
@@ -155,7 +154,7 @@ export default function QuoteDetails() {
         // Quote
         const { data: q, error: qErr } = await supabase
           .from('quotes')
-          .select('id, user_id, quote_number, client_name, client_email, client_phone, client_address, site_address, job_summary, status, pdf_url, line_items, totals, created_at, subtotal, vat_amount, total')
+          .select('id, user_id, quote_number, client_name, client_email, client_phone, client_address, site_address, job_summary, status, pdf_url, line_items, totals, created_at, subtotal, vat_amount, total, template_key, template_version')
           .eq('id', id)
           .single();
 
@@ -293,61 +292,48 @@ export default function QuoteDetails() {
         },
       };
 
-      // Attach template selection if present on the quote (key/version)
+      // Template selection passthrough
       let templateSelection = null;
       try {
         if (quote?.template_key && quote?.template_version) {
           templateSelection = { key: String(quote.template_key), version: String(quote.template_version), cb: Date.now().toString() };
           buildPayload.template = templateSelection;
         }
-      } catch (e) { /* ignore */ }
+      } catch {}
 
       const { data: resp, error: fnErr } = await supabase.functions.invoke('pdf-builder', { body: buildPayload });
       if (fnErr) throw new Error(fnErr.message || 'PDF build failed');
       if (!resp?.ok) throw new Error(resp?.error || 'PDF build failed');
 
-      // Try to get a signed URL we can open
       let pdfUrl = resp?.signedUrl || resp?.signed_url || null;
       if (pdfUrl && !(await probeUrl(pdfUrl))) pdfUrl = null;
 
       if (!pdfUrl) {
-        // try via returned path/key then fallback to inferred key
         const keyGuess = resp?.path || resp?.key || `${user.id}/${quote?.quote_number}.pdf`;
         const ready = await pollSignedUrlReady(keyGuess);
         if (ready) pdfUrl = ready;
       }
 
-      // Persist URL, status and template metadata (if available)
-      const persistPatch = {
-        pdf_url: pdfUrl ?? null,
-        status: 'sent',
-        template_key: templateSelection?.key || resp?.template_key || null,
-        template_version: templateSelection?.version || resp?.template_version || null
-      };
       await supabase.from('quotes')
-        .update(persistPatch)
+        .update({
+          pdf_url: pdfUrl ?? null,
+          status: 'sent',
+          template_key: templateSelection?.key || resp?.template_key || null,
+          template_version: templateSelection?.version || resp?.template_version || null
+        })
         .eq('id', quote?.id).eq('user_id', user.id);
 
-      // >>> GO STRAIGHT TO PREVIEW (like create.js) <<<
       if (pdfUrl) {
         const name = `${quote?.quote_number || 'quote'}.pdf`;
         router.replace({
           pathname: '/(app)/quotes/preview',
-          params: {
-            id: quote?.id || '',
-            url: encodeURIComponent(pdfUrl),
-            name,
-          },
+          params: { id: quote?.id || '', url: encodeURIComponent(pdfUrl), name },
         });
         setDirty(false);
         return;
       }
 
-      // Fallback: no URL yet
-      Alert.alert(
-        'PDF generated',
-        'The file is still becoming available. Open this quote and tap “Preview” in a moment.'
-      );
+      Alert.alert('PDF generated', 'The file is still becoming available. Open this quote and tap “Preview” in a moment.');
       setDirty(false);
     } catch (e) {
       console.error('[TMQ][DETAILS] rebuildPdf error', e);
@@ -377,35 +363,20 @@ export default function QuoteDetails() {
         {/* Job summary */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Job summary</Text>
-          {!isPremium && (
-            <View style={[styles.lockBanner, { marginBottom: 8 }]}>
-              <Text style={[styles.lockBannerText, styles.lockBannerTextFlex]}>
-                Editing is a Premium feature.
-              </Text>
-            </View>
-          )}
           <TextInput
-            style={[styles.input, !isPremium && styles.inputDisabled]}
+            style={styles.input}
             value={jobSummary}
-            onChangeText={(t) => { if (isPremium) { setJobSummary(t); setDirty(true); } }}
+            onChangeText={(t) => { setJobSummary(t); setDirty(true); }}
             placeholder="Describe the job"
             placeholderTextColor={MUTED}
             multiline
-            editable={isPremium}
+            editable
           />
         </View>
 
         {/* Line items */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Line items</Text>
-
-          {!isPremium && (
-            <View style={styles.lockBanner}>
-              <Text style={[styles.lockBannerText, styles.lockBannerTextFlex]}>
-                Line items are locked on the Free plan. Upgrade to edit quantities and prices.
-              </Text>
-            </View>
-          )}
 
           <Text style={styles.helper}>
             Keep descriptions specific. Use qty + unit for costs. Add notes for context.
@@ -423,19 +394,13 @@ export default function QuoteDetails() {
                       <Text style={styles.typeChipText}>{String(li.type).toUpperCase()}</Text>
                     </View>
                   )}
-                  {!isPremium && (
-                    <View style={styles.lockChip}>
-                      <Lock size={14} color="#6b7280" />
-                      <Text style={styles.lockChipText}>Locked</Text>
-                    </View>
-                  )}
                 </View>
 
                 <TextInput
-                  style={[styles.input, styles.flex2, !isPremium && styles.inputDisabled]}
+                  style={[styles.input, styles.flex2]}
                   value={String(li.description ?? '')}
-                  onChangeText={(t) => isPremium && updateDescOrType(idx, { description: t })}
-                  editable={isPremium}
+                  onChangeText={(t) => updateDescOrType(idx, { description: t })}
+                  editable
                   placeholder="Description"
                   placeholderTextColor={MUTED}
                 />
@@ -443,20 +408,20 @@ export default function QuoteDetails() {
                 {!isNote && (
                   <View style={styles.rowInline}>
                     <TextInput
-                      style={[styles.input, styles.flex1, !isPremium && styles.inputDisabled]}
+                      style={[styles.input, styles.flex1]}
                       value={String(li.qty_text ?? '')}
-                      onChangeText={(t) => isPremium && onQtyChange(idx, t)}
-                      editable={isPremium}
+                      onChangeText={(t) => onQtyChange(idx, t)}
+                      editable
                       keyboardType="decimal-pad"
                       inputMode="decimal"
                       placeholder="Qty"
                       placeholderTextColor={MUTED}
                     />
                     <TextInput
-                      style={[styles.input, styles.flex1, { marginLeft: 8 }, !isPremium && styles.inputDisabled]}
+                      style={[styles.input, styles.flex1, { marginLeft: 8 }]}
                       value={String(li.unit_text ?? '')}
-                      onChangeText={(t) => isPremium && onUnitChange(idx, t)}
-                      editable={isPremium}
+                      onChangeText={(t) => onUnitChange(idx, t)}
+                      editable
                       keyboardType="decimal-pad"
                       inputMode="decimal"
                       placeholder="Unit £"
@@ -468,37 +433,33 @@ export default function QuoteDetails() {
                   </View>
                 )}
 
-                {isPremium && (
-                  <View style={styles.controlsRow}>
-                    <TouchableOpacity
-                      style={styles.binBtn}
-                      onPress={() => removeRow(idx)}
-                      accessibilityLabel="Delete line"
-                    >
-                      <Text style={styles.binIcon}>🗑</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
+                <View style={styles.controlsRow}>
+                  <TouchableOpacity
+                    style={styles.binBtn}
+                    onPress={() => removeRow(idx)}
+                    accessibilityLabel="Delete line"
+                  >
+                    <Text style={styles.binIcon}>🗑</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             );
           })}
 
-          {isPremium && (
-            <View style={styles.addRowWrap}>
-              <TouchableOpacity style={styles.smallBtnGhost} onPress={() => addRow('materials')}>
-                <Text style={styles.smallBtnGhostText}>+ Material</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.smallBtnGhost} onPress={() => addRow('labour')}>
-                <Text style={styles.smallBtnGhostText}>+ Labour</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.smallBtnGhost} onPress={() => addRow('other')}>
-                <Text style={styles.smallBtnGhostText}>+ Other</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.smallBtnGhost} onPress={() => addRow('note')}>
-                <Text style={styles.smallBtnGhostText}>+ Note</Text>
-              </TouchableOpacity>
-            </View>
-          )}
+          <View style={styles.addRowWrap}>
+            <TouchableOpacity style={styles.smallBtnGhost} onPress={() => addRow('materials')}>
+              <Text style={styles.smallBtnGhostText}>+ Material</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.smallBtnGhost} onPress={() => addRow('labour')}>
+              <Text style={styles.smallBtnGhostText}>+ Labour</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.smallBtnGhost} onPress={() => addRow('other')}>
+              <Text style={styles.smallBtnGhostText}>+ Other</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.smallBtnGhost} onPress={() => addRow('note')}>
+              <Text style={styles.smallBtnGhostText}>+ Note</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Totals */}
@@ -510,19 +471,15 @@ export default function QuoteDetails() {
           </View>
           <View style={styles.kvRow}>
             <Text style={styles.k}>VAT rate</Text>
-            {!isPremium ? (
-              <Text style={styles.v}>{(vatRate * 100).toFixed(0)}%</Text>
-            ) : (
-              <TextInput
-                style={[styles.input, { width: 90, textAlign: 'right' }]}
-                value={String((vatRate * 100).toFixed(0))}
-                onChangeText={(t) => { setDirty(true); setVatRate(Math.max(0, Math.min(1, toNum(t) / 100))); }}
-                keyboardType="decimal-pad"
-                inputMode="decimal"
-                placeholder="%"
-                placeholderTextColor={MUTED}
-              />
-            )}
+            <TextInput
+              style={[styles.input, { width: 90, textAlign: 'right' }]}
+              value={String((vatRate * 100).toFixed(0))}
+              onChangeText={(t) => { setDirty(true); setVatRate(Math.max(0, Math.min(1, toNum(t) / 100))); }}
+              keyboardType="decimal-pad"
+              inputMode="decimal"
+              placeholder="%"
+              placeholderTextColor={MUTED}
+            />
           </View>
           <View style={styles.kvRow}>
             <Text style={styles.k}>VAT</Text>
@@ -546,25 +503,16 @@ export default function QuoteDetails() {
           <Text style={[styles.stickyV, { fontWeight: '800' }]}>{money(total)}</Text>
         </View>
 
-        {isPremium ? (
-          <TouchableOpacity
-            style={[styles.buttonBlue, { marginTop: 8, opacity: (!dirty || building) ? 0.6 : 1 }]}
-            onPress={rebuildPdf}
-            disabled={!dirty || building}
-          >
-            <Text style={styles.buttonBlueText}>
-              {building ? 'Building PDF…' : 'Generate updated PDF'}
-            </Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={[styles.buttonBlue, { marginTop: 8 }]}
-            onPress={() => router.replace('/(app)/account')}
-            activeOpacity={0.9}
-          >
-            <Text style={styles.buttonBlueText}>Upgrade to Premium</Text>
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity
+          style={[styles.buttonBlue, { marginTop: 8, opacity: (!dirty || building) ? 0.6 : 1 }]}
+          onPress={rebuildPdf}
+          disabled={!dirty || building}
+          activeOpacity={0.9}
+        >
+          <Text style={styles.buttonBlueText}>
+            {building ? 'Building PDF…' : 'Generate updated PDF'}
+          </Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -602,21 +550,6 @@ const styles = StyleSheet.create({
   bodyText: { color: '#374151', lineHeight: 20 },
   helper: { color: MUTED, marginBottom: 8, fontSize: 12 },
 
-  lockBanner: {
-    backgroundColor: '#eef5ff',
-    borderColor: '#cfe1ff',
-    borderWidth: 1,
-    padding: 10,
-    borderRadius: 10,
-    marginBottom: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flexWrap: 'wrap',
-  },
-  lockBannerText: { color: '#1e3a8a', fontWeight: '600', fontSize: 12 },
-  lockBannerTextFlex: { flexGrow: 1, flexShrink: 1, minWidth: '55%' },
-
   rowItem: {
     marginBottom: 10,
     backgroundColor: '#f9fafb',
@@ -634,19 +567,6 @@ const styles = StyleSheet.create({
   },
   typeChipText: { color: '#fff', fontWeight: '800', fontSize: 11, letterSpacing: 0.3 },
 
-  lockChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#eef2f7',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#d7dce5',
-  },
-  lockChipText: { color: '#374151', fontWeight: '700', fontSize: 11 },
-
   rowInline: { flexDirection: 'row', alignItems: 'center' },
 
   input: {
@@ -658,7 +578,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
-  inputDisabled: { opacity: 0.6 },
   readCell: { justifyContent: 'center' },
   readCellText: { color: TEXT, textAlign: 'right', fontWeight: '700' },
   flex1: { flex: 1 },
