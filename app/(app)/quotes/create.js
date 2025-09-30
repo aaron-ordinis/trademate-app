@@ -4,7 +4,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, ActivityIndicator,
-  Platform, StatusBar, Pressable, Dimensions, PlatformColor, Alert, StyleSheet, Modal
+  Platform, StatusBar, Pressable, Dimensions, PlatformColor, Alert, StyleSheet, Modal, Animated, Easing
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { supabase } from "../../../lib/supabase";
@@ -162,7 +162,7 @@ const STEP_TITLES = ["Client", "Travel", "Job"];
 export default function CreateQuote() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const quoteIdParam = params?.quoteId ? String(params.quoteId) : null;
+  const quoteIdParam = params?.quoteId ? String(paramsQuoteId) : null;
 
   // inner Modal visibility (match invoices/wizard)
   const [visible, setVisible] = useState(true);
@@ -224,11 +224,16 @@ export default function CreateQuote() {
   const [saving, setSaving] = useState(false);
   const [genLoading, setGenLoading] = useState(false);
 
+  // 🔥 loader step text + progress
+  const [loaderMsg, setLoaderMsg] = useState("Preparing data…");
+  const [loaderPct, setLoaderPct] = useState(0.1);
+
   const isFinalized = useMemo(
     () => !!existing && String(existing.status || "").toLowerCase() !== "draft",
     [existing]
   );
-/* ---------------- load profile ---------------- */
+
+  /* ---------------- load profile ---------------- */
   const loadProfile = useCallback(async () => {
     setProfileLoading(true);
     setProfileError(null);
@@ -250,17 +255,15 @@ export default function CreateQuote() {
 
       if (error) throw error;
       setProfile(data);
-      
-      // Replace branding check with trial logic
+
       const status = getPremiumStatus(data);
       setPremiumStatus(status);
-      
-      // Hard block if trial expired
+
       if (status.isBlocked) {
         router.replace("/(app)/trial-expired");
         return null;
       }
-      
+
       setBlockedToday(!status.isPremium ? !(await checkDailyQuota(user.id)) : false);
       return data;
     } catch (e) {
@@ -288,7 +291,7 @@ export default function CreateQuote() {
   }, [profile, profileLoading, loadProfile]);
 
   /* --------------- existing quote prefill --------------- */
-  const paramsQuoteId = quoteIdParam;
+  const paramsQuoteId = params?.quoteId ? String(params.quoteId) : null;
   useEffect(() => {
     (async () => {
       if (!paramsQuoteId) return;
@@ -476,21 +479,29 @@ export default function CreateQuote() {
     } finally { setSaving(false); }
   };
 
-  /* --------------- AI -> PDF flow --------------- */
+  /* --------------- AI -> PDF flow (merged) + step loader --------------- */
+  const bump = (msg, pct) => { setLoaderMsg(msg); setLoaderPct(pct); };
+
   const generateAIAndPDF = async () => {
     try {
       if (isFinalized) { showAlert("Locked", "Already generated."); return; }
       if (isBlank(jobSummary) || isBlank(jobDetails)) { showAlert("Add job info", "Summary + details required."); return; }
       setGenLoading(true);
+
+      bump("Preparing data…", 0.12);
+
       const prof = await getProfileOrThrow();
 
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
       if (!user) throw new Error("Not signed in");
+
       if (!existing && !isPremium) {
         const allowed = await checkDailyQuota(user.id);
         if (!allowed) { setBlockedToday(true); showAlert("Daily limit reached", "Free plan is 1 per day."); return; }
       }
+
+      bump("Estimating travel…", 0.22);
       if (!distanceMiles) await autoCalcDistance();
 
       let quoteNumber = existing?.quote_number;
@@ -500,164 +511,86 @@ export default function CreateQuote() {
         quoteNumber = nextNo;
       }
 
-      const aiPayload = {
+      const pdfPayload = {
+        user_id: user.id,
+        branding: {
+          tier: isPremium ? "premium" : "free",
+          business_name: prof?.business_name || "Trade Business",
+          custom_logo_url: prof?.custom_logo_url || null,
+          powered_by_footer: !isPremium,
+          address_line1: prof?.address_line1 || "",
+          city: prof?.city || "",
+          postcode: prof?.postcode || "",
+        },
+        description: (jobSummary + ". " + jobDetails).trim(),
         profile: {
-          business_name: profile?.business_name || "",
-          trade_type: profile?.trade_type || "",
-          hourly_rate: num(profile?.hourly_rate, 0),
-          materials_markup_pct: num(profile?.materials_markup_pct, 0),
-          vat_registered: !!profile?.vat_registered,
-          payment_terms: profile?.payment_terms || "",
-          warranty_text: profile?.warranty_text || "",
-          travel_rate_per_mile: num(profile?.travel_rate_per_mile, 0),
-          hours_per_day: num(profile?.hours_per_day, 10) || 10,
+          business_name: prof?.business_name || "",
+          trade_type: prof?.trade_type || "",
+          hourly_rate: num(prof?.hourly_rate, 0),
+          materials_markup_pct: num(prof?.materials_markup_pct, 0),
+          vat_registered: !!prof?.vat_registered,
+          invoice_tax_rate: num(prof?.invoice_tax_rate, 20),
+          payment_terms: prof?.payment_terms || "",
+          warranty_text: prof?.warranty_text || "",
+          travel_rate_per_mile: num(prof?.travel_rate_per_mile, 0),
+          hours_per_day: num(prof?.hours_per_day, 8),
+          city: prof?.city || "",
+          postcode: prof?.postcode || "",
+          currency: "GBP"
         },
-        client: {
-          name: clientName || "Client",
-          email: clientEmail || "",
-          phone: clientPhone || "",
-          billing_address: clientAddress || "",
-          site_address: sameAsBilling ? clientAddress : siteAddress || "",
-        },
-        job: { summary: jobSummary || "New job", details: jobDetails || "" },
-        travel: {
-          distance_miles: num(distanceMiles, 0),
-          round_trip_miles: num(distanceMiles, 0) * 2,
-          travel_charge: travelCharge,
-        },
+        quote: {
+          is_estimate: true,
+          quote_number: quoteNumber,
+          client_name: clientName || "Client",
+          client_address: clientAddress || null,
+          site_address: sameAsBilling ? clientAddress : siteAddress || null,
+          job_summary: jobSummary || "New job",
+          totals: {
+            vat_rate: (prof?.vat_registered ? num(prof?.invoice_tax_rate, 20) / 100 : 0)
+          },
+          meta: {
+            travel: {
+              distance_miles: num(distanceMiles, 0),
+              round_trip_miles: num(distanceMiles, 0) * 2,
+              travel_charge: num(travelCharge, 0)
+            }
+          }
+        }
       };
 
-      // AI call with fallback
-      let aiData;
-      try {
-        const { data: _aiData, error: aiErr } = await supabase.functions.invoke("ai-generate-quote", { body: aiPayload });
-        if (aiErr) throw new Error(aiErr.message || "ai-generate-quote failed");
-        aiData = _aiData;
-      } catch {
-        const hours = profile?.hourly_rate ? 1.5 : 1;
-        const labour = Math.max(0, num(profile?.hourly_rate, 0)) * hours;
-        const travel = travelCharge || 0;
-        const materialsRaw = 12;
-        const markup = num(profile?.materials_markup_pct, 0) / 100;
-        const materialsVal = materialsRaw * (1 + markup);
-        const line_items = [
-          {
-            description: `Labour (${hours.toFixed(1)} hrs @ £${num(profile?.hourly_rate, 0).toFixed(2)}/hr)`,
-            qty: 1, unit_price: +labour.toFixed(2), total: +labour.toFixed(2), type: "labour",
-          },
-          {
-            description: "Standard fixings & sundries (incl. markup)",
-            qty: 1, unit_price: +materialsVal.toFixed(2), total: +materialsVal.toFixed(2), type: "materials",
-          },
-        ];
-        if (travel > 0) line_items.push({ description: "Travel / mileage (round trip)", qty: 1, unit_price: +travel.toFixed(2), total: +travel.toFixed(2), type: "other" });
-        const subtotal = +line_items.reduce((s, li) => s + (li.total || 0), 0).toFixed(2);
-        const vatRate = profile?.vat_registered ? 0.2 : 0;
-        const vat_amount = +(subtotal * vatRate).toFixed(2);
-        const total = +(subtotal + vat_amount).toFixed(2);
-        aiData = { line_items, totals: { subtotal, vat_amount, total, vat_rate: vatRate }, meta: {} };
-      }
-
-      const aiMeta = aiData?.meta || {};
-      const estHours = num(aiMeta?.estimated_hours, 0);
-      const hoursPerDay = num(profile?.hours_per_day, 10) || 10;
-      const hourlyRate = num(profile?.hourly_rate, 0);
-      let day_rate_calc = null;
-      if (estHours > 0 && hoursPerDay > 0 && hourlyRate > 0) {
-        const days = Math.floor(estHours / hoursPerDay);
-        const remainder = +(estHours - days * hoursPerDay).toFixed(1);
-        const day_rate = +(hourlyRate * hoursPerDay).toFixed(2);
-        const labour_days_cost = +(day_rate * days).toFixed(2);
-        const labour_hours_cost = +(hourlyRate * remainder).toFixed(2);
-        const total_labour_cost = +(labour_days_cost + labour_hours_cost).toFixed(2);
-        day_rate_calc = { hours_per_day: hoursPerDay, hourly_rate: hourlyRate, days, remainder_hours: remainder, day_rate, labour_days_cost, labour_hours_cost, total_labour_cost };
-      }
-      let phases = Array.isArray(aiMeta?.phases) ? aiMeta.phases : null;
-      if (!phases || !phases.length) phases = buildFallbackPhases(jobSummary, jobDetails);
-
-      const jobDetailsForRow = JSON.stringify({ ...aiPayload, ai_meta: { ...aiMeta, day_rate_calc, phases } }, null, 2);
-
-      const safeItems = (aiData?.line_items || []).filter((li) => {
-        const qty = Number(li.qty ?? 1);
-        const unit = Number(li.unit_price ?? 0);
-        const total = Number(li.total ?? qty * unit);
-        return Number.isFinite(total) && total > 0;
-      });
-
-      // Build PDF
-      const poweredBy = !isPremium; // Show "powered by" if not premium user
-      const { data: pdfData, error: pdfErr } = await supabase.functions.invoke("pdf-builder", {
-        body: {
-          user_id: user.id,
-          branding: {
-            tier: isPremium ? "premium" : "free",
-            business_name: profile?.business_name || "Trade Business",
-            custom_logo_url: profile?.custom_logo_url || null,
-            contact: { address_line1: profile?.address_line1 || "", city: profile?.city || "", postcode: profile?.postcode || "", email: "", phone: "", website: "" },
-            tax: { vat_number: profile?.vat_registered ? "GB …" : undefined, company_number: undefined },
-            payment: { instructions: profile?.payment_terms || "Payment due within 7 days by bank transfer." },
-          },
-          quote: {
-            is_estimate: true,
-            quote_number: quoteNumber,
-            client_name: clientName || "Client",
-            client_address: clientAddress || null,
-            site_address: sameAsBilling ? clientAddress : siteAddress || null,
-            job_summary: jobSummary || "New job",
-            line_items: safeItems,
-            totals: aiData?.totals || { subtotal: 0, vat_amount: 0, total: 0, vat_rate: 0 },
-            terms: profile?.payment_terms || "",
-            warranty: profile?.warranty_text || "",
-            powered_by_footer: poweredBy,
-            meta: { day_rate_calc, phases },
-          },
-        },
-      });
+      bump("Generating items & costs…", 0.48);
+      const { data: pdfData, error: pdfErr } = await supabase.functions.invoke("pdf-builder", { body: pdfPayload });
       if (pdfErr) throw new Error(pdfErr.message || "pdf-builder failed");
+
+      bump("Rendering PDF…", 0.7);
 
       let signedUrl = pdfData?.signedUrl || pdfData?.signed_url || null;
       let storagePath = pdfData?.path || pdfData?.key || pdfData?.objectPath || null;
       let bucket = "quotes";
 
-      if (!storagePath && signedUrl) {
-        const parsed = parseStorageUrl(signedUrl);
-        if (parsed) { bucket = parsed.bucket || "quotes"; storagePath = parsed.path; }
-      }
+      const parsed = storagePath ? { bucket, path: storagePath } : (pdfData?.publicUrl || signedUrl ? parseStorageUrl(pdfData.publicUrl || signedUrl) : null);
+      if (parsed) { bucket = parsed.bucket || "quotes"; storagePath = parsed.path; }
+
       let publicUrl = null;
       if (storagePath) {
         const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
         publicUrl = pub?.publicUrl || null;
       }
-      if (!publicUrl && signedUrl) {
-        const parsed = parseStorageUrl(signedUrl);
-        if (parsed) {
-          bucket = parsed.bucket || "quotes";
-          storagePath = parsed.path;
-          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
-          publicUrl = pub?.publicUrl || null;
-        }
-      }
-      let pdfUrlForRow = publicUrl || signedUrl || null;
-      if (!signedUrl && storagePath) {
-        const ready = await pollSignedUrlReady(storagePath, { tries: 120, baseDelay: 500, step: 500, maxDelay: 2000 });
-        if (ready) signedUrl = ready;
-      }
 
-      const persistedTotals = pdfData?.totals || aiData?.totals || { subtotal: null, vat_amount: null, total: null, vat_rate: null };
-      const persistedItems = safeItems;
+      bump("Finalising links…", 0.82);
+      if (!signedUrl && storagePath) {
+        signedUrl = await pollSignedUrlReady(storagePath, { tries: 120, baseDelay: 500, step: 500, maxDelay: 2000 });
+      }
+      const pdfUrlForRow = publicUrl || signedUrl || null;
+
+      const totals = pdfData?.totals || { subtotal: null, vat_amount: null, total: null, vat_rate: null };
+      const persistedItems = Array.isArray(pdfData?.quote?.lines) ? pdfData.quote.lines : null;
+
+      bump("Saving to account…", 0.9);
       let finalQuoteId = existing?.id || null;
 
-      const bgEnsurePublicUrl = async (qId) => {
-        try {
-          if (!qId || !storagePath) return;
-          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
-          const pubUrl = pub?.publicUrl || null;
-          if (pubUrl) await supabase.from("quotes").update({ pdf_url: pubUrl }).eq("id", qId);
-        } catch (e) { console.warn("[TMQ][PDF] ensurePublicUrl", e?.message || e); }
-      };
-
       if (existing) {
-        const updateObj = {
+        const { error: upErr } = await supabase.from("quotes").update({
           status: "generated",
           client_name: clientName || "Client",
           client_email: clientEmail || null,
@@ -665,20 +598,18 @@ export default function CreateQuote() {
           client_address: clientAddress || null,
           site_address: sameAsBilling ? clientAddress : siteAddress || null,
           job_summary: jobSummary || "New job",
-          job_details: jobDetailsForRow,
+          job_details: JSON.stringify({ summary: jobSummary, details: jobDetails }, null, 2),
           line_items: persistedItems,
-          totals: persistedTotals,
-          subtotal: persistedTotals.subtotal,
-          vat_amount: persistedTotals.vat_amount,
-          total: persistedTotals.total,
+          totals: totals,
+          subtotal: totals.subtotal,
+          vat_amount: totals.vat_amount,
+          total: totals.total,
           pdf_url: pdfUrlForRow,
-        };
-        const { error: upErr } = await supabase.from("quotes").update(updateObj).eq("id", existing.id);
+        }).eq("id", existing.id);
         if (upErr) throw upErr;
         finalQuoteId = existing.id;
-        if (!publicUrl && storagePath) bgEnsurePublicUrl(finalQuoteId).catch(() => {});
       } else {
-        const generatedRow = {
+        const { data: inserted, error: insErr } = await supabase.from("quotes").insert({
           user_id: user.id,
           quote_number: quoteNumber,
           status: "generated",
@@ -688,41 +619,37 @@ export default function CreateQuote() {
           client_address: clientAddress || null,
           site_address: sameAsBilling ? clientAddress : siteAddress || null,
           job_summary: jobSummary || "New job",
-          job_details: jobDetailsForRow,
+          job_details: JSON.stringify({ summary: jobSummary, details: jobDetails }, null, 2),
           line_items: persistedItems,
-          totals: persistedTotals,
-          subtotal: persistedTotals.subtotal,
-          vat_amount: persistedTotals.vat_amount,
-          total: persistedTotals.total,
+          totals: totals,
+          subtotal: totals.subtotal,
+          vat_amount: totals.vat_amount,
+          total: totals.total,
           pdf_url: pdfUrlForRow,
-        };
-        const inserted = await tryInsertWithUniqueQuoteNumber(generatedRow, user.id);
+        }).select("id").single();
+        if (insErr) throw insErr;
         finalQuoteId = inserted?.id || null;
-        if (!publicUrl && storagePath && finalQuoteId) bgEnsurePublicUrl(finalQuoteId).catch(() => {});
       }
 
-      // -------- Use reference for the filename ----------
+      bump("Opening preview…", 1);
       const refForName =
         existing?.reference ||
         quoteRef(quoteNumber, existing?.created_at);
 
-      const previewUrl = signedUrl || pdfUrlForRow;
+      const previewUrl = signedUrl || publicUrl;
       if (previewUrl && finalQuoteId) {
-        const estHoursStr = String(aiData?.meta?.estimated_hours ?? "");
-        const estDaysStr = String(aiData?.meta?.days ?? "");
-        const estMethod = aiData?.meta?.method || "";
         setVisible(false);
-        // ✅ Fixed: Use quotePreviewHref helper which uses query parameters
-        router.replace(quotePreviewHref(finalQuoteId, `${refForName || quoteNumber}.pdf`));
+        router.replace(quotePreviewHref(finalQuoteId, (refForName || quoteNumber) + ".pdf"));
       } else {
         showAlert("Quote saved", "Your quote has been saved.");
         setVisible(false); router.replace(quotesListHref);
       }
     } catch (e) {
-      console.error("[TMQ][CREATE] generateAIAndPDF", e);
-      showAlert("Error", e.message || "AI/PDF failed. Please check function logs.");
+      console.error("[TMQ][CREATE] generateAIAndPDF (merged)", e);
+      showAlert("Error", e.message || "Generation failed. Please check function logs.");
     } finally {
       setGenLoading(false);
+      setTimeout(() => { setLoaderMsg("Preparing data…"); setLoaderPct(0.1); }, 400); // reset after a moment
     }
   };
 
@@ -939,6 +866,9 @@ export default function CreateQuote() {
           </CenteredEditor>
         </View>
       </View>
+
+      {/* 🔥 Fancy full-screen loader while generating */}
+      <FancyBuilderLoader visible={genLoading} message={loaderMsg} progress={loaderPct} />
     </Modal>
   );
 }
@@ -1031,7 +961,9 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
       const formatted = normaliseFormatted(details?.formatted_address || item?.description || "");
       setEditValue(formatted);
       setMode("edit");
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   }, [fetchDetails]);
 
   const canUse = (editValue || "").trim().length >= 6;
@@ -1072,7 +1004,6 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
                 if (!canUse) return;
                 Haptics.selectionAsync();
                 onUse?.(editValue.trim());
-                // ✅ ensure the modal closes immediately every time
                 onClose?.();
               }}
               disabled={!canUse}
@@ -1082,6 +1013,56 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
           </View>
         </View>
       )}
+    </View>
+  );
+}
+
+/* ---------------- Fancy Builder Loader ---------------- */
+function FancyBuilderLoader({ visible, message = "Preparing data…", progress = 0.1 }) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const rotate = useRef(new Animated.Value(0)).current;
+  const bar = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!visible) return;
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scale, { toValue: 1.06, duration: 500, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        Animated.timing(scale, { toValue: 1.0, duration: 700, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    );
+    const spin = Animated.loop(
+      Animated.timing(rotate, { toValue: 1, duration: 1800, easing: Easing.linear, useNativeDriver: true })
+    );
+    pulse.start();
+    spin.start();
+    return () => { pulse.stop(); spin.stop(); rotate.setValue(0); };
+  }, [visible, scale, rotate]);
+
+  useEffect(() => {
+    Animated.timing(bar, { toValue: Math.max(0, Math.min(1, progress)), duration: 350, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+  }, [progress, bar]);
+
+  const spinZ = rotate.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+  const barWidth = bar.interpolate({ inputRange: [0, 1], outputRange: ["6%", "100%"] });
+
+  if (!visible) return null;
+  return (
+    <View style={styles.loaderBackdrop}>
+      <BlurView intensity={30} tint="systemThinMaterialDark" style={StyleSheet.absoluteFill} />
+      <View style={styles.loaderCard}>
+        <Animated.View style={{ transform: [{ scale }, { rotate: spinZ }], marginBottom: 16 }}>
+          <View style={styles.loaderRingOuter}>
+            <View style={styles.loaderRingInner}/>
+          </View>
+        </Animated.View>
+        <Text style={styles.loaderTitle}>Building your quote</Text>
+        <Text style={styles.loaderSub}>{message}</Text>
+        <View style={styles.progressWrap}>
+          <Animated.View style={[styles.progressBar, { width: barWidth }]} />
+        </View>
+        <Text style={styles.loaderHint}>This can take a few seconds</Text>
+      </View>
     </View>
   );
 }
@@ -1199,3 +1180,57 @@ function StepHeader({ step, total, title }) {
     </View>
   );
 }
+
+/* --- Loader styles --- */
+const styles = StyleSheet.create({
+  loaderBackdrop: {
+    position: "absolute",
+    inset: 0,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  loaderCard: {
+    width: Math.min(Dimensions.get("window").width - 40, 360),
+    backgroundColor: "#0b1220",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+    padding: 20,
+    alignItems: "center",
+  },
+  loaderRingOuter: {
+    width: 74,
+    height: 74,
+    borderRadius: 74,
+    borderWidth: 4,
+    borderColor: "rgba(255,255,255,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loaderRingInner: {
+    width: 46,
+    height: 46,
+    borderRadius: 46,
+    borderWidth: 4,
+    borderColor: "#2a86ff",
+    borderLeftColor: "transparent",
+    borderBottomColor: "transparent",
+  },
+  loaderTitle: { color: "#fff", fontWeight: "900", fontSize: 16 },
+  loaderSub: { color: "rgba(255,255,255,0.9)", marginTop: 6, textAlign: "center" },
+  progressWrap: {
+    width: "100%",
+    height: 8,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: 999,
+    marginTop: 14,
+    overflow: "hidden",
+  },
+  progressBar: {
+    height: "100%",
+    backgroundColor: "#2a86ff",
+    borderRadius: 999,
+  },
+  loaderHint: { color: "rgba(255,255,255,0.7)", marginTop: 10, fontSize: 12 },
+});
