@@ -1,13 +1,19 @@
-// app.config.js (CommonJS)
-require('dotenv').config();
+// app.config.js  (CommonJS)
+
+const profile = process.env.EAS_BUILD_PROFILE || process.env.NODE_ENV || 'development';
+require('dotenv').config({ path: profile === 'production' ? '.env.production' : '.env' });
+
+const must = (k) => {
+  if (!process.env[k]) console.warn(`[config] Missing env: ${k}`);
+  return process.env[k] || '';
+};
 
 module.exports = {
   expo: {
-    // ✅ Change the visible app name
     name: 'TradeMate',
-    slug: 'trademate-quotes', // also safe to simplify the slug
+    slug: 'trademate-quotes',
 
-    // Scheme can stay as-is (only matters for deep linking)
+    // Deep link scheme
     scheme: 'tradematequotes',
 
     version: '1.0.0',
@@ -15,6 +21,7 @@ module.exports = {
     userInterfaceStyle: 'automatic',
     platforms: ['android', 'ios'],
 
+    // ✅ include all nested assets
     assetBundlePatterns: ['/*'],
 
     icon: './assets/images/app-icon.jpg',
@@ -30,19 +37,25 @@ module.exports = {
       },
     },
 
-    plugins: ['expo-router', 'react-native-iap', 'expo-asset', 'expo-font'],
+    plugins: [
+      'expo-router',
+      'react-native-iap',
+      'expo-asset',
+      'expo-font',
+      'expo-web-browser',
+    ],
+
     experiments: { typedRoutes: false },
 
     extra: {
-      SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL,
-      SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
-      GOOGLE_API_KEY: process.env.EXPO_PUBLIC_GOOGLE_API_KEY,
-      VERIFY_URL: process.env.EXPO_PUBLIC_VERIFY_URL,
+      SUPABASE_URL: must('EXPO_PUBLIC_SUPABASE_URL'),
+      SUPABASE_ANON_KEY: must('EXPO_PUBLIC_SUPABASE_ANON_KEY'),
+      GOOGLE_MAPS_KEY: must('EXPO_PUBLIC_GOOGLE_MAPS_KEY'),
+      FACEBOOK_APP_ID: process.env.EXPO_PUBLIC_FACEBOOK_APP_ID || '',
       eas: { projectId: '57f55544-8d0b-4f50-b45e-57948ba02dfc' },
     },
 
     android: {
-      // ❌ DO NOT CHANGE — must stay permanent once published
       package: 'com.trademate.quotes',
       softwareKeyboardLayoutMode: 'resize',
       versionCode: 1,
@@ -63,20 +76,26 @@ module.exports = {
         },
       },
 
+      // ✅ accept both host-form and path-form deep links
       intentFilters: [
+        // tradematequotes://auth
         {
           action: 'VIEW',
           category: ['BROWSABLE', 'DEFAULT'],
-          data: [{ scheme: 'tradematequotes' }],
+          data: [{ scheme: 'tradematequotes', host: 'auth' }],
+        },
+        // tradematequotes:///auth
+        {
+          action: 'VIEW',
+          category: ['BROWSABLE', 'DEFAULT'],
+          data: [{ scheme: 'tradematequotes', pathPrefix: '/auth' }],
         },
       ],
     },
 
     ios: {
-      // ❌ DO NOT CHANGE — must stay permanent once published
       bundleIdentifier: 'com.trademate.quotes',
       buildNumber: '1',
-
       splash: {
         image: './assets/images/trademate-login-logo.png',
         resizeMode: 'contain',
