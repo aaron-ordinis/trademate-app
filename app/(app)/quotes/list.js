@@ -1,12 +1,4 @@
 // app/(app)/quotes/list.js
-import {
-  loginHref,
-  settingsHref,
-  quoteCreateHref,
-  quotePreviewHref,
-  jobHref,
-} from "../../../lib/nav";
-
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
@@ -21,9 +13,9 @@ import {
   Platform,
   Switch,
   Alert,
+  ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { useFocusEffect } from "@react-navigation/native";
 import { supabase } from "../../../lib/supabase";
 import {
   Search,
@@ -35,15 +27,16 @@ import {
   Trash2,
   Eye,
   CalendarPlus,
-  RefreshCcw,
   MapPin,
   Minus,
   Plus as PlusIcon,
+  CheckSquare,
+  Square,
+  RefreshCcw,
 } from "lucide-react-native";
 
 import SharedCalendar from "../../../components/SharedCalendar";
-import { getPremiumStatus } from "../../../lib/premium";
-import PaywallModal from "../../../components/PaywallModal";
+import { quoteCreateHref, quotePreviewHref, jobHref, loginHref } from "../../../lib/nav";
 
 /* ---------- theme ---------- */
 const BRAND = "#2a86ff";
@@ -53,58 +46,27 @@ const CARD = "#ffffff";
 const BG = "#f5f7fb";
 const BORDER = "#e6e9ee";
 const DANGER = "#dc2626";
-const ORANGE = "#f59e0b";
-const GREEN = "#16a34a";
 
-/* ---------- status helpers ---------- */
-const normalizeStatus = (s) =>
-  String(s || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\s-]+/g, "_")
-    .replace(/^open$/, "scheduled");
-
-const STATUS_COLOR = {
-  scheduled: BRAND,
-  in_progress: ORANGE,
-  complete: GREEN,
-};
-
-const badgeColorForJobs = (arr = []) => {
-  const hasInProg = arr.some((j) => normalizeStatus(j.status) === "in_progress");
-  const hasDone = arr.some((j) => normalizeStatus(j.status) === "complete");
-  if (hasInProg) return STATUS_COLOR.in_progress;
-  if (hasDone) return STATUS_COLOR.complete;
-  return STATUS_COLOR.scheduled;
-};
+/* VAT defaults */
+const VAT_ENABLED_DEFAULT = true;
+const VAT_RATE_DEFAULT = 0.2;
 
 /* ---------- utils ---------- */
 const money = (v = 0) =>
   "£" + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-const displayQuoteId = (q) => {
-  const ref = String(q?.reference || "").trim();
-  if (ref) {
-    if (/^QUO-/i.test(ref)) return ref.toUpperCase();
-    const m = ref.match(/^[A-Z]{2,4}-(\d{4})\d{4}-?-(\d{1,4})$/);
-    if (m) return `QUO-${m[1]}-${m[2].padStart(4, "0")}`;
-  }
-  const num = q?.quote_number ?? 0;
-  const year = q?.created_at ? new Date(q.created_at).getFullYear() : new Date().getFullYear();
-  return "QUO-" + year + "-" + String(num).padStart(4, "0");
-};
-
 const pad = (n) => (n < 10 ? "0" + n : String(n));
 const toYMD = (d) =>
   d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
-const toLocalMidnight = (d) => {
+const atMidnight = (d) => {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
   return x;
 };
 const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
+
 const addWorkingDays = (startDate, days, includeWeekends) => {
-  const s = toLocalMidnight(startDate);
+  const s = atMidnight(startDate);
   if (days <= 1) return s;
   let remaining = days - 1;
   const cur = new Date(s);
@@ -114,19 +76,6 @@ const addWorkingDays = (startDate, days, includeWeekends) => {
   }
   return cur;
 };
-const sameDay = (a, b) =>
-  a.getFullYear() === b.getFullYear() &&
-  a.getMonth() === b.getMonth() &&
-  a.getDate() === b.getDate();
-
-/* ---------- availability helpers ---------- */
-const atMidnight = (d) => {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-};
-const spanEnd = (start, days, includeWeekends) =>
-  addWorkingDays(start, Math.max(1, days), includeWeekends);
 
 const eachDay = (a, b, cb) => {
   const cur = atMidnight(a),
@@ -137,7 +86,6 @@ const eachDay = (a, b, cb) => {
   }
 };
 
-/* ---------- small helpers ---------- */
 const num = (v, d = 0) => {
   if (v == null) return d;
   const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
@@ -146,44 +94,162 @@ const num = (v, d = 0) => {
 const calcAmount = (it) => {
   const direct = it.total ?? it.unit_total ?? it.line_total ?? it.amount;
   if (direct != null) return num(direct, 0);
-  return +(num(it.unit_price ?? it.price ?? it.rate, 0) * num(it.qty ?? it.quantity ?? 1, 1)).toFixed(2);
+  return +(
+    num(it.unit_price ?? it.price ?? it.rate, 0) *
+    num(it.qty ?? it.quantity ?? 1, 1)
+  ).toFixed(2);
 };
 const flattenItems = (src) => {
   if (!src) return [];
   let data = src;
   if (typeof data === "string") {
-    try { data = JSON.parse(data); } catch { data = []; }
+    try {
+      data = JSON.parse(data);
+    } catch {
+      data = [];
+    }
   }
   if (Array.isArray(data)) return data;
-
   const flat = [];
   for (const [k, v] of Object.entries(data || {})) {
     if (Array.isArray(v)) flat.push(...v.map((x) => ({ ...x, group: k })));
   }
   return flat;
 };
-/** djb2 text hash → hex-ish fingerprint */
 const fingerprintOf = (txt) => {
   let h = 5381;
   for (let i = 0; i < txt.length; i++) h = ((h << 5) + h) + txt.charCodeAt(i);
   return "fp_" + (h >>> 0).toString(16);
 };
 
-/* ---------- build rows that match public.expenses schema ---------- */
+const displayQuoteId = (q) => {
+  const ref = String(q?.reference || "").trim();
+  if (ref) {
+    if (/^QUO-/i.test(ref)) return ref.toUpperCase();
+  }
+  const numPart = q?.quote_number ?? 0;
+  const year = q?.created_at
+    ? new Date(q.created_at).getFullYear()
+    : new Date().getFullYear();
+  return "QUO-" + year + "-" + String(numPart).padStart(4, "0");
+};
+
+/* ---------- deposit helpers ---------- */
+function splitQuoteItems(quote) {
+  const items = flattenItems(quote?.line_items);
+  const labourItems = [];
+  const materialItems = [];
+
+  items.forEach((it, idx) => {
+    const type = String(it.type ?? it.kind ?? "").toLowerCase();
+    const title = it.title ?? it.name ?? it.description ?? "Item";
+    const qty = num(it.qty ?? it.quantity, 1);
+    const unit = num(it.unit_price ?? it.price ?? it.rate, 0);
+    const total = calcAmount(it);
+    const ref =
+      it.id || it.key || it.code || fingerprintOf(`${title}|${qty}|${unit}|${idx}`);
+    const norm = { ref, title, qty, unit, total };
+
+    if (
+      type === "labour" ||
+      type === "labor" ||
+      /labou?r/i.test(type || title)
+    ) {
+      labourItems.push(norm);
+    } else if (
+      type === "material" ||
+      type === "materials" ||
+      /material/i.test(type || title)
+    ) {
+      materialItems.push(norm);
+    }
+  });
+
+  const labourSubtotal = labourItems.reduce((s, x) => s + (x.total || 0), 0);
+  return { labourSubtotal, materialItems };
+}
+
+/* ---------- scheduling helpers ---------- */
+const jobOverlapsWorking = (job, spanStart, spanDays, spanIncludeWeekends) => {
+  const js0 = job.start_date ? atMidnight(new Date(job.start_date)) : null;
+  const je0 = job.end_date ? atMidnight(new Date(job.end_date)) : js0;
+  if (!js0) return false;
+
+  const spanEndDate = addWorkingDays(
+    spanStart,
+    Math.max(1, spanDays),
+    spanIncludeWeekends
+  );
+
+  const spanKeys = new Set();
+  eachDay(spanStart, spanEndDate, (d) => {
+    if (spanIncludeWeekends || !isWeekend(d)) {
+      spanKeys.add(d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate());
+    }
+  });
+
+  const jobIncWknd = !!job.include_weekends;
+  let hit = false;
+  eachDay(js0, je0, (d) => {
+    if (hit) return;
+    const weekend = isWeekend(d);
+    if (jobIncWknd || !weekend) {
+      const k = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+      if (spanKeys.has(k)) hit = true;
+    }
+  });
+  return hit;
+};
+
+const isSpanFree = (start, days, includeWeekends, allJobs) => {
+  for (const j of allJobs) {
+    if (jobOverlapsWorking(j, start, days, includeWeekends)) return false;
+  }
+  return true;
+};
+
+const nextAvailableStart = (
+  fromDate,
+  days,
+  includeWeekends,
+  allJobs,
+  lookaheadDays = 365
+) => {
+  const start = atMidnight(fromDate);
+  for (let i = 0; i < lookaheadDays; i++) {
+    const tryDate = new Date(start);
+    tryDate.setDate(start.getDate() + i);
+    if (isSpanFree(tryDate, days, includeWeekends, allJobs)) return tryDate;
+  }
+  return start;
+};
+
+/* Build expenses rows for non-labour items */
 const buildExpenseRows = ({ quote, jobId, userId, dateISO }) => {
   const items = flattenItems(quote?.line_items);
   const quoteId = quote?.id ?? quote?.source_quote_id ?? null;
   const rows = [];
 
   items.forEach((it, idx) => {
-    const type = String(it.type ?? "").toLowerCase();
+    const type = String(it.type ?? it.kind ?? "").toLowerCase();
     if (type === "labour" || type === "labor") return;
 
     const amount = calcAmount(it);
     if (!(amount > 0)) return;
 
     const title = it.title ?? it.name ?? it.description ?? "Expense";
-    const base = userId + "|" + jobId + "|" + (quoteId || "noquote") + "|" + title + "|" + amount.toFixed(2) + "|" + idx;
+    const base =
+      userId +
+      "|" +
+      jobId +
+      "|" +
+      (quoteId || "noquote") +
+      "|" +
+      title +
+      "|" +
+      amount.toFixed(2) +
+      "|" +
+      idx;
     const fingerprint = fingerprintOf(base);
 
     rows.push({
@@ -205,7 +271,9 @@ const buildExpenseRows = ({ quote, jobId, userId, dateISO }) => {
   return rows;
 };
 
-/* ---------- component ---------- */
+/* ============================================= */
+/*                    SCREEN                      */
+/* ============================================= */
 export default function QuoteList() {
   const router = useRouter();
 
@@ -213,39 +281,41 @@ export default function QuoteList() {
   const [quotes, setQuotes] = useState([]);
   const [query, setQuery] = useState("");
 
+  const [userId, setUserId] = useState(null);
+  const [jobs, setJobs] = useState([]);
+
+  /* Action sheet */
   const [actionOpen, setActionOpen] = useState(false);
   const [selectedQuote, setSelectedQuote] = useState(null);
 
+  /* Deposit UI */
+  const [depEnabled, setDepEnabled] = useState(false);
+  const [depMaterials, setDepMaterials] = useState([]); // {ref,title,qty,unit,total,selected}
+  const [depLabourPct, setDepLabourPct] = useState(10);
+  const [depLabourSubtotal, setDepLabourSubtotal] = useState(0);
+  const [vatEnabled, setVatEnabled] = useState(VAT_ENABLED_DEFAULT);
+  const [vatRate, setVatRate] = useState(VAT_RATE_DEFAULT);
+
+  /* Scheduling modal */
   const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [pendingQuote, setPendingQuote] = useState(null);
-
-  const [cjBusy, setCjBusy] = useState(false);
-  const [cjError, setCjError] = useState("");
-  const [cjNotice, setCjNotice] = useState("");
-  const [cjIncludeWeekends, setCjIncludeWeekends] = useState(false);
   const [cjDays, setCjDays] = useState(1);
-  const [cjStart, setCjStart] = useState(toLocalMidnight(new Date()));
-
-  const [userId, setUserId] = useState(null);
-  const [jobs, setJobs] = useState([]);
+  const [cjIncludeWeekends, setCjIncludeWeekends] = useState(false);
+  const [cjStart, setCjStart] = useState(atMidnight(new Date()));
   const [calMonth, setCalMonth] = useState(() => {
     const d = new Date();
     d.setDate(1);
     return d;
   });
+  const [cjBusy, setCjBusy] = useState(false);
+  const [cjError, setCjError] = useState("");
 
-  const [premiumStatus, setPremiumStatus] = useState({ isPremium: false, status: "no_profile" });
-  const [showPaywall, setShowPaywall] = useState(false);
-
+  /* Derived dates */
   const endDate = useMemo(
-    () => spanEnd(cjStart, Math.max(1, cjDays), cjIncludeWeekends),
+    () => addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends),
     [cjStart, cjDays, cjIncludeWeekends]
   );
-  const spanBlocked = useMemo(
-    () => !isSpanFree(cjStart, cjDays, cjIncludeWeekends, jobs),
-    [cjStart, cjDays, cjIncludeWeekends, jobs]
-  );
 
+  /* Haptics (soft) */
   const haptic = useRef(null);
   useEffect(() => {
     (async () => {
@@ -255,14 +325,9 @@ export default function QuoteList() {
       } catch {}
     })();
   }, []);
-  const buzz = (style = "selection") => {
-    const H = haptic.current;
-    if (!H) return;
-    style === "selection"
-      ? H.selectionAsync?.()
-      : H.impactAsync?.(H.ImpactFeedbackStyle.Light);
-  };
+  const buzz = () => haptic.current?.selectionAsync?.();
 
+  /* Data */
   const loadQuotes = useCallback(async () => {
     setLoading(true);
     try {
@@ -274,26 +339,22 @@ export default function QuoteList() {
       }
       setUserId(user.id);
 
-      // profile → premium status
       const { data: profile } = await supabase
         .from("profiles")
-        .select("trial_ends_at, plan_tier, plan_status")
+        .select("vat_enabled, vat_rate")
         .eq("id", user.id)
         .maybeSingle();
 
       if (profile) {
-        const status = getPremiumStatus(profile);
-        setPremiumStatus(status);
-        if (status.isBlocked) {
-          router.replace("/(app)/trial-expired");
-          return;
-        }
+        if (profile.vat_enabled != null) setVatEnabled(!!profile.vat_enabled);
+        if (profile.vat_rate != null)
+          setVatRate(Number(profile.vat_rate) || VAT_RATE_DEFAULT);
       }
 
       let q = supabase
         .from("quotes")
         .select(
-          "id, quote_number, reference, client_name, total, created_at, pdf_url, client_address, status, job_id"
+          "id, quote_number, reference, client_name, total, created_at, client_address, status, job_id"
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
@@ -306,112 +367,65 @@ export default function QuoteList() {
       }
 
       const res = await q.limit(400);
-      if (res.error) throw res.error;
-      setQuotes((res.data || []).filter((x) => !x.job_id));
+      if (!res.error) setQuotes((res.data || []).filter((x) => !x.job_id));
     } finally {
       setLoading(false);
     }
   }, [router, query]);
 
   const loadJobs = useCallback(async () => {
-    if (!userId) return;
+    if (!userId) return [];
     const { data, error } = await supabase
       .from("jobs")
-      .select("id, title, start_date, end_date, status, include_weekends, user_id")
+      .select(
+        "id, title, start_date, end_date, status, include_weekends, user_id"
+      )
       .eq("user_id", userId);
-    if (!error) setJobs(data || []);
+    if (!error) {
+      setJobs(data || []);
+      return data || [];
+    }
+    return [];
   }, [userId]);
 
   useEffect(() => {
     loadQuotes();
   }, [loadQuotes]);
-  useFocusEffect(
-    useCallback(() => {
-      loadQuotes();
-    }, [loadQuotes])
-  );
-
   useEffect(() => {
-    if (!scheduleOpen) return;
-    if (!isSpanFree(cjStart, cjDays, cjIncludeWeekends, jobs)) {
-      const best = nextAvailableStart(cjStart, cjDays, cjIncludeWeekends, jobs);
-      setCjStart(best);
-      setCalMonth(new Date(best.getFullYear(), best.getMonth(), 1));
-    }
-  }, [jobs, cjDays, cjIncludeWeekends, scheduleOpen, cjStart]);
+    loadJobs();
+  }, [loadJobs, userId]);
 
-  const openActionFor = (q) => {
+  /* ---------- open action ---------- */
+  const openActionFor = async (q) => {
     setSelectedQuote(q);
-    setActionOpen(true);
-  };
-
-  const openCreateJob = async (q) => {
-    if (!q) return;
-    if (String(q?.status || "").toLowerCase() === "draft") {
-      buzz("impact");
-      return;
-    }
-
-    // premium gate
-    if (!premiumStatus.isPremium) {
-      setShowPaywall(true);
-      return;
-    }
-
-    setCjBusy(true);
+    setDepEnabled(false);
+    setDepMaterials([]);
+    setDepLabourPct(10);
+    setDepLabourSubtotal(0);
     setCjError("");
-    setCjNotice("");
 
-    const { data: full, error } = await supabase
+    const { data: full } = await supabase
       .from("quotes")
       .select("*")
       .eq("id", q.id)
       .maybeSingle();
 
-    if (!error) {
-      let days = 1;
-      try {
-        const blob =
-          typeof full?.job_details === "string"
-            ? JSON.parse(full.job_details)
-            : full?.job_details || {};
-        const meta = blob?.ai_meta || blob?.meta || {};
-        if (meta?.day_rate_calc) {
-          const d = Number(meta.day_rate_calc.days || 0);
-          const rem = Number(meta.day_rate_calc.remainder_hours || 0);
-          days = Math.max(1, d + (rem > 0 ? 1 : 0));
-        } else if (Number(meta?.estimated_hours)) {
-          const hpd =
-            Number(meta?.hours_per_day || blob?.profile?.hours_per_day || 8) ||
-            8;
-          days = Math.max(1, Math.ceil(Number(meta.estimated_hours) / hpd));
-        }
-      } catch {}
-      setPendingQuote(full || q);
-      setCjDays(Math.max(1, Math.floor(days || 1)));
-      setCjIncludeWeekends(false);
-
-      await loadJobs();
-      const seed = toLocalMidnight(new Date());
-      const best = nextAvailableStart(seed, Math.max(1, days || 1), false, jobs);
-      setCjStart(best);
-      setCalMonth(new Date(best.getFullYear(), best.getMonth(), 1));
-      setScheduleOpen(true);
+    if (full) {
+      const { labourSubtotal, materialItems } = splitQuoteItems(full);
+      setDepLabourSubtotal(labourSubtotal);
+      setDepMaterials((materialItems || []).map((m) => ({ ...m, selected: false })));
     }
 
-    setCjBusy(false);
+    setActionOpen(true);
   };
 
-  const createJobInternal = async (
-    full,
-    days,
-    includeWeekends,
-    startDateOverride
-  ) => {
+  /* ---------- Create Job flow (Option 1) ---------- */
+  const createJobInternal = async () => {
+    if (!selectedQuote) return;
+
     try {
       setCjBusy(true);
       setCjError("");
-      setCjNotice("");
 
       const { data: auth } = await supabase.auth.getUser();
       const user = auth?.user;
@@ -420,65 +434,61 @@ export default function QuoteList() {
         return;
       }
 
-      const startDate = startDateOverride || cjStart;
-      const start = toYMD(startDate);
-      const end = toYMD(
-        addWorkingDays(
-          startDate,
-          Math.max(1, Math.floor(days || 1)),
-          includeWeekends
-        )
-      );
+      // Reload full quote for details
+      const { data: full, error } = await supabase
+        .from("quotes")
+        .select("*")
+        .eq("id", selectedQuote.id)
+        .maybeSingle();
+      if (error || !full) throw error || new Error("Quote not found");
 
-      const insert = {
-        user_id: user.id,
-        title: full.job_summary || "Job",
-        client_name: full.client_name || "Client",
-        client_address: full.client_address || null,
-        site_address: full.site_address || full.client_address || null,
-        status: "scheduled",
-        start_date: start,
-        end_date: end,
-        duration_days: Math.max(1, Math.floor(days || 1)),
-        include_weekends: includeWeekends,
-        total: Number(full.total || 0),
-        cost: 0,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        source_quote_id: full.id,
-      };
+      const start = toYMD(cjStart);
+      const end = toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends));
 
+      console.log("[CREATE_JOB] inserting job…", { start, end, cjDays, cjIncludeWeekends });
+
+      // Create job
       const ins = await supabase
         .from("jobs")
-        .insert(insert)
+        .insert({
+          user_id: user.id,
+          title: full.job_summary || "Job",
+          client_name: full.client_name || "Client",
+          client_address: full.client_address || null,
+          site_address: full.site_address || full.client_address || null,
+          status: "scheduled",
+          start_date: start,
+          end_date: end,
+          duration_days: Math.max(1, cjDays),
+          include_weekends: !!cjIncludeWeekends,
+          total: Number(full.total || 0),
+          cost: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          source_quote_id: full.id,
+        })
         .select("id")
         .single();
+
       if (ins.error) throw ins.error;
       const jobId = ins.data.id;
+      console.log("[CREATE_JOB] job inserted:", jobId);
 
-      // ------- EXPENSES (schema-aligned) -------
+      // Expenses for materials
       const expenseRows = buildExpenseRows({
         quote: full,
         jobId,
         userId: user.id,
         dateISO: start,
       });
-
       if (expenseRows.length) {
-        const expRes = await supabase
-          .from("expenses")
-          .insert(expenseRows)
-          .select("id, amount");
-        if (expRes.error) throw expRes.error;
-
-        const created = expRes.data || [];
-        const totalExpenses = created.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-        setCjNotice(`Created ${created.length} expenses (£${totalExpenses.toFixed(2)})`);
-      } else {
-        setCjNotice("No non-labour items found to create expenses.");
+        const exIns = await supabase.from("expenses").insert(expenseRows);
+        if (exIns.error) console.warn("[CREATE_JOB] expenses insert failed", exIns.error);
+        else console.log("[CREATE_JOB] expenses inserted:", expenseRows.length);
       }
 
-      const upd = await supabase
+      // Link quote → job
+      const upQ = await supabase
         .from("quotes")
         .update({
           status: "accepted",
@@ -486,57 +496,169 @@ export default function QuoteList() {
           job_id: jobId,
         })
         .eq("id", full.id);
-      if (upd.error) throw upd.error;
+      if (upQ.error) console.warn("[CREATE_JOB] link quote->job failed", upQ.error);
+      else console.log("[CREATE_JOB] quote linked to job:", jobId);
 
+      if (depEnabled) {
+        // Call Edge Function to create deposit PDF -> documents + jobdocs
+        try {
+          const material_item_ids = depMaterials.filter((m) => m.selected).map((m) => m.ref);
+          const labour_percent = Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)));
+          const idempotency_key = `dep|${user.id}|${full.id}|job:${jobId}|${material_item_ids.slice().sort().join(",")}|${labour_percent}`;
+
+          const payload = {
+            user_id: user.id,
+            quote_id: full.id,
+            job_id: jobId, // critical
+            labour_percent,
+            material_item_ids,
+            idempotency_key,
+          };
+          console.log("[DEPOSIT] invoke payload:", payload);
+
+          const { data: efData, error: efError } = await supabase.functions.invoke(
+            "create_deposit_invoice",
+            { body: payload }
+          );
+
+          if (efError) {
+            console.warn("[DEPOSIT] EF network error", efError);
+            // Continue to job page even if deposit fails
+            setScheduleOpen(false);
+            setQuotes((prev) => prev.filter((x) => x.id !== full.id));
+            router.push(jobHref(jobId));
+            return;
+          }
+
+          console.log("[DEPOSIT] EF response:", JSON.stringify(efData, null, 2));
+          
+          if (efData?.ok || efData?.success) {
+            setScheduleOpen(false);
+            setQuotes((prev) => prev.filter((x) => x.id !== full.id));
+
+            // Try multiple navigation strategies based on response format
+            let navigated = false;
+
+            // Strategy 1: Direct document ID
+            if ((efData.document_id || efData.documentId) && (efData.document_id || efData.documentId) !== 'undefined') {
+              const docId = efData.document_id || efData.documentId;
+              console.log("[DEPOSIT] Navigating with document_id:", docId);
+              router.push(`/(app)/invoices/deposit/preview?docId=${encodeURIComponent(docId)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
+              navigated = true;
+            }
+            // Strategy 2: Direct PDF URL
+            else if ((efData.pdf_url || efData.pdfUrl || efData.url) && (efData.pdf_url || efData.pdfUrl || efData.url) !== 'undefined') {
+              const pdfUrl = efData.pdf_url || efData.pdfUrl || efData.url;
+              console.log("[DEPOSIT] Navigating with pdf_url:", pdfUrl);
+              router.push(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(pdfUrl)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
+              navigated = true;
+            }
+            // Strategy 3: Signed URL
+            else if ((efData.signed_url || efData.signedUrl) && (efData.signed_url || efData.signedUrl) !== 'undefined') {
+              const signedUrl = efData.signed_url || efData.signedUrl;
+              console.log("[DEPOSIT] Navigating with signed_url:", signedUrl);
+              router.push(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(signedUrl)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
+              navigated = true;
+            }
+            // Strategy 4: Check documents table by job_id with a slight delay
+            else {
+              console.log("[DEPOSIT] No direct URL, checking documents table after delay...");
+              setTimeout(async () => {
+                try {
+                  const { data: docCheck, error: docCheckError } = await supabase
+                    .from("documents")
+                    .select("id, url, name")
+                    .eq("job_id", jobId)
+                    .eq("kind", "invoice_pdf")
+                    .order("created_at", { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+                  
+                  console.log("[DEPOSIT] Documents check result:", { data: docCheck, error: docCheckError });
+                  
+                  if (!docCheckError && docCheck) {
+                    if (docCheck.id) {
+                      console.log("[DEPOSIT] Found document, navigating with ID:", docCheck.id);
+                      router.push(`/(app)/invoices/deposit/preview?docId=${encodeURIComponent(docCheck.id)}&jobId=${encodeURIComponent(jobId)}&name=${encodeURIComponent(docCheck.name || 'deposit.pdf')}`);
+                      return;
+                    } else if (docCheck.url) {
+                      console.log("[DEPOSIT] Found document, navigating with URL:", docCheck.url);
+                      router.push(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(docCheck.url)}&jobId=${encodeURIComponent(jobId)}&name=${encodeURIComponent(docCheck.name || 'deposit.pdf')}`);
+                      return;
+                    }
+                  }
+                  
+                  // If still no document found, navigate to job page
+                  console.warn("[DEPOSIT] No document found after delay, navigating to job");
+                  router.push(jobHref(jobId));
+                } catch (e) {
+                  console.error("[DEPOSIT] Error checking documents table:", e);
+                  router.push(jobHref(jobId));
+                }
+              }, 2000); // 2 second delay to allow document creation
+              
+              // Don't return here, let the timeout handle navigation
+            }
+
+            // If we haven't navigated by now and no timeout was set, go to job
+            if (!navigated && !(efData.document_id || efData.documentId || efData.pdf_url || efData.pdfUrl || efData.url || efData.signed_url || efData.signedUrl)) {
+              console.warn("[DEPOSIT] No valid document reference and no fallback, navigating to job");
+              router.push(jobHref(jobId));
+            }
+            
+            return;
+          } else {
+            console.warn("[DEPOSIT] EF returned not ok", efData);
+            // Continue to job page if deposit creation failed
+          }
+        } catch (ef) {
+          console.warn("[DEPOSIT] EF exception", ef?.message || ef);
+          // Continue to job page if deposit creation failed
+        }
+      }
+
+      // Default route: job page
       setScheduleOpen(false);
       setQuotes((prev) => prev.filter((x) => x.id !== full.id));
       router.push(jobHref(jobId));
     } catch (e) {
+      console.warn("[CREATE_JOB] error", e);
       setCjError(e?.message || "Create job failed");
     } finally {
       setCjBusy(false);
     }
   };
 
-  const adjustIfBlocked = useCallback(
-    (nextDays, nextWeekends) => {
-      if (!isSpanFree(cjStart, nextDays, nextWeekends, jobs)) {
-        const best = nextAvailableStart(cjStart, nextDays, nextWeekends, jobs);
-        setCjStart(best);
-        setCalMonth(new Date(best.getFullYear(), best.getMonth(), 1));
-      }
-    },
-    [cjStart, jobs]
-  );
-
+  /* ---------- list rendering ---------- */
   const renderCard = ({ item }) => {
     const address = item.client_address || "";
     const dispId = displayQuoteId(item);
-
     return (
-      <TouchableOpacity onPress={() => openActionFor(item)} activeOpacity={0.9} style={styles.card}>
+      <TouchableOpacity
+        onPress={() => openActionFor(item)}
+        activeOpacity={0.9}
+        style={styles.card}
+      >
         <TouchableOpacity
           style={styles.binBtn}
           onPress={async () => {
-            Alert.alert(
-              "Delete quote?",
-              "This will permanently delete this quote.",
-              [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Delete",
-                  style: "destructive",
-                  onPress: async () => {
-                    const del = await supabase.from("quotes").delete().eq("id", item.id);
-                    if (!del.error) {
-                      setQuotes((prev) => prev.filter((x) => x.id !== item.id));
-                    } else {
-                      Alert.alert("Delete failed", del.error.message || "Please try again.");
-                    }
-                  },
+            Alert.alert("Delete quote?", "This will permanently delete this quote.", [
+              { text: "Cancel", style: "cancel" },
+              {
+                text: "Delete",
+                style: "destructive",
+                onPress: async () => {
+                  const del = await supabase.from("quotes").delete().eq("id", item.id);
+                  if (!del.error)
+                    setQuotes((prev) => prev.filter((x) => x.id !== item.id));
+                  else
+                    Alert.alert(
+                      "Delete failed",
+                      del.error.message || "Please try again."
+                    );
                 },
-              ]
-            );
+              },
+            ]);
           }}
           activeOpacity={0.85}
         >
@@ -556,14 +678,18 @@ export default function QuoteList() {
 
           <View style={styles.rowMini}>
             <CalendarDays size={16} color={MUTED} />
-            <Text style={styles.rowMiniText}>{"  "}{new Date(item.created_at).toLocaleDateString()}</Text>
+            <Text style={styles.rowMiniText}>
+              {"  "}
+              {new Date(item.created_at).toLocaleDateString()}
+            </Text>
           </View>
 
           {!!address && (
             <View style={styles.rowMini}>
               <MapPin size={16} color={MUTED} />
               <Text style={[styles.rowMiniText, { flexShrink: 1 }]} numberOfLines={1}>
-                {"  "}{address}
+                {"  "}
+                {address}
               </Text>
             </View>
           )}
@@ -579,9 +705,6 @@ export default function QuoteList() {
     );
   };
 
-  // dynamic label for Create button
-  const createBtnLabel = cjBusy ? "Creating..." : spanBlocked ? "Pick another start" : "Create";
-
   return (
     <View style={styles.screen}>
       {/* Topbar */}
@@ -591,7 +714,10 @@ export default function QuoteList() {
           <TouchableOpacity style={styles.iconBtn} onPress={loadQuotes}>
             <RefreshCcw size={20} color={MUTED} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/(app)/settings")}>
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={() => router.push("/(app)/settings")}
+          >
             <Settings size={20} color={MUTED} />
           </TouchableOpacity>
         </View>
@@ -621,7 +747,11 @@ export default function QuoteList() {
           data={quotes}
           keyExtractor={(it) => String(it.id)}
           renderItem={renderCard}
-          contentContainerStyle={{ paddingBottom: 180, paddingTop: 14, paddingHorizontal: 16 }}
+          contentContainerStyle={{
+            paddingBottom: 140,
+            paddingTop: 14,
+            paddingHorizontal: 16,
+          }}
           ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
           ListEmptyComponent={
             <View style={{ paddingTop: 40, alignItems: "center" }}>
@@ -633,24 +763,28 @@ export default function QuoteList() {
       )}
 
       {/* FAB */}
-      <TouchableOpacity onPress={() => router.push(quoteCreateHref())} style={styles.fab} activeOpacity={0.9}>
+      <TouchableOpacity
+        onPress={() => router.push(quoteCreateHref())}
+        style={styles.fab}
+        activeOpacity={0.9}
+      >
         <Plus size={24} color="#fff" />
       </TouchableOpacity>
 
-      {/* Action Modal */}
+      {/* Action Sheet */}
       <Modal visible={actionOpen} animationType="fade" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => setActionOpen(false)} />
         <View style={styles.centerWrap}>
           <View style={styles.actionCard}>
             <View style={styles.handle} />
+
+            {/* Row: View / Create */}
             <View style={styles.centerRow}>
               <TouchableOpacity
                 style={[styles.centerBtn, styles.centerBtnPrimary]}
                 onPress={() => {
                   setActionOpen(false);
-                  if (!selectedQuote) return;
-                  // ✅ Use helper that appends ?id=<uuid> (prevents "preview" as id)
-                  router.push(quotePreviewHref(selectedQuote.id));
+                  if (selectedQuote) router.push(quotePreviewHref(selectedQuote.id));
                 }}
                 activeOpacity={0.9}
               >
@@ -660,9 +794,9 @@ export default function QuoteList() {
 
               <TouchableOpacity
                 style={[styles.centerBtn, styles.centerBtnNeutral]}
-                onPress={async () => {
+                onPress={() => {
                   setActionOpen(false);
-                  if (selectedQuote) await openCreateJob(selectedQuote);
+                  setScheduleOpen(true);
                 }}
                 activeOpacity={0.9}
               >
@@ -670,6 +804,129 @@ export default function QuoteList() {
                 <Text style={styles.centerBtnText}>Create job</Text>
               </TouchableOpacity>
             </View>
+
+            {/* Deposit toggle + panel */}
+            <View
+              style={{
+                marginTop: 14,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <Text style={styles.depositHeader}>Create upfront (deposit) invoice</Text>
+              <Switch value={depEnabled} onValueChange={(v) => { setDepEnabled(v); buzz(); }} />
+            </View>
+
+            {depEnabled && (
+              <View style={styles.depositCard}>
+                <Text style={styles.depositTitle}>Deposit details</Text>
+
+                {/* Materials chooser */}
+                <View style={styles.sectionRow}>
+                  <Text style={styles.sectionLabel}>Materials to include</Text>
+                  <View style={{ flexDirection: "row", gap: 14 }}>
+                    <Text onPress={() => setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: true })))}
+                          style={styles.linkSm}>
+                      Select all
+                    </Text>
+                    <Text onPress={() => setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: false })))}
+                          style={styles.linkSm}>
+                      Clear
+                    </Text>
+                  </View>
+                </View>
+
+                {depMaterials.length ? (
+                  <View style={styles.materialListWrap}>
+                    <ScrollView style={{ maxHeight: 160 }}>
+                      {depMaterials.map((m) => {
+                        const Icon = m.selected ? CheckSquare : Square;
+                        return (
+                          <Pressable
+                            key={m.ref}
+                            onPress={() =>
+                              setDepMaterials((prev) =>
+                                prev.map((x) => (x.ref === m.ref ? { ...x, selected: !x.selected } : x))
+                              )
+                            }
+                            style={styles.materialRow}
+                          >
+                            <Icon size={18} color={m.selected ? BRAND : MUTED} />
+                            <View style={{ flex: 1, marginLeft: 8 }}>
+                              <Text style={styles.materialTitle} numberOfLines={1}>
+                                {m.title}
+                              </Text>
+                              <Text style={styles.materialSub} numberOfLines={1}>
+                                {m.qty} × {money(m.unit)}
+                              </Text>
+                            </View>
+                            <Text style={styles.materialAmt}>{money(m.total)}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                ) : (
+                  <Text style={styles.emptyHint}>No materials on this quote.</Text>
+                )}
+
+                {/* Labour percent */}
+                <View style={[styles.sectionRow, { marginTop: 12 }]}>
+                  <Text style={styles.sectionLabel}>Labour deposit (%)</Text>
+                  <View style={styles.counterWrap}>
+                    <TouchableOpacity
+                      style={styles.counterBtn}
+                      onPress={() =>
+                        setDepLabourPct((p) => Math.max(0, Math.floor((p || 0) - 1)))
+                      }
+                    >
+                      <Minus size={16} color={TEXT} />
+                    </TouchableOpacity>
+                    <Text style={styles.counterValue}>
+                      {Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)))}%
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.counterBtn}
+                      onPress={() =>
+                        setDepLabourPct((p) => Math.min(100, Math.floor((p || 0) + 1)))
+                      }
+                    >
+                      <PlusIcon size={16} color={TEXT} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <Text style={styles.helpText}>Applies to labour subtotal only.</Text>
+
+                {/* Totals (visual only) */}
+                <View style={styles.totalsBlock}>
+                  <View style={styles.totalRow}>
+                    <Text style={styles.totalLabel}>Materials selected</Text>
+                    <Text style={styles.totalVal}>
+                      £{depMaterials.filter((m) => m.selected).reduce((s, x) => s + (x.total || 0), 0).toFixed(2)}
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.totalRow,
+                      { borderTopWidth: 1, borderTopColor: BORDER, paddingTop: 6, marginTop: 6 }
+                    ]}
+                  >
+                    <Text style={[styles.totalLabel, { fontWeight: "900" }]}>
+                      Labour deposit (%)
+                    </Text>
+                    <Text style={[styles.totalVal, { fontWeight: "900" }]}>
+                      {Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)))}%
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.microNote}>
+                  If enabled, a deposit PDF will be generated on Create and saved
+                  under the job’s documents.
+                </Text>
+              </View>
+            )}
           </View>
         </View>
       </Modal>
@@ -680,18 +937,19 @@ export default function QuoteList() {
         <View style={styles.sheet}>
           <Text style={styles.sheetTitle}>Create job</Text>
 
-          <SharedCalendar
-            month={calMonth}
-            onChangeMonth={setCalMonth}
-            selectedDate={cjStart}
-            onSelectDate={(d) => setCjStart(d)}
-            jobs={jobs}
-            span={{ start: cjStart, days: cjDays, includeWeekends: cjIncludeWeekends }}
-            blockStarts
-            onDayLongPress={(day, jobsOnDay) => {
-              if (jobsOnDay?.length) router.push(jobHref(jobsOnDay[0].id));
-            }}
-          />
+          {/* Calendar */}
+          <View style={{ marginTop: 6, borderWidth: 1, borderColor: BORDER, borderRadius: 12, padding: 10, backgroundColor: "#fff" }}>
+            <SharedCalendar
+              month={calMonth}
+              onChangeMonth={setCalMonth}
+              selectedDate={cjStart}
+              onSelectDate={(d) => setCjStart(atMidnight(d))}
+              jobs={jobs}
+              span={{ start: cjStart, days: cjDays, includeWeekends: cjIncludeWeekends }}
+              blockStarts={true}
+              onDayLongPress={() => {}}
+            />
+          </View>
 
           {/* Duration */}
           <View style={styles.durationBlock}>
@@ -699,22 +957,16 @@ export default function QuoteList() {
             <View style={styles.spinRow}>
               <TouchableOpacity
                 style={styles.spinBtn}
-                onPress={() => {
-                  const d = Math.max(1, cjDays - 1);
-                  setCjDays(d);
-                  adjustIfBlocked(d, cjIncludeWeekends);
-                }}
+                onPress={() => setCjDays((d) => Math.max(1, d - 1))}
               >
                 <Minus size={18} color={TEXT} />
               </TouchableOpacity>
-              <Text style={styles.spinValue}>{cjDays} day{cjDays > 1 ? "s" : ""}</Text>
+              <Text style={styles.spinValue}>
+                {cjDays} day{cjDays > 1 ? "s" : ""}
+              </Text>
               <TouchableOpacity
                 style={styles.spinBtn}
-                onPress={() => {
-                  const d = cjDays + 1;
-                  setCjDays(d);
-                  adjustIfBlocked(d, cjIncludeWeekends);
-                }}
+                onPress={() => setCjDays((d) => d + 1)}
               >
                 <PlusIcon size={18} color={TEXT} />
               </TouchableOpacity>
@@ -726,102 +978,50 @@ export default function QuoteList() {
             <Text style={styles.controlHeader}>Include weekends</Text>
             <Switch
               value={cjIncludeWeekends}
-              onValueChange={(v) => {
-                setCjIncludeWeekends(v);
-                adjustIfBlocked(cjDays, v);
-              }}
+              onValueChange={(v) => setCjIncludeWeekends(v)}
             />
           </View>
 
-          {/* Start/End + hint */}
+          {/* Start/End */}
           <Text style={styles.endPreview}>
-            Start: <Text style={styles.bold}>{toYMD(cjStart)}</Text>  •  End: <Text style={styles.bold}>{toYMD(endDate)}</Text>
-          </Text>
-          <Text style={[styles.endPreview, { textAlign: "left", opacity: 0.8 }]}>
-            {(() => {
-              const first = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
-              const last = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0);
-              let count = 0;
-              eachDay(first, last, (d) => {
-                if (!isSpanFree(d, cjDays, cjIncludeWeekends, jobs)) count++;
-              });
-              return `${count} starts blocked this month`;
-            })()}
+            Start: <Text style={styles.bold}>{toYMD(cjStart)}</Text>  •  End:{" "}
+            <Text style={styles.bold}>{toYMD(endDate)}</Text>
           </Text>
 
-          {spanBlocked && (
-            <Text style={styles.blockedWarn}>
-              This start overlaps an existing job. Pick a different date or change duration/weekends.
-            </Text>
-          )}
-          {!!cjError && <Text style={[styles.blockedWarn, { marginTop: 6 }]}>{cjError}</Text>}
-          {!!cjNotice && !cjError && (
-            <Text style={{ marginTop: 8, color: "#065f46", fontWeight: "900" }}>
-              {cjNotice}
-            </Text>
+          {!!cjError && (
+            <Text style={[styles.blockedWarn, { marginTop: 6 }]}>{cjError}</Text>
           )}
 
           <View style={styles.sheetBtns}>
-            <TouchableOpacity style={[styles.sheetBtn, styles.sheetBtnGhost]} onPress={() => setScheduleOpen(false)} activeOpacity={0.9}>
+            <TouchableOpacity
+              style={[styles.sheetBtn, styles.sheetBtnGhost]}
+              onPress={() => setScheduleOpen(false)}
+              activeOpacity={0.9}
+            >
               <Text style={[styles.sheetBtnText, { color: TEXT }]}>Cancel</Text>
             </TouchableOpacity>
+
             <TouchableOpacity
-              style={[styles.sheetBtn, styles.sheetBtnPrimary, (cjBusy || spanBlocked) && { opacity: 0.55 }]}
+              style={[styles.sheetBtn, styles.sheetBtnPrimary, cjBusy && { opacity: 0.55 }]}
               activeOpacity={0.9}
-              disabled={cjBusy || spanBlocked}
-              onPress={async () => {
-                if (!pendingQuote) return;
-                await createJobInternal(pendingQuote, cjDays, cjIncludeWeekends, cjStart);
-              }}
-              accessibilityLabel={spanBlocked ? "Start date overlaps an existing job" : "Create job"}
+              disabled={cjBusy}
+              onPress={createJobInternal}
             >
               <CalendarPlus size={18} color="#fff" />
-              <Text style={[styles.sheetBtnText, { color: "#fff" }]} numberOfLines={1}>{createBtnLabel}</Text>
+              <Text style={[styles.sheetBtnText, { color: "#fff" }]} numberOfLines={1}>
+                {cjBusy ? "Creating..." : "Create"}
+              </Text>
             </TouchableOpacity>
           </View>
-
-          {spanBlocked && !cjError && (
-            <Text
-              style={{
-                color: MUTED,
-                fontSize: 12,
-                textAlign: "center",
-                marginTop: 6,
-                fontWeight: "800",
-              }}
-            >
-              Try a different start date or adjust duration/weekends.
-            </Text>
-          )}
         </View>
       </Modal>
-
-      {/* Paywall Modal */}
-      <PaywallModal
-        visible={showPaywall}
-        onClose={() => setShowPaywall(false)}
-        onSubscribe={() => {
-          setShowPaywall(false);
-          router.push("/(app)/billing");
-        }}
-        title="Premium Feature"
-        message={
-          premiumStatus.status === "expired"
-            ? "Your trial has ended. Subscribe to create jobs from quotes."
-            : "Job creation is a premium feature. Upgrade to unlock it."
-        }
-      />
     </View>
   );
 }
 
 /* ---------- styles ---------- */
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: BG,
-    paddingTop: Platform.OS === "android" ? 8 : 0,
-  },
+  screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
 
   topbar: {
     paddingHorizontal: 16,
@@ -872,240 +1072,111 @@ const styles = StyleSheet.create({
     minHeight: 78,
     marginBottom: 10,
   },
-  quoteTiny: {
-    position: "absolute",
-    right: 72,
-    top: 14,
-    color: MUTED,
-    fontSize: 12,
-    maxWidth: 200,
-    textAlign: "right",
-    fontWeight: "800",
-  },
+  quoteTiny: { position: "absolute", right: 72, top: 14, color: MUTED, fontSize: 12, maxWidth: 200, textAlign: "right", fontWeight: "800" },
   clientName: { color: TEXT, fontWeight: "900", fontSize: 16 },
   rowMini: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   rowMiniText: { color: MUTED },
-
-  totalBottom: {
-    position: "absolute",
-    right: 16,
-    bottom: 12,
-    fontSize: 16,
-    fontWeight: "900",
-    color: TEXT,
-  },
+  totalBottom: { position: "absolute", right: 16, bottom: 12, fontSize: 16, fontWeight: "900", color: TEXT },
 
   binBtn: {
-    position: "absolute",
-    right: 12,
-    top: 10,
-    height: 30,
-    width: 30,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#fee2e2",
-    borderWidth: 1,
-    borderColor: "#fecaca",
-    zIndex: 5,
+    position: "absolute", right: 12, top: 10, height: 30, width: 30, borderRadius: 8, alignItems: "center", justifyContent: "center",
+    backgroundColor: "#fee2e2", borderWidth: 1, borderColor: "#fecaca", zIndex: 5,
   },
 
   fab: {
-    position: "absolute",
-    right: 18,
-    bottom: 18,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: BRAND,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: BRAND,
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 6,
+    position: "absolute", right: 18, bottom: 18, width: 56, height: 56, borderRadius: 28, backgroundColor: BRAND,
+    alignItems: "center", justifyContent: "center", shadowColor: BRAND, shadowOpacity: 0.35, shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 }, elevation: 6,
   },
 
   /* Overlay */
   modalBackdrop: { flex: 1, backgroundColor: "#0009" },
 
-  /* Polished action modal (centered) */
-  centerWrap: {
-    position: "absolute",
-    top: 0, left: 0, right: 0, bottom: 0,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 24,
-  },
+  /* Centered action sheet */
+  centerWrap: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center", paddingHorizontal: 24 },
   actionCard: {
-    width: "100%",
-    backgroundColor: CARD,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: BORDER,
-    padding: 16,
-    paddingTop: 12,
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.22,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 14 },
-    elevation: 12,
+    width: "100%", backgroundColor: CARD, borderRadius: 20, borderWidth: 1, borderColor: BORDER, padding: 16, paddingTop: 12,
+    shadowColor: "#0b1220", shadowOpacity: 0.22, shadowRadius: 24, shadowOffset: { width: 0, height: 14 }, elevation: 12,
   },
-  handle: {
-    alignSelf: "center",
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#e5e7eb",
-    marginBottom: 10,
-  },
+  handle: { alignSelf: "center", width: 36, height: 4, borderRadius: 2, backgroundColor: "#e5e7eb", marginBottom: 10 },
+
   centerRow: { flexDirection: "row", gap: 10 },
   centerBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: BORDER,
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
-    backgroundColor: "#f8fafc",
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
+    paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center",
+    flexDirection: "row", gap: 8, backgroundColor: "#f8fafc", elevation: 2, flex: 1,
   },
   centerBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
   centerBtnNeutral: { backgroundColor: "#f7f8fb" },
   centerBtnText: { fontSize: 15, fontWeight: "900", color: TEXT },
 
+  depositHeader: { color: TEXT, fontWeight: "900", fontSize: 16 },
+
+  depositCard: { marginTop: 10, borderWidth: 1, borderColor: BORDER, backgroundColor: "#f9fafb", borderRadius: 14, padding: 12 },
+  depositTitle: { fontWeight: "900", color: TEXT, marginBottom: 8 },
+  sectionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  sectionLabel: { fontWeight: "900", color: TEXT },
+  linkSm: { color: BRAND, fontWeight: "900" },
+
+  materialListWrap: { marginTop: 8 },
+  materialRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#eef2f7" },
+  materialTitle: { color: TEXT, fontWeight: "800" },
+  materialSub: { color: MUTED, fontSize: 12 },
+  materialAmt: { color: TEXT, fontWeight: "900", marginLeft: 8 },
+  emptyHint: { color: MUTED, marginTop: 6 },
+
+  /* Compact counter */
+  counterWrap: {
+    flexDirection: "row", alignItems: "center", backgroundColor: "#fff", borderWidth: 1, borderColor: BORDER,
+    borderRadius: 12, overflow: "hidden",
+  },
+  counterBtn: { height: 36, width: 36, alignItems: "center", justifyContent: "center" },
+  counterValue: { minWidth: 64, textAlign: "center", fontWeight: "900", color: TEXT },
+
+  helpText: { color: MUTED, fontSize: 12, marginTop: 6 },
+
+  totalsBlock: { marginTop: 10 },
+  totalRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 2 },
+  totalLabel: { color: TEXT },
+  totalVal: { color: TEXT, fontWeight: "800" },
+  microNote: { color: MUTED, fontSize: 11, marginTop: 8 },
+
   /* Schedule sheet */
   sheet: {
     position: "absolute",
-    alignSelf: "center",
-    top: "8%",
-    width: "92%",
+    left: 16,
+    right: 16,
+    top: Platform.OS === "ios" ? 80 : 40,
+    bottom: Platform.OS === "ios" ? 80 : 40,
     backgroundColor: CARD,
-    borderRadius: 20,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: BORDER,
     padding: 14,
-    paddingBottom: 16,
-    borderWidth: 1,
-    borderColor: BORDER,
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.14,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 12,
-    maxHeight: "86%",
-    overflow: "hidden",
   },
-  sheetTitle: {
-    color: TEXT,
-    fontWeight: "900",
-    fontSize: 18,
-    textAlign: "center",
-    marginBottom: 8,
+  sheetTitle: { fontSize: 18, fontWeight: "900", color: TEXT, marginBottom: 6 },
+
+  durationBlock: { marginTop: 10 },
+  controlHeader: { fontWeight: "900", color: TEXT, marginBottom: 6 },
+  spinRow: {
+    flexDirection: "row", alignItems: "center",
+    backgroundColor: "#fff", borderWidth: 1, borderColor: BORDER,
+    borderRadius: 12, overflow: "hidden", alignSelf: "flex-start"
   },
+  spinBtn: { height: 36, width: 36, alignItems: "center", justifyContent: "center" },
+  spinValue: { minWidth: 96, textAlign: "center", fontWeight: "900", color: TEXT },
 
-  endPreview: {
-    color: MUTED,
-    marginTop: 10,
-    textAlign: "right",
-    fontWeight: "800",
-  },
-  bold: { color: TEXT, fontWeight: "900" },
+  weekendRow: { marginTop: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  endPreview: { marginTop: 10, color: MUTED },
+  bold: { fontWeight: "900", color: TEXT },
 
-  blockedWarn: {
-    marginTop: 8,
-    color: DANGER,
-    fontWeight: "900",
-  },
+  blockedWarn: { color: DANGER, marginTop: 6 },
 
-  durationBlock: { marginTop: 10, alignItems: "center", justifyContent: "center" },
-  weekendRow: { marginTop: 10, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  controlHeader: { color: TEXT, fontWeight: "900", fontSize: 15 },
-
-  spinRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 8 },
-  spinBtn: {
-    height: 40,
-    width: 40,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#f7f8fb",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  spinValue: { color: TEXT, fontWeight: "900", minWidth: 120, textAlign: "center", fontSize: 16 },
-
-  sheetBtns: { flexDirection: "row", gap: 10, marginTop: 14 },
+  sheetBtns: { flexDirection: "row", gap: 10, marginTop: 12 },
   sheetBtn: {
-    flex: 1,
-    height: 48,
-    borderRadius: 12,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 10,
+    flex: 1, paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: BORDER,
+    alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8,
   },
-  sheetBtnGhost: { backgroundColor: "#eef2f7", borderColor: BORDER },
   sheetBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
-  sheetBtnText: { fontWeight: "900", fontSize: 15, includeFontPadding: false },
+  sheetBtnGhost: { backgroundColor: "#f7f8fb" },
+  sheetBtnText: { fontSize: 15, fontWeight: "900" },
 });
-
-/** Return true if ANY working day of job intersects ANY working day in the proposed span. */
-const jobOverlapsWorking = (job, spanStart, spanDays, spanIncludeWeekends) => {
-  const js0 = job.start_date ? atMidnight(new Date(job.start_date)) : null;
-  const je0 = job.end_date ? atMidnight(new Date(job.end_date)) : js0;
-  if (!js0) return false;
-
-  const spanEndDate = spanEnd(spanStart, Math.max(1, spanDays), spanIncludeWeekends);
-
-  // Build a working-day Set for the span
-  const spanKeys = new Set();
-  eachDay(spanStart, spanEndDate, (d) => {
-    if (spanIncludeWeekends || !isWeekend(d)) {
-      spanKeys.add(d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate());
-    }
-  });
-
-  // Walk job days, respecting job.include_weekends
-  const jobIncWknd = !!job.include_weekends;
-  let hit = false;
-  eachDay(js0, je0, (d) => {
-    if (hit) return;
-    if (jobIncWknd || !isWeekend(d)) {
-      const k = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
-      if (spanKeys.has(k)) hit = true;
-    }
-  });
-  return hit;
-};
-
-const isSpanFree = (start, days, includeWeekends, allJobs) => {
-  for (const j of allJobs) {
-    if (jobOverlapsWorking(j, start, days, includeWeekends)) return false;
-  }
-  return true;
-};
-
-const nextAvailableStart = (
-  fromDate,
-  days,
-  includeWeekends,
-  allJobs,
-  lookaheadDays = 365
-) => {
-  const start = atMidnight(fromDate);
-  for (let i = 0; i < lookaheadDays; i++) {
-    const tryDate = new Date(start);
-    tryDate.setDate(start.getDate() + i);
-    if (isSpanFree(tryDate, days, includeWeekends, allJobs)) return tryDate;
-    }
-  return start;
-};

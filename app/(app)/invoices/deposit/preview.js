@@ -1,4 +1,3 @@
-// app/(app)/documents/preview.js
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
@@ -12,7 +11,7 @@ import * as Sharing from "expo-sharing";
 import * as IntentLauncher from "expo-intent-launcher";
 import * as Haptics from "expo-haptics";
 import { Feather } from "@expo/vector-icons";
-import { supabase } from "../../../lib/supabase";
+import { supabase } from "../../../../lib/supabase";
 
 /* ---- theme ---- */
 const BRAND = "#2a86ff";
@@ -22,21 +21,11 @@ const CARD = "#ffffff";
 const BG = "#f5f7fb";
 
 /* ---- utils ---- */
-const safeName = (v) => (v || "document.pdf").replace(/[^\w.-]/g, "_");
+const safeName = (v) => (v || "deposit.pdf").replace(/[^\w.-]/g, "_");
 const withBust = (u) => (u ? (u.includes("?") ? u + "&cb=" + Date.now() : u + "?cb=" + Date.now()) : u);
 const vibrateTap = () => { try { Haptics.selectionAsync(); } catch {} };
 
-/* Clean document name extraction */
-const getCleanTitle = (name) => {
-  if (!name) return "Document";
-  const withoutExt = name.replace(/\.[^/.]+$/, "");
-  if (/^\d+$/.test(withoutExt)) {
-    return `Document ${withoutExt}`;
-  }
-  return withoutExt;
-};
-
-/* minimal inline PDF.js viewer (matching deposit preview style) */
+/* minimal inline PDF.js viewer (no template literals) */
 function makePdfHtml(base64, widthPx) {
   const w = Math.max(320, Math.floor(widthPx || 360));
   const b64 = String(base64 || "").replace(/"/g, '\\"');
@@ -86,27 +75,24 @@ function makePdfHtml(base64, widthPx) {
   ].join("");
 }
 
-export default function DocumentPreview() {
+export default function DepositPreview() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const webRef = useRef(null);
 
+  // Accept: url OR docId OR jobId OR id (for backward compatibility)
   const params = useLocalSearchParams();
-  
-  // Simple parameter extraction
-  const extractParam = (param) => {
-    if (!param) return null;
-    if (Array.isArray(param)) return param[0];
-    if (param === 'undefined' || param === 'null' || param === '') return null;
-    return String(param);
-  };
+  const rawUrl  = Array.isArray(params.url)   ? params.url[0]   : params.url;
+  const rawDoc  = Array.isArray(params.docId) ? params.docId[0] : params.docId;
+  const rawId   = Array.isArray(params.id)    ? params.id[0]    : params.id;
+  const rawJob  = Array.isArray(params.jobId) ? params.jobId[0] : params.jobId;
+  const rawName = Array.isArray(params.name)  ? params.name[0]  : params.name;
 
-  // Check for direct URL first, then document ID
-  const directUrl = extractParam(params.url);
-  const documentId = extractParam(params.id);
-  const documentName = extractParam(params.name) || "document.pdf";
-  const jobId = extractParam(params.jobId);
-  const fileName = safeName(documentName);
+  // Fix parameter parsing to handle undefined properly
+  const directUrl = rawUrl && rawUrl !== 'undefined' ? String(decodeURIComponent(String(rawUrl))) : "";
+  const docId     = (rawDoc && rawDoc !== 'undefined') ? String(rawDoc) : (rawId && rawId !== 'undefined') ? String(rawId) : "";
+  const jobId     = rawJob && rawJob !== 'undefined' ? String(rawJob) : "";
+  const fileName  = safeName(rawName && rawName !== 'undefined' ? rawName : "deposit.pdf");
 
   const [viewerWidth, setViewerWidth] = useState(Dimensions.get("window").width - 24);
   useEffect(() => {
@@ -121,46 +107,126 @@ export default function DocumentPreview() {
   const [busy, setBusy] = useState(null);
   const [cachedUri, setCachedUri] = useState("");
   const [base64Pdf, setBase64Pdf] = useState("");
-  const [documentInfo, setDocumentInfo] = useState(null);
 
-  // Resolve URL from direct URL or database lookup
+  // Resolve URL from: direct url -> docId -> latest invoice_pdf by jobId
   const resolveUrl = useCallback(async () => {
-    // If we have a direct URL, use it immediately
+    console.log('[DEPOSIT_PREVIEW] resolving URL with params:', { directUrl, docId, jobId });
+    
     if (directUrl) {
+      console.log('[DEPOSIT_PREVIEW] using direct URL:', directUrl);
       return directUrl;
     }
 
-    // Only try database lookup if no direct URL provided
-    if (!documentId) {
-      throw new Error("No document URL or ID provided.");
-    }
-
-    try {
-      const { data: doc, error: docError } = await supabase
+    if (docId) {
+      console.log('[DEPOSIT_PREVIEW] resolving by docId:', docId);
+      
+      // First try documents table
+      const { data: docData, error: docError } = await supabase
         .from("documents")
-        .select("*")
-        .eq("id", documentId)
+        .select("url, name")
+        .eq("id", docId)
         .maybeSingle();
-
-      if (docError) {
-        throw new Error(`Database error: ${docError.message}`);
+      
+      console.log('[DEPOSIT_PREVIEW] documents query result:', { data: docData, error: docError });
+      
+      if (!docError && docData?.url) {
+        console.log('[DEPOSIT_PREVIEW] found document URL:', docData.url);
+        return docData.url;
       }
-
-      if (!doc) {
-        throw new Error("Document not found");
+      
+      // Fallback to legacy invoices table if documents table doesn't have it
+      console.log('[DEPOSIT_PREVIEW] trying legacy invoices table...');
+      const { data: invData, error: invError } = await supabase
+        .from("invoices")
+        .select("signed_url, file_path")
+        .eq("id", docId)
+        .maybeSingle();
+      
+      console.log('[DEPOSIT_PREVIEW] invoices query result:', { data: invData, error: invError });
+      
+      if (!invError && invData) {
+        if (invData.signed_url) {
+          console.log('[DEPOSIT_PREVIEW] found invoice signed_url:', invData.signed_url);
+          return invData.signed_url;
+        }
+        if (invData.file_path) {
+          console.log('[DEPOSIT_PREVIEW] found invoice file_path, creating signed URL:', invData.file_path);
+          try {
+            const { data: signedData, error: signedError } = await supabase.storage
+              .from('invoices')
+              .createSignedUrl(invData.file_path, 60 * 60 * 24); // 24 hours
+            
+            if (!signedError && signedData?.signedUrl) {
+              console.log('[DEPOSIT_PREVIEW] created signed URL:', signedData.signedUrl);
+              return signedData.signedUrl;
+            }
+          } catch (e) {
+            console.error('[DEPOSIT_PREVIEW] Error creating signed URL:', e);
+          }
+        }
       }
-
-      if (!doc.url) {
-        throw new Error("Document URL is missing");
-      }
-
-      setDocumentInfo(doc);
-      return doc.url;
-
-    } catch (e) {
-      throw e;
+      
+      throw new Error("No PDF found for this document ID.");
     }
-  }, [directUrl, documentId]);
+
+    if (jobId) {
+      console.log('[DEPOSIT_PREVIEW] resolving by jobId:', jobId);
+      
+      // Look for deposit/invoice PDFs in documents table
+      const { data: jobDocData, error: jobDocError } = await supabase
+        .from("documents")
+        .select("url, name")
+        .eq("job_id", jobId)
+        .eq("kind", "invoice_pdf")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      console.log('[DEPOSIT_PREVIEW] job documents query result:', { data: jobDocData, error: jobDocError });
+      
+      if (!jobDocError && jobDocData?.url) {
+        console.log('[DEPOSIT_PREVIEW] found job document URL:', jobDocData.url);
+        return jobDocData.url;
+      }
+      
+      // Fallback: look for invoices linked to this job
+      console.log('[DEPOSIT_PREVIEW] trying job invoices fallback...');
+      const { data: jobInvData, error: jobInvError } = await supabase
+        .from("invoices")
+        .select("signed_url, file_path")
+        .eq("job_id", jobId)
+        .eq("type", "deposit")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      console.log('[DEPOSIT_PREVIEW] job invoices query result:', { data: jobInvData, error: jobInvError });
+      
+      if (!jobInvError && jobInvData) {
+        if (jobInvData.signed_url) {
+          return jobInvData.signed_url;
+        }
+        if (jobInvData.file_path) {
+          try {
+            const { data: signedData, error: signedError } = await supabase.storage
+              .from('invoices')
+              .createSignedUrl(jobInvData.file_path, 60 * 60 * 24);
+            
+            if (!signedError && signedData?.signedUrl) {
+              return signedData.signedUrl;
+            }
+          } catch (e) {
+            console.error('[DEPOSIT_PREVIEW] Error creating signed URL for job invoice:', e);
+          }
+        }
+      }
+      
+      throw new Error("No deposit PDF found for this job yet.");
+    }
+
+    console.warn('[DEPOSIT_PREVIEW] no valid parameters provided');
+    throw new Error("No document parameters provided.");
+  }, [directUrl, docId, jobId]);
 
   const loadPdf = useCallback(async () => {
     try {
@@ -239,13 +305,7 @@ export default function DocumentPreview() {
 
   const viewerHtml = useMemo(() => base64Pdf ? makePdfHtml(base64Pdf, viewerWidth) : "", [base64Pdf, viewerWidth]);
 
-  const goBack = () => { 
-    vibrateTap(); 
-    // Always go back to the main jobs tab to avoid navigation bugs
-    router.push("/(tabs)/jobs");
-  };
-
-  const displayName = getCleanTitle(documentInfo?.name || documentName);
+  const goBack = () => { vibrateTap(); router.back(); };
   const bottomBarH = 64 + Math.max(useSafeAreaInsets().bottom, 10);
 
   return (
@@ -253,9 +313,9 @@ export default function DocumentPreview() {
       <View style={styles.header}>
         <Pressable onPress={goBack} style={styles.backBtn} android_ripple={{ color: "rgba(0,0,0,0.06)" }}>
           <Feather name="chevron-left" size={20} color={BRAND} />
-          <Text style={styles.backTxt}>Jobs</Text>
+          <Text style={styles.backTxt}>Back</Text>
         </Pressable>
-        <Text style={styles.title} numberOfLines={1}>{displayName}</Text>
+        <Text style={styles.title} numberOfLines={1}>Deposit PDF</Text>
         <View style={{ width: 52 }} />
       </View>
 
@@ -264,7 +324,7 @@ export default function DocumentPreview() {
         {(loading || !viewerHtml) && (
           <View style={styles.loading}>
             <ActivityIndicator />
-            <Text style={styles.loadingText}>{fatal ? fatal : "Loading document…"}</Text>
+            <Text style={styles.loadingText}>{fatal ? fatal : "Fetching PDF…"}</Text>
             {!!fatal && (
               <TouchableOpacity onPress={loadPdf} style={styles.retryBtn}>
                 <Text style={styles.retryText}>Retry</Text>

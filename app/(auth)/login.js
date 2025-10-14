@@ -1,6 +1,6 @@
 /* app/(auth)/login.js */
 import { onboardingHref, signupHref } from "../../lib/nav";
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   Alert, ActivityIndicator, Image, StatusBar,
@@ -71,34 +71,6 @@ export default function Login() {
     return err?.message || 'Something went wrong. Please try again.';
   };
 
-  // 🔄 OAuth redirect listener (works for proxy or direct links)
-  useEffect(() => {
-    const sub = AuthSession.addRedirectListener(async ({ url }) => {
-      console.log('[OAUTH] Redirect listener fired url =', url?.slice(0, 200));
-      try {
-        const { data: exData, error: exErr } = await supabase.auth.exchangeCodeForSession(url);
-        console.log('[OAUTH] exchange (listener) → session?', !!exData?.session, 'error?', exErr?.message);
-        if (exErr) throw exErr;
-
-        // Verify token persisted
-        try {
-          const token = await SecureStore.getItemAsync('supabase.auth.token');
-          console.log('[DEBUG] Supabase token exists?', !!token, token ? '(length ' + token.length + ')' : '');
-        } catch (e) {
-          console.log('[DEBUG] SecureStore read failed:', e?.message);
-        }
-
-        router.replace('/(app)/onboarding');
-      } catch (e) {
-        console.log('[OAUTH] exchange (listener) failed:', e?.message);
-        Alert.alert('Sign-in error', e?.message || 'Could not complete sign-in.');
-      } finally {
-        // no-op
-      }
-    });
-    return () => { try { sub.remove(); } catch {} };
-  }, [router]);
-
   const handleLogin = async () => {
     if (loading || anySocialBusy) return;
     if (!validate()) return;
@@ -107,6 +79,7 @@ export default function Login() {
       setLoading(true);
       const e = normEmail();
 
+      // Store remember me preference and email only (not the large session)
       await Promise.all([
         AsyncStorage.setItem(STORAGE_KEYS.rememberMe, rememberMe ? '1' : '0'),
         rememberMe
@@ -118,6 +91,9 @@ export default function Login() {
       console.log('[LOGIN] signInWithPassword → session?', !!data?.session, 'error?', error?.message);
       if (error) throw error;
 
+      // Don't store the session in SecureStore - Supabase handles this automatically
+      // The session contains large JWT tokens that exceed SecureStore's 2048 byte limit
+      
       router.replace('/(app)/onboarding');
     } catch (e) {
       const nice = mapSupabaseError(e);

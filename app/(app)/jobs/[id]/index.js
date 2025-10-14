@@ -19,8 +19,8 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { supabase } from "../../../lib/supabase";
-import { jobDocsHref, jobExpensesHref, loginHref, invoiceWizardHref } from "../../../lib/nav";
+import { supabase } from "../../../../lib/supabase";
+import { jobDocsHref, jobExpensesHref, loginHref, invoiceWizardHref } from "../../../../lib/nav";
 import {
   Pencil,
   Save,
@@ -31,17 +31,15 @@ import {
   Mail,
   Phone,
   MapPin,
-  User,
-  ChevronRight,
-  CornerUpLeft,
   ChevronLeft,
-  ChevronRight as ChevronRightIcon,
+  ChevronRight,
   Minus,
   Plus as PlusIcon,
+  Banknote,
 } from "lucide-react-native";
 
-import SharedCalendar from "../../../components/SharedCalendar";
-import { getPremiumStatus } from "../../../lib/premium";
+import SharedCalendar from "../../../../components/SharedCalendar";
+import { getPremiumStatus } from "../../../../lib/premium";
 
 /* ---- theme ---- */
 const BG = "#f5f7fb";
@@ -49,30 +47,20 @@ const CARD = "#ffffff";
 const TEXT = "#0b1220";
 const MUTED = "#6b7280";
 const BORDER = "#e6e9ee";
-const BRAND = "#2a86ff";      // "scheduled" blue
-const SUCCESS = "#16a34a";    // green for complete
-const WARN = "#f59e0b";       // used in UI
-const DANGER = "#ef4444";     // blocked/overlap
-const ORANGE = "#f59e0b";     // in-progress orange
+const BRAND = "#2a86ff";
+const SUCCESS = "#16a34a";
+const WARN = "#f59e0b";
+const ORANGE = "#f59e0b";
 
-/* ---- color map for statuses ---- */
+/* ---- helpers ---- */
 const normalizeStatus = (s) =>
   String(s || "")
     .trim()
     .toLowerCase()
     .replace(/[\s-]+/g, "_")
-    .replace(/^open$/, "scheduled"); // treat 'open' as 'scheduled'
+    .replace(/^open$/, "scheduled");
 
-const STATUS_COLOR = {
-  scheduled: BRAND,          // blue
-  in_progress: ORANGE,       // orange
-  complete: SUCCESS,         // green
-};
-
-/* ---- routes ---- */
-const jobsIndexHref = "/(tabs)/jobs";
-
-/* ---- date helpers ---- */
+const STATUS_COLOR = { scheduled: BRAND, in_progress: ORANGE, complete: SUCCESS };
 const pad = (n) => String(n).padStart(2, "0");
 const toYMD = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 const toLocalMidnight = (d) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
@@ -86,8 +74,6 @@ const addWorkingDays = (start, days, includeWeekends) => {
   return cur;
 };
 const money = (v = 0) => "£" + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-
-// detect “column does not exist” from Postgres
 const isMissingColumn = (err) =>
   err && (err.code === "42703" || /column .* does not exist/i.test(err.message || ""));
 
@@ -107,15 +93,26 @@ export default function JobDetails() {
   const [title, setTitle] = useState("");
   const [client, setClient] = useState("");
   const [start, setStart] = useState(toLocalMidnight(new Date()));
-  const [showPicker, setShowPicker] = useState(false); // native fallback
+  const [showPicker, setShowPicker] = useState(false);
   const [dur, setDur] = useState(1);
   const [weekends, setWeekends] = useState(false);
-  const end = useMemo(() => addWorkingDays(start, Math.max(1, Math.floor(dur || 1)), weekends), [start, dur, weekends]);
+  const end = useMemo(
+    () => addWorkingDays(start, Math.max(1, Math.floor(dur || 1)), weekends),
+    [start, dur, weekends]
+  );
 
-  // summary
+  // summaries
   const [docsCount, setDocsCount] = useState(0);
   const [expCount, setExpCount] = useState(0);
   const [expTotal, setExpTotal] = useState(0);
+
+  // payments summary (both due + paid)
+  const [payCount, setPayCount] = useState(0);
+  const [payDueTotal, setPayDueTotal] = useState(0);
+  const [payPaidTotal, setPayPaidTotal] = useState(0);
+
+  // description (job.notes fallback to quote.job_summary)
+  const [description, setDescription] = useState("");
 
   // client modal
   const [showClient, setShowClient] = useState(false);
@@ -130,68 +127,70 @@ export default function JobDetails() {
 
   // calendar state
   const [userId, setUserId] = useState(null);
-  const [jobs, setJobs] = useState([]); // all OTHER jobs (exclude this job)
+  const [jobs, setJobs] = useState([]); // other jobs
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [calMonth, setCalMonth] = useState(()=>{const d=new Date(); d.setDate(1); return d;});
 
-  // ---- expense summary + sync jobs.cost ----
+  /* ---- expense summary + sync jobs.cost ---- */
   const loadExpenseSummary = useCallback(async () => {
     try {
-      // Get count
       const countQ = await supabase.from("expenses").select("id", { count: "exact", head: true }).eq("job_id", jobId);
       if (countQ.error && !isMissingColumn(countQ.error)) throw countQ.error;
       const count = countQ.count || 0;
 
-      // Calculate total from all expense records
       let total = 0;
-      const expensesQ = await supabase
-        .from("expenses")
-        .select("amount, total, qty, unit_cost")
-        .eq("job_id", jobId);
-      
+      const expensesQ = await supabase.from("expenses").select("amount, total, qty, unit_cost").eq("job_id", jobId);
       if (expensesQ.error && !isMissingColumn(expensesQ.error)) throw expensesQ.error;
-      
-      for (const expense of expensesQ.data || []) {
-        // Try different total fields in order of preference
-        let expenseTotal = 0;
-        
-        if (expense.amount && Number.isFinite(Number(expense.amount))) {
-          expenseTotal = Number(expense.amount);
-        } else if (expense.total && Number.isFinite(Number(expense.total))) {
-          expenseTotal = Number(expense.total);
-        } else if (expense.qty && expense.unit_cost) {
-          const qty = Number(expense.qty) || 0;
-          const unitCost = Number(expense.unit_cost) || 0;
-          if (Number.isFinite(qty) && Number.isFinite(unitCost)) {
-            expenseTotal = qty * unitCost;
-          }
-        }
-        
-        total += expenseTotal;
+
+      for (const e of expensesQ.data || []) {
+        let t = 0;
+        if (e.amount != null && Number.isFinite(Number(e.amount))) t = Number(e.amount);
+        else if (e.total != null && Number.isFinite(Number(e.total))) t = Number(e.total);
+        else if (e.qty && e.unit_cost) t = (Number(e.qty) || 0) * (Number(e.unit_cost) || 0);
+        total += t;
       }
 
       setExpCount(count);
       setExpTotal(total);
 
-      // Update job cost
       try {
         const nowIso = new Date().toISOString();
-        const { error: updateError } = await supabase
-          .from("jobs")
-          .update({ cost: total, updated_at: nowIso })
-          .eq("id", jobId);
-        
-        if (updateError && !isMissingColumn(updateError)) {
-          console.warn("Failed to update job cost:", updateError);
-        }
-      } catch (e) {
-        console.warn("Failed to sync job cost:", e);
-      }
+        const { error: updErr } = await supabase.from("jobs").update({ cost: total, updated_at: nowIso }).eq("id", jobId);
+        if (updErr && !isMissingColumn(updErr)) console.warn("Failed to update job cost:", updErr);
+      } catch (e) { console.warn("Failed to sync job cost:", e); }
     } catch (e) {
       console.error("Failed to load expense summary:", e);
-      // Set defaults on error
       setExpCount(0);
       setExpTotal(0);
+    }
+  }, [jobId]);
+
+  /* ---- payments summary (both DUE & PAID) ---- */
+  const loadPaymentsSummary = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from("payments")
+        .select("id, amount, paid_at, voided_at")
+        .eq("job_id", jobId);
+      if (error && !isMissingColumn(error)) throw error;
+
+      const active = (data || []).filter(p => !p.voided_at);
+      const count = active.length;
+      const dueTotal = active
+        .filter(p => !p.paid_at)
+        .reduce((s, p) => s + Number(p.amount || 0), 0);
+      const paidTotal = active
+        .filter(p => !!p.paid_at)
+        .reduce((s, p) => s + Number(p.amount || 0), 0);
+
+      setPayCount(count);
+      setPayDueTotal(dueTotal);
+      setPayPaidTotal(paidTotal);
+    } catch (e) {
+      console.warn("payments summary failed:", e?.message || e);
+      setPayCount(0);
+      setPayDueTotal(0);
+      setPayPaidTotal(0);
     }
   }, [jobId]);
 
@@ -207,19 +206,11 @@ export default function JobDetails() {
       if (!user) { router.replace(loginHref); return; }
       setUserId(user.id);
 
-      // Check if user is blocked due to expired trial
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("trial_ends_at, plan_tier, plan_status")
-        .eq("id", user.id)
-        .maybeSingle();
-
+      // block if trial expired
+      const { data: profile } = await supabase.from("profiles").select("trial_ends_at, plan_tier, plan_status").eq("id", user.id).maybeSingle();
       if (profile) {
         const status = getPremiumStatus(profile);
-        if (status.isBlocked) {
-          router.replace("/(app)/trial-expired");
-          return;
-        }
+        if (status.isBlocked) { router.replace("/(app)/trial-expired"); return; }
       }
 
       const res = await supabase
@@ -231,65 +222,8 @@ export default function JobDetails() {
 
       const j = res.data;
       setJob(j);
-      
-      // ✅ Check if this job was created from a quote and auto-populate expenses
-      // First check if expenses already exist to avoid duplicates
-      const { data: existingExpenses } = await supabase
-        .from("expenses")
-        .select("id")
-        .eq("job_id", jobId)
-        .limit(1);
 
-      // Only auto-populate if no expenses exist yet
-      if (!existingExpenses || existingExpenses.length === 0) {
-        try {
-          // Find the quote that created this job using reverse lookup
-          const { data: sourceQuote } = await supabase
-            .from("quotes")
-            .select("line_items")
-            .eq("job_id", jobId)
-            .maybeSingle();
-
-          if (sourceQuote?.line_items) {
-            const lineItems = Array.isArray(sourceQuote.line_items) ? sourceQuote.line_items : [];
-            const expenseItems = lineItems.filter(
-              (item) =>
-                item.type === "materials" ||
-                item.type === "other" ||
-                (item.type !== "labour" && item.description && item.total > 0)
-            );
-
-            if (expenseItems.length > 0) {
-              const expenseRows = expenseItems.map((item) => ({
-                job_id: jobId,
-                user_id: user.id,
-                description: item.description || "Quote expense",
-                amount: Number(item.total || 0),
-                category: item.type === "materials" ? "materials" : "other",
-                date: j.start_date || new Date().toISOString().split("T")[0],
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-              }));
-
-              const { error: expErr } = await supabase.from("expenses").insert(expenseRows);
-              if (!expErr) {
-                // Update job cost
-                const totalExpenses = expenseRows.reduce((sum, exp) => sum + exp.amount, 0);
-                await supabase
-                  .from("jobs")
-                  .update({ cost: totalExpenses })
-                  .eq("id", jobId);
-                
-                // Update local job data
-                setJob(prev => ({ ...prev, cost: totalExpenses }));
-              }
-            }
-          }
-        } catch (e) {
-          console.warn("Failed to auto-populate expenses from quote:", e);
-        }
-      }
-
+      // set title + core fields
       setTitle(j.title || "");
       setClient(j.client_name || "");
       const s = j.start_date ? new Date(j.start_date) : new Date();
@@ -300,6 +234,14 @@ export default function JobDetails() {
       const status = normalizeStatus(j.status || "scheduled");
       setIsInProgress(status === "in_progress");
       setIsCompleted(status === "complete");
+
+      // description: job.notes || quote.job_summary
+      let desc = (j.notes || "").trim();
+      if (!desc) {
+        const { data: sourceQuote } = await supabase.from("quotes").select("job_summary").eq("job_id", jobId).maybeSingle();
+        if (sourceQuote && sourceQuote.job_summary) desc = String(sourceQuote.job_summary).trim();
+      }
+      setDescription(desc);
 
       if (j.client_id) {
         const cQ = await supabase.from("clients").select("id,name,email,phone,address").eq("id", j.client_id).maybeSingle();
@@ -326,7 +268,8 @@ export default function JobDetails() {
       if (docsQ.error) throw docsQ.error;
       setDocsCount(docsQ.count || 0);
 
-      await loadExpenseSummary();
+      // summaries
+      await Promise.all([loadExpenseSummary(), loadPaymentsSummary()]);
     } catch (e) {
       console.error("[job details] load", e);
       Alert.alert("Error", e?.message || "Failed to load job");
@@ -334,7 +277,7 @@ export default function JobDetails() {
       setLoading(false);
       inFlight.current = false;
     }
-  }, [jobId, router, loadExpenseSummary]);
+  }, [jobId, router, loadExpenseSummary, loadPaymentsSummary]);
 
   useEffect(()=>{ load(); }, [load]);
   useEffect(()=>{ const sub = DeviceEventEmitter.addListener("jobs:changed", ()=>{ if(!inFlight.current) load(); }); return ()=>sub.remove(); }, [load]);
@@ -348,10 +291,7 @@ export default function JobDetails() {
     if (!error) setJobs((data || []).filter((j)=> j.id !== jobId));
   }, [userId, jobId]);
 
-  /* ---- live-refresh when status changes & calendar open ---- */
-  useEffect(() => {
-    if (scheduleOpen) loadJobs();
-  }, [isInProgress, isCompleted, scheduleOpen, loadJobs]);
+  useEffect(() => { if (scheduleOpen) loadJobs(); }, [isInProgress, isCompleted, scheduleOpen, loadJobs]);
 
   /* ---------- auto-save for date-related fields ---------- */
   const saveDatesOnly = useCallback(
@@ -360,17 +300,15 @@ export default function JobDetails() {
       try {
         const payload = {
           start_date: toYMD(s),
-          end_date: toYMD(addWorkingDays(s, Math.max(1, Math.floor(dur || 1)), w)),
-          duration_days: Math.max(1, Math.floor(dur || 1)),
+          end_date: toYMD(addWorkingDays(s, Math.max(1, Math.floor(d || 1)), w)),
+          duration_days: Math.max(1, Math.floor(d || 1)),
           include_weekends: !!w,
           updated_at: new Date().toISOString(),
         };
         const { error } = await supabase.from("jobs").update(payload).eq("id", job.id);
         if (error) throw error;
         DeviceEventEmitter.emit("jobs:changed");
-      } catch (e) {
-        console.error("[job details] auto-save dates", e);
-      }
+      } catch (e) { console.error("[job details] auto-save dates", e); }
     },
     [job, start, dur, weekends]
   );
@@ -384,7 +322,6 @@ export default function JobDetails() {
   }, [scheduleOpen]); // eslint-disable-line
 
   const save = useCallback(async () => {
-    // Save NON-date fields (title/client) — dates save themselves
     try {
       if (!job) return;
       if (!title.trim()) { Alert.alert("Missing","Enter a job title."); return; }
@@ -410,7 +347,7 @@ export default function JobDetails() {
   const writeStatus = async (next) => {
     try {
       setSaving(true);
-      const allowed = normalizeStatus(next); // safety
+      const allowed = normalizeStatus(next);
       const toWrite = allowed === "complete" || allowed === "in_progress" || allowed === "scheduled" ? allowed : "scheduled";
       const { error } = await supabase.from("jobs").update({ status: toWrite, updated_at: new Date().toISOString() }).eq("id", job.id);
       if (error) throw error;
@@ -469,15 +406,10 @@ export default function JobDetails() {
     if (type === "maps") Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(value)}`);
   };
 
-  // calendar open
-  const openStartDatePicker = async () => { if (!edit) return; Haptics.selectionAsync(); setScheduleOpen(true); };
+  // calendar open — always allowed
+  const openStartDatePicker = async () => { Haptics.selectionAsync(); setScheduleOpen(true); };
 
-  // this job’s span/accent color
-  const spanColor = isInProgress
-    ? STATUS_COLOR.in_progress
-    : isCompleted
-    ? STATUS_COLOR.complete
-    : STATUS_COLOR.scheduled;
+  const spanColor = isInProgress ? STATUS_COLOR.in_progress : (isCompleted ? STATUS_COLOR.complete : STATUS_COLOR.scheduled);
 
   if (loading || !job) {
     return (<View style={[styles.screen, styles.center]}><ActivityIndicator color={BRAND} /></View>);
@@ -485,14 +417,14 @@ export default function JobDetails() {
 
   return (
     <View style={styles.screen}>
-      {/* Header */}
+      {/* Header — JUST the title */}
       <View style={styles.top}>
-        <Pressable onPress={() => router.back()} style={styles.backBtn} android_ripple={{ color: "rgba(0,0,0,0.06)" }}>
+        <Pressable onPress={() => router.push("/(tabs)/jobs")} style={styles.backBtn} android_ripple={{ color: "rgba(0,0,0,0.06)" }}>
           <ChevronLeft size={18} color={BRAND} />
-          <Text style={styles.backTxt}>Back</Text>
+          <Text style={styles.backTxt}>back</Text>
         </Pressable>
-        <Text style={styles.h1} numberOfLines={1}>{job.title || "Job"}</Text>
-        <View style={{ width: 36 }} />
+        <Text style={styles.h1} numberOfLines={1}>{title || "Job"}</Text>
+        <View style={{ width: 50 }} />
       </View>
 
       {/* Status */}
@@ -508,7 +440,7 @@ export default function JobDetails() {
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
-        {/* ---- Details FIRST ---- */}
+        {/* ---- Details ---- */}
         <View style={styles.card}>
           <TouchableOpacity onPress={edit ? save : () => { Haptics.selectionAsync(); setEdit(true); }} style={styles.cardEditBtn} activeOpacity={0.85}>
             {edit ? <Save size={18} color={MUTED} /> : <Pencil size={18} color={MUTED} />}
@@ -519,24 +451,19 @@ export default function JobDetails() {
           <Text style={styles.label}>Job title</Text>
           <TextInput style={[styles.input, !edit && styles.inputReadonly]} value={title} onChangeText={setTitle} editable={edit} placeholder="e.g. Kitchen install" />
 
-          <Text style={styles.label}>Client</Text>
-          <TouchableOpacity onPress={openClientModal} activeOpacity={0.85}>
-            <View>
-              <TextInput style={[styles.input, styles.inputReadonly, { paddingLeft: 38, paddingRight: 34 }]} value={client} editable={false} pointerEvents="none" />
-              <View style={styles.leftIcon}><User size={16} color={MUTED} /></View>
-              <View style={styles.rightIcon}><ChevronRight size={16} color={MUTED} /></View>
-            </View>
-          </TouchableOpacity>
+          {/* Description box — shows job.notes or quote.job_summary */}
+          <Text style={styles.label}>Description</Text>
+          <View style={styles.descBox}>
+            <Text style={styles.descText}>{description ? description : "No description provided."}</Text>
+          </View>
 
           <Text style={styles.label}>Start date</Text>
-          <View style={{ position: "relative" }}>
-            <TextInput style={[styles.input, !edit && styles.inputReadonly]} editable={false} value={start.toLocaleDateString()} placeholder="Pick a date" />
-            {edit ? (
-              <TouchableOpacity onPress={openStartDatePicker} style={styles.inputIcon}>
-                <CalendarDays size={18} color={MUTED} />
-              </TouchableOpacity>
-            ) : null}
-          </View>
+          <TouchableOpacity activeOpacity={0.9} onPress={openStartDatePicker}>
+            <View style={{ position: "relative" }}>
+              <TextInput style={[styles.input, styles.inputReadonly]} editable={false} value={start.toLocaleDateString()} placeholder="Pick a date" />
+              <View style={styles.inputIcon}><CalendarDays size={18} color={MUTED} /></View>
+            </View>
+          </TouchableOpacity>
 
           {showPicker ? (
             <DateTimePicker
@@ -548,7 +475,7 @@ export default function JobDetails() {
                 if (d) {
                   const ns = toLocalMidnight(d);
                   setStart(ns);
-                  saveDatesOnly(ns, dur, weekends); // auto-save
+                  saveDatesOnly(ns, dur, weekends);
                 }
               }}
               maximumDate={new Date(2199, 11, 31)}
@@ -562,10 +489,11 @@ export default function JobDetails() {
             onChangeText={(t) => {
               const val = Math.max(1, Math.floor(Number(String(t).replace(/[^0-9]/g, "")) || 1));
               setDur(val);
-              if (edit) saveDatesOnly(start, val, weekends); // auto-save
+              if (edit) saveDatesOnly(start, val, weekends);
             }}
             keyboardType="number-pad"
             editable={edit}
+            placeholder={!edit ? "Change via the calendar" : undefined}
           />
 
           {edit ? (
@@ -575,7 +503,7 @@ export default function JobDetails() {
                 Haptics.selectionAsync();
                 setWeekends((prev) => {
                   const v = !prev;
-                  saveDatesOnly(start, dur, v); // auto-save
+                  saveDatesOnly(start, dur, v);
                   return v;
                 });
               }}
@@ -593,7 +521,17 @@ export default function JobDetails() {
           </View>
         </View>
 
-        {/* ---- Expenses & Documents (after Details) ---- */}
+        {/* ---- Client summary card (no field titles, with chevrons) ---- */}
+        <ClientSummaryCard
+          client={clientInfo}
+          onEdit={() => {
+            setClientEdit(false);
+            openClientModal();
+          }}
+          onLink={linkTo}
+        />
+
+        {/* ---- Summary row (Expenses & Documents) ---- */}
         <View style={styles.row2}>
           <SummaryCard
             icon={<Receipt size={18} color={WARN} />}
@@ -609,7 +547,19 @@ export default function JobDetails() {
           />
         </View>
 
-        {/* ---- Create Invoice at BOTTOM ---- */}
+        {/* ---- Payments row (shows DUE / PAID columns) ---- */}
+        <View style={styles.row2}>
+          <PaymentSummaryCard
+            due={payDueTotal}
+            paid={payPaidTotal}
+            onPress={() => {
+              Haptics.selectionAsync();
+              router.replace({ pathname: "/(app)/jobs/[id]/payments", params: { id: jobId } });
+            }}
+          />
+        </View>
+
+        {/* ---- Create Invoice ---- */}
         <View style={{ paddingHorizontal: 14, marginTop: 14 }}>
           <TouchableOpacity style={[styles.tileBtn, styles.tilePrimary]} onPress={goToInvoiceWizard} activeOpacity={0.9}>
             <FileText size={18} color="#fff" />
@@ -671,7 +621,7 @@ export default function JobDetails() {
         </Pressable>
       </Modal>
 
-      {/* Calendar modal (shared component) */}
+      {/* Calendar modal */}
       <Modal visible={scheduleOpen} animationType="fade" transparent>
         <Pressable style={styles.calBackdrop} onPress={() => setScheduleOpen(false)} />
         <View style={styles.sheet}>
@@ -687,13 +637,13 @@ export default function JobDetails() {
             onSelectDate={(d) => {
               const ns = toLocalMidnight(d);
               setStart(ns);
-              saveDatesOnly(ns, dur, weekends); // auto-save
+              saveDatesOnly(ns, dur, weekends);
               Haptics.selectionAsync();
             }}
-            jobs={jobs} // other jobs (this job excluded) for blocking & bands
+            jobs={jobs}
             span={{ start, days: Math.max(1, Math.floor(dur || 1)), includeWeekends: weekends }}
             blockStarts
-            accentColor={spanColor} // span color follows this job status
+            accentColor={spanColor}
           />
 
           {/* Duration + Weekends */}
@@ -705,7 +655,7 @@ export default function JobDetails() {
                 onPress={()=>{
                   const d = Math.max(1, Math.floor(dur)-1);
                   setDur(d);
-                  saveDatesOnly(start, d, weekends); // auto-save
+                  saveDatesOnly(start, d, weekends);
                 }}
               >
                 <Minus size={18} color={TEXT} />
@@ -716,7 +666,7 @@ export default function JobDetails() {
                 onPress={()=>{
                   const d = Math.max(1, Math.floor(dur)+1);
                   setDur(d);
-                  saveDatesOnly(start, d, weekends); // auto-save
+                  saveDatesOnly(start, d, weekends);
                 }}
               >
                 <PlusIcon size={18} color={TEXT} />
@@ -725,44 +675,21 @@ export default function JobDetails() {
           </View>
           <View style={styles.weekendRow}>
             <Text style={styles.controlHeader}>Include weekends</Text>
-            <Switch
-              value={weekends}
-              onValueChange={(v)=>{ setWeekends(v); saveDatesOnly(start, dur, v); }}
-            />
+            <Switch value={weekends} onValueChange={(v)=>{ setWeekends(v); saveDatesOnly(start, dur, v); }} />
           </View>
 
           {/* Start / End */}
           <View style={styles.endRow}>
-            <Text style={styles.endText}>
-              Start: <Text style={styles.bold}>{toYMD(start)}</Text>
-            </Text>
-            <Text style={styles.endText}>
-              End: <Text style={styles.bold}>{toYMD(addWorkingDays(start, Math.max(1, Math.floor(dur || 1)), weekends))}</Text>
-            </Text>
+            <Text style={styles.endText}>Start: <Text style={styles.bold}>{toYMD(start)}</Text></Text>
+            <Text style={styles.endText}>End: <Text style={styles.bold}>{toYMD(addWorkingDays(start, Math.max(1, Math.floor(dur || 1)), weekends))}</Text></Text>
           </View>
 
-          {/* Footer buttons */}
+          {/* Footer */}
           <View style={styles.calFooter}>
-            <TouchableOpacity
-              style={[styles.calBtn, styles.calBtnGhost]}
-              activeOpacity={0.9}
-              onPress={() => {
-                Haptics.selectionAsync();
-                setScheduleOpen(false);
-              }}
-            >
+            <TouchableOpacity style={[styles.calBtn, styles.calBtnGhost]} activeOpacity={0.9} onPress={() => { Haptics.selectionAsync(); setScheduleOpen(false); }}>
               <Text style={[styles.calBtnText, { color: TEXT }]}>Close</Text>
             </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.calBtn, styles.calBtnPrimary]}
-              activeOpacity={0.9}
-              onPress={() => {
-                // Already auto-saved; just feedback and close
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                setScheduleOpen(false);
-              }}
-            >
+            <TouchableOpacity style={[styles.calBtn, styles.calBtnPrimary]} activeOpacity={0.9} onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); setScheduleOpen(false); }}>
               <Text style={[styles.calBtnText, { color: "#fff" }]}>Save</Text>
             </TouchableOpacity>
           </View>
@@ -781,6 +708,90 @@ const SummaryCard = ({ icon, title, value, onPress }) => (
   </TouchableOpacity>
 );
 
+const PaymentSummaryCard = ({ due = 0, paid = 0, onPress }) => {
+  const showDue = Number(due) > 0;
+  const showPaid = Number(paid) > 0;
+  return (
+    <TouchableOpacity style={[styles.summary, styles.deepShadow]} onPress={onPress} activeOpacity={0.85}>
+      <View style={styles.summaryIcon}><Banknote size={18} color={SUCCESS} /></View>
+      <Text style={styles.summaryTitle}>Payments</Text>
+
+      {(!showDue && !showPaid) ? (
+        <Text style={[styles.summaryValue, { color: MUTED }]}>No balance</Text>
+      ) : (
+        <View style={styles.payRow}>
+          {showDue && (
+            <View style={styles.payCol}>
+              <Text style={styles.payLabel}>Due</Text>
+              <Text style={styles.payValue}>{money(due)}</Text>
+            </View>
+          )}
+          {showPaid && (
+            <View style={styles.payCol}>
+              <Text style={styles.payLabel}>Paid</Text>
+              <Text style={styles.payValue}>{money(paid)}</Text>
+            </View>
+          )}
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+};
+
+const ClientSummaryCard = ({ client = {}, onEdit, onLink }) => {
+  const hasName = !!(client.name && client.name.trim());
+  const hasEmail = !!(client.email && client.email.trim());
+  const hasPhone = !!(client.phone && client.phone.trim());
+  const hasAddress = !!(client.address && client.address.trim());
+  const hasAny = hasName || hasEmail || hasPhone || hasAddress;
+
+  return (
+    <View style={[styles.card, styles.deepShadow, { marginTop: 10 }]}>
+      <TouchableOpacity onPress={onEdit} style={styles.cardEditBtn} activeOpacity={0.85}>
+        <Pencil size={18} color={MUTED} />
+      </TouchableOpacity>
+
+      <Text style={styles.section}>Client</Text>
+
+      {/* Big name at top if present */}
+      {hasName ? (
+        <Text style={styles.clientName} numberOfLines={1}>{client.name}</Text>
+      ) : null}
+
+      {/* Rows – icon + value + tiny chevron */}
+      {hasEmail ? (
+        <Pressable style={styles.clientRow} onPress={() => onLink("mail", client.email)}>
+          <Mail size={16} color={BRAND} />
+          <Text style={styles.clientValue} numberOfLines={1}>{client.email}</Text>
+          <ChevronRight size={16} color={MUTED} />
+        </Pressable>
+      ) : null}
+
+      {hasPhone ? (
+        <Pressable style={styles.clientRow} onPress={() => onLink("tel", client.phone)}>
+          <Phone size={16} color={BRAND} />
+          <Text style={styles.clientValue} numberOfLines={1}>{client.phone}</Text>
+          <ChevronRight size={16} color={MUTED} />
+        </Pressable>
+      ) : null}
+
+      {hasAddress ? (
+        <Pressable style={[styles.clientRow, { alignItems: "flex-start" }]} onPress={() => onLink("maps", client.address)}>
+          <MapPin size={16} color={BRAND} style={{ marginTop: 2 }} />
+          <Text style={[styles.clientValue, { lineHeight: 18 }]} numberOfLines={2}>{client.address}</Text>
+          <ChevronRight size={16} color={MUTED} style={{ marginTop: 2 }} />
+        </Pressable>
+      ) : null}
+
+      {!hasAny && (
+        <TouchableOpacity onPress={onEdit} activeOpacity={0.85} style={styles.clientEmpty}>
+          <Text style={{ color: MUTED, fontWeight: "600" }}>Add client details</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+};
+
 /* ---- styles ---- */
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
@@ -791,7 +802,6 @@ const styles = StyleSheet.create({
   backTxt: { color: BRAND, fontWeight: "800", fontSize: 16 },
   h1: { color: TEXT, fontWeight: "900", fontSize: 22 },
 
-  /* action bar — status checkboxes */
   actionBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, marginBottom: 6 },
   tileBtn: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 14, borderWidth: 1, shadowColor: "#0b1220", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 3 },
   tilePrimary: { backgroundColor: BRAND, borderColor: "#2a86ff" },
@@ -802,45 +812,156 @@ const styles = StyleSheet.create({
   checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: "#cbd5e1", backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   checkboxChecked: { backgroundColor: SUCCESS, borderColor: SUCCESS },
 
-  /* summary row */
   row2: { flexDirection: "row", gap: 8, marginTop: 10, paddingHorizontal: 14 },
   summary: { flex: 1, backgroundColor: CARD, borderWidth: 1, borderColor: BORDER, borderRadius: 14, padding: 12 },
   summaryIcon: { height: 34, width: 34, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "#f3f4f6", borderWidth: 1, borderColor: BORDER, marginBottom: 8 },
   summaryTitle: { color: MUTED, fontWeight: "800" },
   summaryValue: { color: TEXT, fontWeight: "900", marginTop: 2 },
 
-  /* details card + edit */
+  // Payments sub-row
+  payRow: { flexDirection: "row", gap: 14, marginTop: 6 },
+  payCol: { flexDirection: "column", flexShrink: 1, minWidth: 90 },
+  payLabel: { color: MUTED, fontWeight: "800", marginBottom: 2 },
+  payValue: { color: TEXT, fontWeight: "900" },
+
   card: { backgroundColor: CARD, marginHorizontal: 14, marginTop: 10, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: BORDER, shadowColor: "#0b1220", shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 3, position: "relative" },
   cardEditBtn: { position: "absolute", top: 10, right: 10, height: 34, width: 34, borderRadius: 10, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: BORDER, backgroundColor: CARD, shadowColor: "#0b1220", shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 3, zIndex: 5 },
 
-  /* inputs */
   section: { color: TEXT, fontWeight: "900", fontSize: 16, marginBottom: 8 },
   label: { color: MUTED, fontWeight: "800", marginTop: 8, marginBottom: 6 },
-  input: { backgroundColor: "#fff", color: TEXT, borderRadius: 10, padding: 10, borderWidth: 1, borderColor: BORDER, shadowColor: "#0b1220", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 1 },
-  inputReadonly: { backgroundColor: "#eef2f6", shadowOpacity: 0, elevation: 0 },
-  inputIcon: { position: "absolute", right: 6, top: 6, height: 30, width: 30, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#f3f4f6", borderWidth: 1, borderColor: BORDER },
 
-  leftIcon: { position: "absolute", left: 10, top: 10, height: 20, width: 20, alignItems: "center", justifyContent: "center" },
-  rightIcon: { position: "absolute", right: 8, top: 10, height: 20, width: 20, alignItems: "center", justifyContent: "center" },
+  input: {
+    backgroundColor: "#fff",
+    color: TEXT,
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 1,
+  },
+  inputReadonly: { backgroundColor: "#eef2f6", shadowOpacity: 0, elevation: 0 },
+
+  inputIcon: {
+    position: "absolute",
+    right: 6,
+    top: 6,
+    height: 30,
+    width: 30,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f3f4f6",
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+
+  // Client card (clean)
+  clientName: { color: TEXT, fontWeight: "900", fontSize: 16, marginTop: 2 },
+  clientRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+    paddingVertical: 6,
+  },
+  clientValue: { color: TEXT, fontWeight: "600", flex: 1 },
 
   checkRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 },
-  checkboxSmall: { width: 20, height: 20, borderRadius: 6, borderWidth: 1.5, borderColor: "#cbd5e1", alignItems: "center", justifyContent: "center", backgroundColor: "#ffffff" },
+  checkboxSmall: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: "#cbd5e1",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+  },
   checkboxSmallChecked: { backgroundColor: BRAND, borderColor: BRAND },
   checkboxTick: { color: "#ffffff", fontWeight: "800" },
 
-  infoBox: { marginTop: 8, padding: 10, borderRadius: 10, backgroundColor: "#f8fafc", borderWidth: 1, borderColor: BORDER },
+  infoBox: {
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: "#f8fafc",
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
 
-  /* client modal */
-  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.25)", alignItems: "center", justifyContent: "center", paddingHorizontal: 18 },
-  modalCard: { width: "100%", maxWidth: 520, backgroundColor: "#fff", borderRadius: 16, padding: 16, borderWidth: 1, borderColor: BORDER, shadowColor: "#0b1220", shadowOpacity: 0.15, shadowRadius: 18, shadowOffset: { width: 0, height: 10 }, elevation: 8, position: "relative" },
+  /* description box */
+  descBox: { backgroundColor: "#f8fafc", borderWidth: 1, borderColor: BORDER, padding: 10, borderRadius: 10 },
+  descText: { color: TEXT, fontWeight: "600" },
+
+  /* empty client prompt */
+  clientEmpty: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#f8fafc",
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+
+  /* modal + calendar */
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 520,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.15,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+    position: "relative",
+  },
   modalTitle: { color: TEXT, fontWeight: "900", fontSize: 18 },
   linkRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   linkInput: { flex: 1 },
-  linkBtn: { height: 36, width: 36, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "#eef6ff", borderWidth: 1, borderColor: "#dbeafe" },
+  linkBtn: {
+    height: 36,
+    width: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#eef6ff",
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+  },
 
-  /* calendar sheet */
   calBackdrop: { flex: 1, backgroundColor: "#0009" },
-  sheet: { position: "absolute", alignSelf: "center", top: "8%", width: "92%", backgroundColor: CARD, borderRadius: 20, padding: 14, paddingBottom: 16, borderWidth: 1, borderColor: BORDER, elevation: 0, shadowOpacity: 0, maxHeight: "86%", overflow: "hidden" },
+  sheet: {
+    position: "absolute",
+    alignSelf: "center",
+    top: "8%",
+    width: "92%",
+    backgroundColor: CARD,
+    borderRadius: 20,
+    padding: 14,
+    paddingBottom: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    elevation: 0,
+    shadowOpacity: 0,
+    maxHeight: "86%",
+    overflow: "hidden",
+  },
   sheetTitle: { color: TEXT, fontWeight: "900", fontSize: 18, textAlign: "center", marginBottom: 8 },
 
   durationBlock: { marginTop: 10, alignItems: "center", justifyContent: "center" },
@@ -848,20 +969,40 @@ const styles = StyleSheet.create({
   controlHeader: { color: TEXT, fontWeight: "900", fontSize: 15 },
 
   spinRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 8 },
-  spinBtn: { height: 40, width: 40, borderRadius: 12, borderWidth: 1, borderColor: BORDER, backgroundColor: "#f7f8fb", alignItems: "center", justifyContent: "center" },
+  spinBtn: {
+    height: 40,
+    width: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#f7f8fb",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   spinValue: { color: TEXT, fontWeight: "900", minWidth: 120, textAlign: "center", fontSize: 16 },
 
-  /* Start / End row */
   endRow: { marginTop: 10, flexDirection: "row", justifyContent: "space-between" },
   endText: { color: MUTED, fontWeight: "800" },
   bold: { color: TEXT, fontWeight: "900" },
 
   calFooter: { flexDirection: "row", gap: 10, marginTop: 14 },
-  calBtn: { flex: 1, height: 48, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  calBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   calBtnGhost: { backgroundColor: "#eef2f7", borderColor: BORDER },
   calBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
   calBtnText: { fontWeight: "900", fontSize: 15, includeFontPadding: false },
 
-  /* extras */
-  deepShadow: { shadowColor: "#0b1220", shadowOpacity: 0.1, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 4 },
+  deepShadow: {
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 4,
+  },
 });

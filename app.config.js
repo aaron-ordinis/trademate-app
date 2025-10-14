@@ -5,7 +5,7 @@ require('dotenv').config({ path: profile === 'production' ? '.env.production' : 
 
 const must = (k) => {
   if (!process.env[k]) console.warn(`[config] Missing env: ${k}`);
-  return process.env[k] || '';
+return process.env[k] || '';
 };
 
 module.exports = {
@@ -22,7 +22,7 @@ module.exports = {
     platforms: ['android', 'ios'],
 
     // ✅ include all nested assets
-    assetBundlePatterns: ['/*'],
+    assetBundlePatterns: ['**/*'],
 
     icon: './assets/images/app-icon.jpg',
 
@@ -45,7 +45,9 @@ module.exports = {
       'expo-web-browser',
     ],
 
-    experiments: { typedRoutes: false },
+    experiments: { 
+      typedRoutes: false,
+    },
 
     extra: {
       SUPABASE_URL: must('EXPO_PUBLIC_SUPABASE_URL'),

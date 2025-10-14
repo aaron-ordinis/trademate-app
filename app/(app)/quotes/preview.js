@@ -23,6 +23,13 @@ async function markStatus(quoteId, status) {
 }
 const vibrateTap = () => { try { Haptics.selectionAsync(); } catch {} };
 
+/** Match Supabase storage URLs and extract bucket/path */
+function parseStorageUrl(url) {
+  if (!url) return null;
+  const m = url.match(/\/storage\/v1\/object\/(sign|public)\/([^/]+)\/(.+?)(?:\?|$)/);
+  return m ? { bucket: m[2], path: decodeURIComponent(m[3]) } : null;
+}
+
 /** Minimal HTML viewer (no template literals) */
 function makePdfHtml(base64, viewerWidthCSSPx) {
   const viewerW = Math.max(320, Math.floor(viewerWidthCSSPx));
@@ -184,19 +191,39 @@ export default function Preview() {
     finally { setBusy(null); }
   };
 
-  // Updated: always fetch quote, pass to edit screen; show spinner
+  // Robust Edit: try passed id; if missing, resolve it by matching pdf_url path
   const onEdit = useCallback(async () => {
     vibrateTap();
-    if (!quoteId) {
-      Alert.alert('Missing quote', 'Go back to the list and open the quote to edit.');
-      return;
-    }
+
     try {
       setBusy('edit');
+
+      let idToUse = quoteId;
+
+      if (!idToUse) {
+        const url = await resolvePdfUrl();
+        const parsed = parseStorageUrl(url);
+        if (parsed?.path) {
+          const { data: row } = await supabase
+            .from('quotes')
+            .select('*')
+            .ilike('pdf_url', `%${parsed.path}%`)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (row?.id) idToUse = row.id;
+        }
+      }
+
+      if (!idToUse) {
+        Alert.alert('Missing quote', 'Go back to the list and open the quote to edit.');
+        return;
+      }
+
       const { data, error } = await supabase
         .from('quotes')
         .select('*')
-        .eq('id', quoteId)
+        .eq('id', idToUse)
         .single();
 
       if (error || !data) throw error || new Error('Quote not found');
@@ -204,7 +231,7 @@ export default function Preview() {
       router.push({
         pathname: '/(app)/quotes/[id]',
         params: {
-          id: quoteId,
+          id: idToUse,
           mode: 'edit',
           q: encodeURIComponent(JSON.stringify(data)),
         },
@@ -214,7 +241,7 @@ export default function Preview() {
     } finally {
       setBusy(null);
     }
-  }, [quoteId, router]);
+  }, [quoteId, router, resolvePdfUrl]);
 
   const viewerHtml = useMemo(
     () => (base64Pdf ? makePdfHtml(base64Pdf, viewerWidth) : ''),
@@ -227,7 +254,6 @@ export default function Preview() {
     else router.replace('/(app)/quotes');
   };
 
-  // height of bottom bar used to keep viewer visible
   const bottomBarH = 64 + Math.max(insets.bottom, 10);
 
   return (

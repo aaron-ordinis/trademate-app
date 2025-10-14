@@ -12,14 +12,14 @@ import { BlurView } from "expo-blur";
 import { Feather } from "@expo/vector-icons";
 import * as NavigationBar from "expo-navigation-bar";
 
-// ---- System background (matches status/nav bar) ----
+/* ---------------- Theme ---------------- */
 const sysBG =
   Platform.OS === "ios"
     ? PlatformColor?.("systemGray6") ?? "#EEF2F6"
     : PlatformColor?.("@android:color/system_neutral2_100") ?? "#EEF2F6";
 
-const BG = sysBG;        // Use for Views (PlatformColor OK)
-const BG_HEX = "#eEF2F6"; // Use for StatusBar/NavigationBar ONLY
+const BG = sysBG;
+const BG_HEX = "#eEF2F6";
 
 const CARD = "#ffffff";
 const TEXT = "#0b1220";
@@ -29,20 +29,44 @@ const OK = "#16a34a";
 const DISABLED = "#9ca3af";
 const BORDER = "#e5e7eb";
 
+/* ---------------- Utils ---------------- */
 function money(n) { if (!isFinite(n)) return "0.00"; return (Math.round(n * 100) / 100).toFixed(2); }
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function todayISO() { return new Date().toISOString().slice(0,10); }
+function isHoursUnit(u) {
+  const t = String(u || "").trim().toLowerCase();
+  return t === "h" || t === "hr" || t === "hrs" || t === "hour" || t === "hours";
+}
+function isLabourItem(row) {
+  const kindRaw = row && (row.kind ?? row.type);
+  const kind = String(kindRaw || "").toLowerCase();
+  if (kind === "labour" || kind === "labor") return true;
+  if (isHoursUnit(row?.unit)) return true;
+  return false;
+}
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+async function probeUrl(url){
+  const bust = "cb=" + Date.now() + "&r=" + Math.random().toString(36).slice(2);
+  const u = url && url.indexOf("?") >= 0 ? url + "&" + bust : url + "?" + bust;
+  try {
+    let res = await fetch(u, { method: "HEAD" });
+    if (res.ok || res.status === 206 || res.status === 304) return true;
+    res = await fetch(u, { method: "GET", headers: { Range: "bytes=0-1" } });
+    if (res.status === 200 || res.status === 206 || res.status === 304) return true;
+    res = await fetch(u, { method: "GET" });
+    return res.ok;
+  } catch { return false; }
+}
 
+/* ---------------- Wizard ---------------- */
 const TOTAL_STEPS = 7;
 const STEP_TITLES = ["Hours","Expenses","Attachments","Deposit","Client","Terms","Review"];
-
-// leave enough space so content never hides behind footer
 const FOOTER_SPACE = 220;
 
 export default function InvoiceWizard() {
   const params = useLocalSearchParams();
   const initialJobIdParam = String(params.job_id || "");
-  const quoteId = params.quote_id ? String(params.quote_id) : "";
+  const passedQuoteId = params.quote_id ? String(params.quote_id) : "";
   const router = useRouter();
 
   const [visible, setVisible] = useState(true);
@@ -72,16 +96,18 @@ export default function InvoiceWizard() {
   const [submitting, setSubmitting] = useState(false);
   const [userId, setUserId] = useState(null);
 
-  // Match OS chrome
+  // NEW: suggested deposit from real payments
+  const [suggestedPaid, setSuggestedPaid] = useState(0);
+
   useEffect(() => {
     StatusBar.setBarStyle("dark-content");
     if (Platform.OS === "android") {
-      StatusBar.setBackgroundColor(BG_HEX, true); // must be a plain string
+      StatusBar.setBackgroundColor(BG_HEX, true);
       (async () => { try { await NavigationBar.setBackgroundColorAsync(BG_HEX); } catch {} })();
     }
   }, []);
 
-  // ---------- Load profile defaults ----------
+  // Load defaults (profile)
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -93,18 +119,14 @@ export default function InvoiceWizard() {
 
         const { data, error } = await supabase
           .from("profiles")
-          .select("invoice_terms, invoice_due_days, invoice_tax_rate, invoice_currency, default_hourly_rate, hourly_rate")
+          .select("invoice_terms, invoice_due_days, invoice_tax_rate, invoice_currency, hourly_rate")
           .eq("id", user.id)
           .single();
 
         if (!error && alive && data) {
-          const profDefault = Number(data.default_hourly_rate);
-          const profLegacy  = Number(data.hourly_rate);
-          const effectiveHourly =
-            Number.isFinite(profDefault) && profDefault > 0 ? profDefault :
-            Number.isFinite(profLegacy)  && profLegacy  > 0 ? profLegacy  : 0;
+          const effectiveHourly = Number(data.hourly_rate);
+          setHourlyRate(Number.isFinite(effectiveHourly) && effectiveHourly > 0 ? String(effectiveHourly) : "0");
 
-          setHourlyRate(effectiveHourly > 0 ? String(effectiveHourly) : "0");
           if (typeof data.invoice_due_days === "number") setDueDays(String(data.invoice_due_days));
           if (typeof data.invoice_tax_rate === "number") setTaxRate(String(data.invoice_tax_rate));
           if (data.invoice_currency) setCurrency(data.invoice_currency);
@@ -117,55 +139,8 @@ export default function InvoiceWizard() {
     return () => { alive = false; };
   }, []); // eslint-disable-line
 
-  // ---------- Prefill from QUOTE ----------
-  useEffect(() => {
-    let alive = true;
-    if (!quoteId) return;
-    (async () => {
-      try {
-        const q = await supabase
-          .from("quotes")
-          .select("id, job_id, client_name, client_email, client_phone, client_address, line_items")
-          .eq("id", quoteId)
-          .single();
-        if (q.error || !q.data || !alive) return;
+  const [sourceQuoteId, setSourceQuoteId] = useState(passedQuoteId);
 
-        if (!jobId && q.data.job_id) setJobId(String(q.data.job_id));
-
-        setFallbackClient({
-          name: q.data.client_name || "",
-          email: q.data.client_email || "",
-          phone: q.data.client_phone || "",
-          address: q.data.client_address || "",
-        });
-
-        const li = Array.isArray(q.data.line_items) ? q.data.line_items : [];
-        const timeKinds = ["hour", "hours", "time", "labour", "labor"];
-        let inferred = 0;
-        for (const row of li) {
-          const kindRaw = row && (row.kind ?? row.type);
-          const kind = String(kindRaw || "").toLowerCase();
-          if (!timeKinds.includes(kind)) continue;
-          const total = num(row?.total ?? row?.amount ?? 0);
-          let rate = num(row?.unit_price ?? row?.unitPrice ?? 0);
-          if (!rate) rate = num(hourlyRate);
-          if (total > 0 && rate > 0) {
-            inferred += total / rate;
-          } else {
-            const desc = String(row?.description || "");
-            const m = desc.match(/(\d+(?:\.\d+)?)\s*(?:hr|hrs|hours)/i);
-            if (m) inferred += num(m[1]);
-          }
-        }
-        if (inferred > 0 && num(hoursQty) <= 1) {
-          setHoursQty(String(Math.round(inferred * 100) / 100));
-        }
-      } catch {}
-    })();
-    return () => { alive = false; };
-  }, [quoteId, hourlyRate]); // eslint-disable-line
-
-  // ---------- Load job + expenses + documents ----------
   async function reloadExpenses(jid = null) {
     const useJob = jid ?? jobId;
     if (!useJob) { setExpenses([]); setSelectedExpenseIds(new Set()); return; }
@@ -177,7 +152,7 @@ export default function InvoiceWizard() {
     if (!ex.error) {
       const list = ex.data || [];
       setExpenses(list);
-      setSelectedExpenseIds(new Set(list.map(e => e.id))); // select all by default
+      setSelectedExpenseIds(new Set(list.map(e => e.id)));
     }
   }
   async function reloadDocuments(jid = null) {
@@ -191,9 +166,11 @@ export default function InvoiceWizard() {
     if (!docs.error) {
       const list = docs.data || [];
       setDocuments(list);
-      setSelectedDocIds(new Set(list.map(d => d.id))); // select all by default
+      setSelectedDocIds(new Set(list.map(d => d.id)));
     }
   }
+
+  // Load job + also load the client row so email/phone/address are present
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -206,11 +183,34 @@ export default function InvoiceWizard() {
             .from("jobs")
             .select(`
               id, client_id, title, client_name, client_email, client_phone, client_address, site_address,
-              start_date, end_date, duration_days, total, status
+              start_date, end_date, duration_days, total, status, source_quote_id
             `)
             .eq("id", jobId)
             .single();
-          if (!j.error && alive) setJob(j.data || null);
+
+          if (!j.error && alive) {
+            setJob(j.data || null);
+            if (!passedQuoteId && j.data?.source_quote_id) {
+              setSourceQuoteId(String(j.data.source_quote_id));
+            }
+
+            // NEW: fetch client row to ensure email/phone/address are available
+            if (j.data?.client_id) {
+              const cr = await supabase
+                .from("clients")
+                .select("id, name, email, phone, address")
+                .eq("id", j.data.client_id)
+                .maybeSingle();
+              if (!cr.error && cr.data) {
+                setFallbackClient({
+                  name: cr.data.name || "",
+                  email: cr.data.email || "",
+                  phone: cr.data.phone || "",
+                  address: cr.data.address || ""
+                });
+              }
+            }
+          }
         }
         await Promise.all([reloadExpenses(jobId), reloadDocuments(jobId)]);
       } finally {
@@ -220,7 +220,115 @@ export default function InvoiceWizard() {
     return () => { alive = false; };
   }, [jobId]); // eslint-disable-line
 
-  // ---------- Expense editor ----------
+  // Pull details from quote (hours inference + client fallback)
+  useEffect(() => {
+    let alive = true;
+    const effectiveQuoteId = passedQuoteId || sourceQuoteId;
+    if (!effectiveQuoteId) return;
+
+    (async () => {
+      try {
+        const q = await supabase
+          .from("quotes")
+          .select("id, job_id, client_name, client_email, client_phone, client_address, line_items")
+          .eq("id", effectiveQuoteId)
+          .single();
+        if (q.error || !q.data || !alive) return;
+
+        if (!jobId && q.data.job_id) setJobId(String(q.data.job_id));
+
+        // Use quote details as fallback
+        setFallbackClient(prev => ({
+          name: q.data.client_name || prev.name || "",
+          email: q.data.client_email || prev.email || "",
+          phone: q.data.client_phone || prev.phone || "",
+          address: q.data.client_address || prev.address || "",
+        }));
+
+        const li = Array.isArray(q.data.line_items) ? q.data.line_items : [];
+        let inferred = 0;
+        for (const row of li) {
+          if (!isLabourItem(row)) continue;
+          const qty = Number(row?.qty);
+          if (Number.isFinite(qty) && qty > 0) {
+            inferred += qty;
+            continue;
+          }
+          const desc = String(row?.description || "");
+          const m = desc.match(/(\d+(?:\.\d+)?)\s*(?:hr|hrs|hours|h)\b/i);
+          if (m) inferred += Number(m[1]) || 0;
+        }
+        if (inferred > 0 && (hoursQty === "" || Number(hoursQty) <= 1)) {
+          const rounded = Math.round(inferred * 100) / 100;
+          setHoursQty(String(rounded));
+        }
+      } catch {}
+    })();
+
+    return () => { alive = false; };
+  }, [passedQuoteId, sourceQuoteId]); // eslint-disable-line
+
+  // Prefill deposit from latest DEPOSIT invoice (legacy fallback)
+  useEffect(() => {
+    let alive = true;
+    if (!jobId) return;
+    const currentDep = Number(deposit || "0");
+    if (currentDep > 0) return;
+
+    (async () => {
+      try {
+        const inv = await supabase
+          .from("invoices")
+          .select("id, total, type, status, job_id, created_at")
+          .eq("job_id", jobId)
+          .eq("type", "deposit")
+          .in("status", ["issued","sent","partially_paid","paid"])
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!inv.error && inv.data && alive) {
+          const depTotal = Number(inv.data.total);
+          if (Number.isFinite(depTotal) && depTotal > 0) {
+            setDeposit(String(depTotal));
+          }
+        }
+      } catch {}
+    })();
+
+    return () => { alive = false; };
+  }, [jobId]); // eslint-disable-line
+
+  // NEW: Prefill deposit from actually PAID payments (non-voided) on this job
+  useEffect(() => {
+    let alive = true;
+    if (!jobId) return;
+
+    (async () => {
+      try {
+        const res = await supabase
+          .from("payments")
+          .select("amount, paid_at, voided_at")
+          .eq("job_id", jobId);
+
+        if (res.error || !alive) return;
+
+        const paidSum = (res.data || [])
+          .filter(p => p && p.paid_at && !p.voided_at)
+          .reduce((s, p) => s + Number(p.amount || 0), 0);
+
+        setSuggestedPaid(paidSum);
+
+        const cur = Number(deposit || "0");
+        if (!Number.isFinite(cur) || cur <= 0) {
+          setDeposit(String(paidSum));
+        }
+      } catch {}
+    })();
+
+    return () => { alive = false; };
+  }, [jobId]); // eslint-disable-line
+
   const [expModalOpen, setExpModalOpen] = useState(false);
   const [expEditingId, setExpEditingId] = useState(null);
   const emptyDraft = { name: "", qty: "", unit: "", unit_cost: "", total: "", notes: "", date: todayISO() };
@@ -261,7 +369,7 @@ export default function InvoiceWizard() {
         job_id: jobId, user_id, kind: "expense",
         name: expDraft.name || "Item", qty, unit: (expDraft.unit || null),
         unit_cost, total, notes: expDraft.notes || null, date: expDraft.date || todayISO(),
-        fingerprint: `ui-${Date.now()}-${Math.random().toString(36).slice(2,8)}`
+        fingerprint: "ui-" + Date.now() + "-" + Math.random().toString(36).slice(2,8)
       };
       if (expEditingId) {
         const { error } = await supabase.from("expenses").update(payload).eq("id", expEditingId);
@@ -278,7 +386,6 @@ export default function InvoiceWizard() {
     } finally { setSavingExpense(false); }
   }
 
-  // ---------- Document editor ----------
   const [docModalOpen, setDocModalOpen] = useState(false);
   const [docEditingId, setDocEditingId] = useState(null);
   const emptyDoc = { name: "", kind: "other", url: "", mime: "", size: "" };
@@ -318,7 +425,6 @@ export default function InvoiceWizard() {
     } finally { setSavingDoc(false); }
   }
 
-  // include toggles
   function toggleExpense(id) {
     setSelectedExpenseIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
     Haptics.selectionAsync();
@@ -345,7 +451,6 @@ export default function InvoiceWizard() {
     return { labour, expenses: exp, subtotal, tax, total, deposit: isNaN(dep) ? 0 : dep, balance };
   }, [hoursQty, hourlyRate, taxRate, selectedExpenses, deposit]);
 
-  // nav
   function next() { setStep(s => { const n = Math.min(s + 1, TOTAL_STEPS); if (n !== s) Haptics.selectionAsync(); return n; }); }
   function back() { setStep(s => { const n = Math.max(s - 1, 1); if (n !== s) Haptics.selectionAsync(); return n; }); }
 
@@ -357,9 +462,17 @@ export default function InvoiceWizard() {
 
       setSubmitting(true);
 
+      // Build client snapshot ALWAYS so server can capture email/phone/address
+      const roClient = job ? {
+        name: job.client_name || fallbackClient.name || "",
+        email: job.client_email || fallbackClient.email || "",
+        phone: job.client_phone || fallbackClient.phone || "",
+        address: job.client_address || fallbackClient.address || ""
+      } : fallbackClient;
+
       const payload = {
         job_id: jobId || null,
-        quote_id: quoteId || null,
+        quote_id: passedQuoteId || sourceQuoteId || null,
         client_id: job?.client_id || null,
         hours_qty: Number(hoursQty || "0"),
         hourly_rate: Number(hourlyRate || "0"),
@@ -370,24 +483,41 @@ export default function InvoiceWizard() {
         billable_expense_ids: selectedExpenses.map(e => e.id),
         attachment_paths: selectedDocuments.map(d => d.url).filter(Boolean),
         currency: currency || "GBP",
-        client_snapshot: !job ? {
-          name: fallbackClient.name || null, email: fallbackClient.email || null,
-          phone: fallbackClient.phone || null, address: fallbackClient.address || null
-        } : null
+        client_snapshot: {
+          name: roClient.name || null,
+          email: roClient.email || null,
+          phone: roClient.phone || null,
+          address: roClient.address || null
+        }
       };
 
       const { data, error } = await supabase.functions.invoke("create_invoice", { body: payload });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "Unknown error");
-      const createdInvoiceId = String(data.invoice_id || "");
 
-      try {
-        await supabase.functions.invoke("merge_invoice_attachments", {
-          body: { invoice_id: createdInvoiceId, attachment_urls: selectedDocuments.map(d => d.url).filter(Boolean) }
-        });
-      } catch (_) {}
+      const createdInvoiceId = String(data.invoice_id || "");
+      let readyUrl = data.pdf_signed_url || "";
+
+      // If the edge function only returned path, sign it here once:
+      if (!readyUrl && data.pdf_path) {
+        try {
+          const { data: sig } = await supabase
+            .storage.from(data.bucket || "secured")
+            .createSignedUrl(data.pdf_path, 600);
+          readyUrl = sig?.signedUrl || "";
+        } catch {}
+      }
+
+      // Poll the URL briefly so Preview opens instantly
+      let ok = false;
+      for (let i = 0; i < 12; i++) { // ~3.6s max
+        if (readyUrl && await probeUrl(readyUrl)) { ok = true; break; }
+        await sleep(300);
+      }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Navigate after it's reachable (preview can re-sign if it prefers)
       router.push({ pathname: "/invoices/preview", params: { invoice_id: createdInvoiceId } });
       setVisible(false);
     } catch (e) {
@@ -397,11 +527,15 @@ export default function InvoiceWizard() {
   }
 
   const loading = loadingDefaults || loadingExpenses || loadingDocs;
+
+  // Read-only client data for display
   const roClient = job ? {
-    name: job.client_name || "", email: job.client_email || "", phone: job.client_phone || "", address: job.client_address || ""
+    name: job.client_name || fallbackClient.name || "",
+    email: job.client_email || fallbackClient.email || "",
+    phone: job.client_phone || fallbackClient.phone || "",
+    address: job.client_address || fallbackClient.address || ""
   } : fallbackClient;
 
-  // Centered modal sizing
   const { width, height } = Dimensions.get("window");
   const maxW = Math.min(width - 24, 640);
   const maxH = Math.min(height - 120, 760);
@@ -413,26 +547,21 @@ export default function InvoiceWizard() {
       transparent
       onRequestClose={() => { setVisible(false); router.back(); }}
     >
-      {/* light blur over existing UI */}
       <BlurView intensity={10} tint="systemThinMaterialLight" style={{ position: "absolute", inset: 0 }} />
 
       <StatusBar backgroundColor={BG_HEX} barStyle="dark-content" />
 
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 12 }}>
-        {/* Modal bubble */}
         <View style={[modalCard, { width: maxW, maxHeight: maxH, backgroundColor: CARD, overflow: "hidden" }]}>
-          {/* Header */}
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8, paddingHorizontal: 12 }}>
             <Text style={{ fontSize: 16, fontWeight: "800", color: TEXT }}>Create Invoice</Text>
             <SmallBtn onPress={() => { Haptics.selectionAsync(); setVisible(false); router.back(); }} variant="light">Close</SmallBtn>
           </View>
 
-          {/* Step header */}
           <View style={{ paddingHorizontal: 12 }}>
             <StepHeader step={step} total={TOTAL_STEPS} title={STEP_TITLES[step-1]} />
           </View>
 
-          {/* CONTENT – scrollable */}
           <View style={{ flex: 1, paddingHorizontal: 12 }}>
             {loading ? (
               <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
@@ -446,7 +575,6 @@ export default function InvoiceWizard() {
                   contentContainerStyle={{ paddingBottom: FOOTER_SPACE }}
                   showsVerticalScrollIndicator={false}
                 >
-                  {/* Step 1 */}
                   {step === 1 && (
                     <View style={{ gap: 6 }}>
                       <Card>
@@ -459,7 +587,6 @@ export default function InvoiceWizard() {
                     </View>
                   )}
 
-                  {/* Step 2 – Expenses */}
                   {step === 2 && (
                     <View style={{ gap: 6 }}>
                       <Card>
@@ -473,10 +600,10 @@ export default function InvoiceWizard() {
                               <Checkbox checked={included} onPress={() => toggleExpense(ex.id)} />
                               <View style={{ flex: 1 }}>
                                 <Text style={{ color: TEXT, fontWeight: "600" }}>
-                                  {ex.name || "Item"}{ex.qty ? ` • ${ex.qty}${ex.unit ? ` ${ex.unit}` : ""}` : ""}
+                                  {ex.name || "Item"}{ex.qty ? " • " + ex.qty + (ex.unit ? " " + ex.unit : "") : ""}
                                 </Text>
                                 <Text style={{ color: MUTED, fontSize: 12 }}>
-                                  {currency} {money(Number(ex.total || 0))}{ex.date ? ` • ${String(ex.date)}` : ""}
+                                  {currency} {money(Number(ex.total || 0))}{ex.date ? " • " + String(ex.date) : ""}
                                 </Text>
                               </View>
                               <IconBtn onPress={() => openEditExpense(ex)} name="edit-2" />
@@ -488,7 +615,6 @@ export default function InvoiceWizard() {
                     </View>
                   )}
 
-                  {/* Step 3 – Attachments */}
                   {step === 3 && (
                     <View style={{ gap: 6 }}>
                       <Card>
@@ -505,7 +631,7 @@ export default function InvoiceWizard() {
                                   {d.name || "(unnamed)"} • {d.kind || "other"}
                                 </Text>
                                 <Text style={{ color: MUTED, fontSize: 12 }}>
-                                  {d.mime || "file"}{d.size ? ` • ${d.size} bytes` : ""}
+                                  {d.mime || "file"}{d.size ? " • " + d.size + " bytes" : ""}
                                 </Text>
                               </View>
                               <IconBtn onPress={() => openEditDoc(d)} name="edit-2" />
@@ -518,17 +644,25 @@ export default function InvoiceWizard() {
                     </View>
                   )}
 
-                  {/* Step 4 */}
                   {step === 4 && (
                     <View style={{ gap: 6 }}>
                       <Card>
                         <Label>Deposit (already paid)</Label>
                         <Input keyboardType="decimal-pad" value={deposit} onChangeText={setDeposit} placeholder="e.g. 100" />
+                        {suggestedPaid > 0 ? (
+                          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                            <Hint>Detected paid on this job: {currency} {money(suggestedPaid)}</Hint>
+                            {Number(deposit || "0") !== Number(suggestedPaid) ? (
+                              <SmallBtn onPress={() => setDeposit(String(suggestedPaid))}>Use {currency} {money(suggestedPaid)}</SmallBtn>
+                            ) : null}
+                          </View>
+                        ) : (
+                          <Hint>Enter any amount already paid (e.g. a deposit).</Hint>
+                        )}
                       </Card>
                     </View>
                   )}
 
-                  {/* Step 5 */}
                   {step === 5 && (
                     <View style={{ gap: 6 }}>
                       <Card>
@@ -542,7 +676,6 @@ export default function InvoiceWizard() {
                     </View>
                   )}
 
-                  {/* Step 6 */}
                   {step === 6 && (
                     <View style={{ gap: 6 }}>
                       <Card>
@@ -555,19 +688,18 @@ export default function InvoiceWizard() {
                     </View>
                   )}
 
-                  {/* Step 7 – Review */}
                   {step === 7 && (
                     <View style={{ gap: 6 }}>
                       <Card>
                         <Label>Review</Label>
-                        <ReviewRow l="Hours" r={`${hoursQty} @ ${currency} ${hourlyRate}/h`} />
+                        <ReviewRow l="Hours" r={String(hoursQty) + " @ " + currency + " " + String(hourlyRate) + "/h"} />
                         <ReviewRow l="Client" r={roClient.name || "(none)"} />
                         {!!roClient.email && <ReviewRow l="Email" r={roClient.email} />}
                         {!!roClient.phone && <ReviewRow l="Phone" r={roClient.phone} />}
                         <ReviewRow l="Expenses included" r={selectedExpenses.length} />
                         <ReviewRow l="Attachments to merge" r={selectedDocuments.length} />
-                        <ReviewRow l="Tax rate" r={`${taxRate}%`} />
-                        <ReviewRow l="Due in" r={dueDays + " days"} />
+                        <ReviewRow l="Tax rate" r={String(taxRate) + "%"} />
+                        <ReviewRow l="Due in" r={String(dueDays) + " days"} />
                         <ReviewRow l="Currency" r={currency} />
                         {!!note && (
                           <View style={{ marginTop: 6 }}>
@@ -580,7 +712,6 @@ export default function InvoiceWizard() {
                   )}
                 </ScrollView>
 
-                {/* STICKY FOOTER (full-width, attached) */}
                 <View style={footerWrap}>
                   <View style={{ paddingHorizontal: 12, paddingTop: 8 }}>
                     <Totals totals={totals} currency={currency} />
@@ -599,7 +730,6 @@ export default function InvoiceWizard() {
             )}
           </View>
 
-          {/* Expense Editor Modal */}
           <CenteredEditor visible={expModalOpen} onClose={()=>setExpModalOpen(false)}>
             <Text style={{ color: TEXT, fontWeight: "800", fontSize: 15, marginBottom: 6 }}>
               {expEditingId ? "Edit expense" : "Add expense"}
@@ -636,7 +766,6 @@ export default function InvoiceWizard() {
             </View>
           </CenteredEditor>
 
-          {/* Document Editor Modal */}
           <CenteredEditor visible={docModalOpen} onClose={()=>setDocModalOpen(false)}>
             <Text style={{ color: TEXT, fontWeight: "800", fontSize: 15, marginBottom: 6 }}>
               {docEditingId ? "Edit document" : "Add document"}
@@ -668,7 +797,7 @@ export default function InvoiceWizard() {
   );
 }
 
-/* ---------- Styles & small UI helpers ---------- */
+/* ---------------- Styles & bits ---------------- */
 const modalShadow = Platform.select({
   ios: { shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 18, shadowOffset: { width: 0, height: 6 } },
   android: { elevation: 18 }
@@ -691,7 +820,6 @@ const editorCard = {
   ...Platform.select({ ios: { shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 16, shadowOffset: { width: 0, height: 6 } }, android: { elevation: 14 } })
 };
 
-// Full-width footer, attached to modal bubble
 const footerWrap = {
   position: "absolute",
   left: 0,
@@ -830,8 +958,6 @@ function Totals({ totals: t = { subtotal: 0, tax: 0, total: 0, deposit: 0, balan
     </View>
   );
 }
-
-// Step header (no pills)
 function StepHeader({ step, total, title }) {
   const pct = Math.max(0, Math.min(1, step / total));
   return (
@@ -841,13 +967,11 @@ function StepHeader({ step, total, title }) {
         <Text style={{ color: MUTED, fontWeight: "600", fontSize: 12 }}>Step {step} of {total}</Text>
       </View>
       <View style={{ height: 6, backgroundColor: "#dde3ea", borderRadius: 999 }}>
-        <View style={{ width: `${pct * 100}%`, height: 6, backgroundColor: BRAND, borderRadius: 999 }} />
+        <View style={{ width: (pct * 100) + "%", height: 6, backgroundColor: BRAND, borderRadius: 999 }} />
       </View>
     </View>
   );
 }
-
-// Proper checkbox with tick
 function Checkbox({ checked, onPress }) {
   return (
     <Pressable
@@ -863,8 +987,6 @@ function Checkbox({ checked, onPress }) {
     </Pressable>
   );
 }
-
-// Reusable centered editor
 function CenteredEditor({ visible, onClose, children }) {
   const { width } = Dimensions.get("window");
   return (

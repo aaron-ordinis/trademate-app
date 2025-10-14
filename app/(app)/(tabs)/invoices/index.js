@@ -4,12 +4,12 @@ import {
   View, Text, StyleSheet, Platform, ActivityIndicator, FlatList,
   TouchableOpacity, Alert, TextInput, Pressable
 } from "react-native";
-import { Settings, Plus, Trash2, CalendarDays, MapPin, Search } from "lucide-react-native";
+import { Settings, Trash2, CalendarDays, MapPin, Search } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import { supabase } from "../../../../lib/supabase";
 import TopBar, { IconBtn } from "../../../../components/TopBar";
-import { invoiceWizardHref, settingsHref } from "../../../../lib/nav";
-import { isPremiumUser, getPremiumStatus, isUserBlocked } from "../../../../lib/premium";
+import { settingsHref } from "../../../../lib/nav";
+import { getPremiumStatus } from "../../../../lib/premium";
 import PaywallModal from "../../../../components/PaywallModal";
 
 const BG = "#f5f7fb";
@@ -19,8 +19,21 @@ const MUTED = "#6b7280";
 const BORDER = "#e6e9ee";
 const BRAND = "#2a86ff";
 
-const money = (v = 0) =>
-  "£" + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+function moneyGBP(v = 0) {
+  return "£" + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+function sym(cur) {
+  const c = String(cur || "GBP").toUpperCase();
+  if (c === "USD") return "$";
+  if (c === "EUR") return "€";
+  if (c === "GBP" || c === "UKP") return "£";
+  if (c === "AUD" || c === "CAD" || c === "NZD") return "$";
+  return "£";
+}
+function money(v = 0, cur = "GBP") {
+  const s = sym(cur);
+  return s + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
 
 export default function InvoicesHome() {
   const router = useRouter();
@@ -28,7 +41,7 @@ export default function InvoicesHome() {
   const [invoices, setInvoices] = useState([]);
   const [deletingId, setDeletingId] = useState(null);
   const [query, setQuery] = useState("");
-  const [premiumStatus, setPremiumStatus] = useState({ isPremium: false, status: 'no_profile' });
+  const [premiumStatus, setPremiumStatus] = useState({ isPremium: false, status: "no_profile" });
   const [showPaywall, setShowPaywall] = useState(false);
 
   const load = useCallback(async () => {
@@ -38,24 +51,24 @@ export default function InvoicesHome() {
       const user = auth?.user;
       if (!user) return;
 
-      // Load premium status
-      const { data: profile } = await supabase
+      // premium state
+      const prof = await supabase
         .from("profiles")
         .select("trial_ends_at, plan_tier, plan_status")
         .eq("id", user.id)
         .maybeSingle();
-      
-      if (profile) {
-        const status = getPremiumStatus(profile);
+      if (!prof.error && prof.data) {
+        const status = getPremiumStatus(prof.data);
         setPremiumStatus(status);
-        
-        // Hard block if trial expired
         if (status.isBlocked) {
           router.replace("/(app)/trial-expired");
           return;
         }
       }
 
+      // NOTE: we join both clients and jobs to derive display fields when invoice columns are empty
+      // - clients:client_id ( name, address )
+      // - jobs:job_id ( client_name, client_address, site_address )
       let q = supabase
         .from("invoices")
         .select(`
@@ -63,13 +76,17 @@ export default function InvoicesHome() {
           user_id,
           invoice_number,
           status,
+          client_id,
+          job_id,
           client_name,
           client_address,
           site_address,
           total,
           balance_due,
           currency,
-          due_date
+          due_date,
+          clients:client_id ( name, address ),
+          jobs:job_id ( client_name, client_address, site_address )
         `)
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
@@ -77,6 +94,8 @@ export default function InvoicesHome() {
 
       if (query.trim()) {
         const t = query.trim();
+        // search against invoice number and client name on invoice row
+        // (joins can't be filtered in a single OR easily without RLS complexity; this keeps it simple)
         q = q.or(`client_name.ilike.%${t}%,invoice_number.ilike.%${t}%`);
       }
 
@@ -90,15 +109,13 @@ export default function InvoicesHome() {
   useEffect(() => { load(); }, [load]);
 
   const confirmDelete = (inv) => {
-    // Premium feature check
     if (!premiumStatus.isPremium) {
       setShowPaywall(true);
       return;
     }
-
     Alert.alert(
       "Delete invoice?",
-      `This will delete ${inv.invoice_number} and all related items/payments/attachments. This cannot be undone.`,
+      "This will delete " + (inv.invoice_number || "the invoice") + " and all related items/payments/attachments. This cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Delete", style: "destructive", onPress: () => handleDelete(inv.id) },
@@ -121,9 +138,29 @@ export default function InvoicesHome() {
     }
   };
 
+  function deriveName(row) {
+    return (
+      row?.client_name ||
+      row?.clients?.name ||
+      row?.jobs?.client_name ||
+      "Client"
+    );
+  }
+  function deriveAddress(row) {
+    return (
+      row?.site_address ||
+      row?.client_address ||
+      row?.jobs?.site_address ||
+      row?.jobs?.client_address ||
+      row?.clients?.address ||
+      ""
+    );
+  }
+
   const renderCard = ({ item }) => {
-    const address = item.site_address || item.client_address || "";
+    const address = deriveAddress(item);
     const due = item.due_date ? new Date(item.due_date).toLocaleDateString() : "No due date";
+    const displayName = deriveName(item);
 
     return (
       <Pressable
@@ -131,19 +168,17 @@ export default function InvoicesHome() {
           router.push({
             pathname: "/(app)/invoices/preview",
             params: {
-              id: item.id,
-              name: item?.invoice_number ? `${item.invoice_number}.pdf` : "invoice.pdf",
+              invoice_id: item.id, // accept invoice_id in preview
+              name: item?.invoice_number ? (item.invoice_number + ".pdf") : "invoice.pdf",
             },
           })
         }
         style={({ pressed }) => [styles.card, pressed && { transform: [{ scale: 0.995 }] }]}
       >
-        {/* invoice number tiny (same as Quotes) */}
         {!!item.invoice_number && (
           <Text style={styles.invoiceTiny} numberOfLines={1}>{item.invoice_number}</Text>
         )}
 
-        {/* bin button (same as Quotes) */}
         <TouchableOpacity
           style={[styles.binBtn, deletingId === item.id && { opacity: 0.5 }]}
           onPress={() => confirmDelete(item)}
@@ -153,24 +188,21 @@ export default function InvoicesHome() {
           <Trash2 size={18} color="#b91c1c" />
         </TouchableOpacity>
 
-        {/* client */}
         <Text style={styles.client} numberOfLines={1}>
-          {item.client_name || "Client"}
+          {displayName}
         </Text>
 
-        {/* date */}
         <View style={styles.rowMini}>
           <CalendarDays size={16} color={MUTED} />
           <Text style={styles.rowMiniText}>  {due}</Text>
         </View>
 
-        {/* address row with total on the right (like Jobs/Quotes) */}
         <View style={styles.rowMini}>
           <MapPin size={16} color={MUTED} />
           <Text style={[styles.rowMiniText, styles.addressText]} numberOfLines={1}>
             {"  "}{address}
           </Text>
-          <Text style={styles.totalRight}>{money(item.total || 0)}</Text>
+          <Text style={styles.totalRight}>{money(item.total || 0, item.currency || "GBP")}</Text>
         </View>
       </Pressable>
     );
@@ -187,7 +219,6 @@ export default function InvoicesHome() {
         }
       />
 
-      {/* search (identical to Quotes) */}
       <View style={styles.searchRow}>
         <Search size={18} color={MUTED} style={{ marginRight: 8 }} />
         <TextInput
@@ -233,7 +264,6 @@ export default function InvoicesHome() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
 
-  // Search row
   searchRow: {
     marginTop: 14, marginHorizontal: 16, backgroundColor: CARD, borderRadius: 12,
     borderWidth: 1, borderColor: BORDER, paddingHorizontal: 12, paddingVertical: 10,
@@ -241,7 +271,6 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, color: TEXT },
 
-  // Card (matches Quotes/Jobs)
   card: {
     backgroundColor: CARD, marginHorizontal: 16, padding: 14, borderRadius: 16,
     borderWidth: 1, borderColor: BORDER, shadowColor: "#0b1220", shadowOpacity: 0.04,
@@ -252,7 +281,7 @@ const styles = StyleSheet.create({
 
   rowMini: { flexDirection: "row", alignItems: "center", marginTop: 6 },
   rowMiniText: { color: MUTED },
-  addressText: { flex: 1, paddingRight: 8, marginLeft: 2 }, // flex expands, keeps total to the right
+  addressText: { flex: 1, paddingRight: 8, marginLeft: 2 },
   totalRight: { fontSize: 16, fontWeight: "900", color: TEXT, marginLeft: 8 },
 
   invoiceTiny: {

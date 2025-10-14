@@ -1,20 +1,14 @@
 // polyfills/auth-session-shim.js
 import * as AuthSession from 'expo-auth-session';
 
-// Fix for AuthSession.addRedirectListener error
-// Polyfill for missing addRedirectListener function
-if (!AuthSession.addRedirectListener) {
-  AuthSession.addRedirectListener = () => {
-    // Return a subscription-like object for compatibility
-    return {
-      remove: () => {},
-    };
-  };
+// Minimal polyfill for AuthSession compatibility without scheduling issues
+// Only add polyfills if they don't exist, and do it synchronously
+if (typeof AuthSession.addRedirectListener === 'undefined') {
+  AuthSession.addRedirectListener = () => ({
+    remove: () => {},
+  });
 }
 
-// Ensure other common AuthSession methods exist
-if (!AuthSession.removeRedirectListener) {
+if (typeof AuthSession.removeRedirectListener === 'undefined') {
   AuthSession.removeRedirectListener = () => {};
 }
-
-console.log('[AuthSession Shim] Applied polyfills for missing methods');

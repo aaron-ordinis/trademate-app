@@ -1,15 +1,8 @@
 // app/(app)/invoices/preview.js
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-  Platform,
-  Dimensions,
-  Pressable,
-  Animated,
+  View, Text, StyleSheet, ActivityIndicator, Alert, Platform,
+  Dimensions, Pressable, Animated,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -32,38 +25,30 @@ const BRAND = "#2a86ff";
 
 /* ---------- config ---------- */
 const invoicesIndexHref = "/(app)/invoices";
+// Try these buckets for pdf_path -> signed URL
 const BUCKET_CANDIDATES = ["secured", "private", "invoices"];
-const RENDER_FN = "render_invoice_pdf"; // <-- change if your edge function has a different name
 
 /* ---------- helpers ---------- */
 const safeName = (name) => (name || "invoice.pdf").replace(/[^\w.-]/g, "_");
-const withBust = (url) =>
-  url ? (url.includes("?") ? `${url}&cb=${Date.now()}` : `${url}?cb=${Date.now()}`) : url;
+const withBust = (url) => url ? (url.includes("?") ? url + "&cb=" + Date.now() : url + "?cb=" + Date.now()) : url;
 
 async function markSent(invoiceId) {
-  try {
-    if (!invoiceId) return;
-    await supabase
-      .from("invoices")
-      .update({ status: "sent", sent_at: new Date().toISOString() })
-      .eq("id", invoiceId);
-  } catch {}
+  try { if (invoiceId) await supabase.from("invoices").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", invoiceId); } catch {}
+}
+async function headOk(url) {
+  try { const r = await fetch(url, { method: "HEAD" }); return r.ok || r.status === 206 || r.status === 304; }
+  catch { return false; }
 }
 
-/* ---------- WebView HTML (URL fast path) ---------- */
-const makePdfHtmlFromUrl = (signedUrl, viewerWidthCSSPx) => `<!DOCTYPE html>
-<html><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
-<style>
-:root{ --viewerW:${Math.max(320, Math.floor(viewerWidthCSSPx))}px; --pageW:var(--viewerW); }
-html,body{margin:0;padding:0;height:100%;background:#f5f7fb;overflow:hidden;}
-#strip{display:flex;height:100%;width:100%;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;justify-content:center;align-items:center;}
-.pageWrap{flex:0 0 var(--pageW);height:100%;display:flex;align-items:center;justify-content:center;scroll-snap-align:center;}
-canvas{display:block;width:calc(var(--pageW) - 8px);height:auto;margin:4px;border-radius:12px;background:#fff;box-shadow:0 6px 18px rgba(11,18,32,.07);}
+/* ---------- WebView HTMLs ---------- */
+const makePdfHtmlFromUrl = (signedUrl, viewerWidthCSSPx) => `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/><style>
+:root{--viewerW:${Math.max(320, Math.floor(viewerWidthCSSPx))}px;--pageW:var(--viewerW);}
+html,body{margin:0;padding:0;height:100%;background:#f5f7fb;overflow:hidden}
+#strip{display:flex;height:100%;width:100%;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;justify-content:center;align-items:center}
+.pageWrap{flex:0 0 var(--pageW);height:100%;display:flex;align-items:center;justify-content:center;scroll-snap-align:center}
+canvas{display:block;width:calc(var(--pageW) - 8px);height:auto;margin:4px;border-radius:12px;background:#fff;box-shadow:0 6px 18px rgba(11,18,32,.07)}
 #strip::-webkit-scrollbar{display:none}.spacer{flex:0 0 8px;height:100%}
-</style>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-</head><body><div id="strip"></div>
+</style><script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script></head><body><div id="strip"></div>
 <script>(function(){
 const url=${JSON.stringify(signedUrl)};
 const pdfjsLib=window.pdfjsLib;
@@ -83,20 +68,14 @@ pdfjsLib.getDocument({url}).promise.then(async(pdf)=>{
   window.ReactNativeWebView&&window.ReactNativeWebView.postMessage('url_error:' + ((err&&err.message)||String(err)));
 });})();</script></body></html>`;
 
-/* ---------- WebView HTML (Base64 fallback) ---------- */
-const makePdfHtmlFromBase64 = (base64, viewerWidthCSSPx) => `<!DOCTYPE html>
-<html><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
-<style>
-:root{ --viewerW:${Math.max(320, Math.floor(viewerWidthCSSPx))}px; --pageW:var(--viewerW); }
-html,body{margin:0;padding:0;height:100%;background:#f5f7fb;overflow:hidden;}
-#strip{display:flex;height:100%;width:100%;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;justify-content:center;align-items:center;}
-.pageWrap{flex:0 0 var(--pageW);height:100%;display:flex;align-items:center;justify-content:center;scroll-snap-align:center;}
-canvas{display:block;width:calc(var(--pageW) - 8px);height:auto;margin:4px;border-radius:12px;background:#fff;box-shadow:0 6px 18px rgba(11,18,32,.07);}
+const makePdfHtmlFromBase64 = (base64, viewerWidthCSSPx) => `<!DOCTYPE html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/><style>
+:root{--viewerW:${Math.max(320, Math.floor(viewerWidthCSSPx))}px;--pageW:var(--viewerW);}
+html,body{margin:0;padding:0;height:100%;background:#f5f7fb;overflow:hidden}
+#strip{display:flex;height:100%;width:100%;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;justify-content:center;align-items:center}
+.pageWrap{flex:0 0 var(--pageW);height:100%;display:flex;align-items:center;justify-content:center;scroll-snap-align:center}
+canvas{display:block;width:calc(var(--pageW) - 8px);height:auto;margin:4px;border-radius:12px;background:#fff;box-shadow:0 6px 18px rgba(11,18,32,.07)}
 #strip::-webkit-scrollbar{display:none}.spacer{flex:0 0 8px;height:100%}
-</style>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-</head><body><div id="strip"></div>
+</style><script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script></head><body><div id="strip"></div>
 <script>(function(){
 const b64="${typeof base64==="string"?base64:""}";
 const pdfjsLib=window.pdfjsLib;
@@ -146,16 +125,22 @@ export default function InvoicePreview() {
   const wvRef = useRef(null);
 
   const params = useLocalSearchParams();
-  const rawId = Array.isArray(params.id) ? params.id[0] : params.id;
-  const rawName = Array.isArray(params.name) ? params.name[0] : params.name;
+
+  // ✅ Accept invoice_id OR id, and allow optional direct url
+  const pUrl   = Array.isArray(params.url) ? params.url[0] : params.url;
+  const pInvId = Array.isArray(params.invoice_id) ? params.invoice_id[0] : params.invoice_id;
+  const pId    = Array.isArray(params.id) ? params.id[0] : params.id;
+  const rawId  = pInvId || pId;
+
+  const pName  = Array.isArray(params.name) ? params.name[0] : params.name;
 
   const invoiceId = rawId ? String(rawId) : null;
-  const pdfName = safeName(rawName ? String(rawName) : "invoice.pdf");
+  const pdfName   = safeName(pName ? String(pName) : "invoice.pdf");
 
   const [busy, setBusy] = useState(null);
   const [fatal, setFatal] = useState("");
   const [viewerWidth, setViewerWidth] = useState(Dimensions.get("window").width - 20);
-  const [signedUrl, setSignedUrl] = useState("");
+  const [signedUrl, setSignedUrl] = useState(pUrl ? String(pUrl) : "");
   const [useBase64, setUseBase64] = useState(false);
   const [b64, setB64] = useState("");
   const [loading, setLoading] = useState(true);
@@ -163,102 +148,106 @@ export default function InvoicePreview() {
   const hasAskedRef = useRef(false);
 
   useEffect(() => {
-    const sub = Dimensions.addEventListener("change", ({ window }) => {
-      setViewerWidth(window.width - 20);
-    });
+    const sub = Dimensions.addEventListener("change", ({ window }) => setViewerWidth(window.width - 20));
     return () => sub?.remove?.();
   }, []);
 
-  /** Get the best available URL (edge → storage signed → direct column) */
-  const tryResolvePdfUrl = useCallback(async () => {
-    if (!invoiceId) return "";
-
-    let lastError = null;
-
-    // 1) Edge Function that returns a signed URL
-    try {
-      const { data, error } = await supabase.functions.invoke("get_invoice_signed_url", {
-        body: { invoice_id: invoiceId },
-      });
-      if (!error && data?.ok && data?.url) {
-        try { const head = await fetch(data.url, { method: "HEAD" }); if (head.ok) return data.url; } catch {}
-      }
-      lastError = error;
-    } catch (e) { lastError = e; }
-
-    // 2) DB lookup (pdf_path → signed URL) or (pdf_url)
-    try {
-      const got = await supabase
-        .from("invoices")
-        .select("pdf_path, pdf_url")
-        .eq("id", invoiceId)
-        .maybeSingle();
-      if (got?.error) throw got.error;
-
-      const path = got?.data?.pdf_path;
-      if (path) {
-        // try common buckets
-        for (const bucket of BUCKET_CANDIDATES) {
-          const signed = await supabase.storage.from(bucket).createSignedUrl(path, 3600);
-          if (!signed.error && signed.data?.signedUrl) return signed.data.signedUrl;
+  // Realtime: pick up pdf_path/pdf_url when your backend updates the row
+  useEffect(() => {
+    if (!invoiceId) return;
+    const ch = supabase
+      .channel("inv_prev_" + invoiceId)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "invoices", filter: "id=eq." + invoiceId },
+        async (payload) => {
+          const row = payload?.new || {};
+          if (row.pdf_path) {
+            for (const bucket of BUCKET_CANDIDATES) {
+              try {
+                const s = await supabase.storage.from(bucket).createSignedUrl(row.pdf_path, 900);
+                const u = s?.data?.signedUrl;
+                if (u && (await headOk(u))) { setSignedUrl(withBust(u)); setFatal(""); setLoading(false); return; }
+              } catch {}
+            }
+          }
+          if (row.pdf_url && (await headOk(row.pdf_url))) { setSignedUrl(withBust(row.pdf_url)); setFatal(""); setLoading(false); }
         }
-      }
-      if (got?.data?.pdf_url) return got.data.pdf_url;
-    } catch (e) { lastError = e; }
-
-    console.warn("[INVOICE_PREVIEW] URL resolution failed:", lastError?.message || lastError);
-    return "";
+      )
+      .subscribe();
+    return () => { try { supabase.removeChannel(ch); } catch {} };
   }, [invoiceId]);
 
-  /** Ensure a PDF exists: resolve; if missing → render → poll DB → resolve again */
-  const ensurePdfUrl = useCallback(async () => {
-    // 0) quick resolve first
-    let url = await tryResolvePdfUrl();
-    if (url) return url;
+  /** Primary: use Edge Function to get a signed URL (works even if RLS blocks direct select) */
+  const tryEdgeSignedUrl = useCallback(async () => {
+    if (!invoiceId) return "";
+    try {
+      const { data, error } = await supabase.functions.invoke("get_invoice_signed_url", { body: { invoice_id: invoiceId } });
+      if (!error && data && data.ok && data.url && (await headOk(data.url))) return data.url;
+      return "";
+    } catch { return ""; }
+  }, [invoiceId]);
 
-    // 1) ask server to generate the PDF (only if we have an id)
-    if (invoiceId) {
-      try {
-        await supabase.functions.invoke(RENDER_FN, { body: { invoice_id: invoiceId } });
-      } catch (e) {
-        console.warn("[INVOICE_PREVIEW] render fn failed:", e?.message || e);
+  /** Fallback: read from DB then sign storage path client-side (requires read policy) */
+  const tryDirectDbUrl = useCallback(async () => {
+    if (!invoiceId) return "";
+    try {
+      const got = await supabase.from("invoices").select("pdf_path,pdf_url").eq("id", invoiceId).maybeSingle();
+      if (got?.error) return "";
+      const path = got?.data?.pdf_path;
+      const url  = got?.data?.pdf_url;
+      if (path) {
+        for (const bucket of BUCKET_CANDIDATES) {
+          try {
+            const s = await supabase.storage.from(bucket).createSignedUrl(path, 900);
+            const u = s?.data?.signedUrl;
+            if (u && (await headOk(u))) return u;
+          } catch {}
+        }
       }
-    }
+      if (url && (await headOk(url))) return url;
+      return "";
+    } catch { return ""; }
+  }, [invoiceId]);
 
-    // 2) poll DB for pdf_path/pdf_url to appear
-    const deadline = Date.now() + 45000; // up to 45s
+  /** Poll until the PDF exists (max 2 minutes) */
+  const pollUntilPdf = useCallback(async () => {
+    const deadline = Date.now() + 120000;
     let delay = 600;
     while (Date.now() < deadline) {
-      url = await tryResolvePdfUrl();
-      if (url) return url;
+      let u = await tryEdgeSignedUrl();
+      if (!u) u = await tryDirectDbUrl();
+      if (u) return u;
       await new Promise((r) => setTimeout(r, delay));
-      delay = Math.min(delay * 1.35, 3000);
+      delay = Math.min(Math.floor(delay * 1.35), 3500);
     }
-    return ""; // still nothing
-  }, [invoiceId, tryResolvePdfUrl]);
+    return "";
+  }, [tryEdgeSignedUrl, tryDirectDbUrl]);
 
-  // initial load
+  // initial resolve
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      setFatal(""); setLoading(true); setSignedUrl(""); setUseBase64(false); setB64("");
-      const url = await ensurePdfUrl();
+      setFatal(""); setLoading(true);
+      // If a url param was provided, try it first
+      if (signedUrl && (await headOk(signedUrl))) { setLoading(false); return; }
+      if (!invoiceId) { setFatal("Missing invoice id."); setLoading(false); return; }
+      let url = await tryEdgeSignedUrl();
+      if (!url) url = await tryDirectDbUrl();
+      if (!url) url = await pollUntilPdf();
       if (cancelled) return;
-      if (url) {
-        setSignedUrl(withBust(url));
-      } else {
-        setFatal("Could not locate invoice PDF.");
-      }
+      if (url) { setSignedUrl(withBust(url)); setFatal(""); }
+      else { setFatal("Still generating your PDF… If this persists, tap Retry."); }
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [ensurePdfUrl]);
+  }, [invoiceId]); // eslint-disable-line
 
-  /** Fallback to base64 only if URL mode errors */
+  /** Base64 fallback only if viewer fails */
   const fallbackToBase64 = useCallback(async () => {
     try {
       setLoading(true); setFatal("");
-      const url = signedUrl || (await ensurePdfUrl());
+      const url = signedUrl || (await pollUntilPdf());
       if (!url) throw new Error("PDF URL unavailable.");
       const target = FileSystem.cacheDirectory + `_invoice_${invoiceId || "file"}.pdf`;
       const { uri, status } = await FileSystem.downloadAsync(withBust(url), target);
@@ -270,10 +259,8 @@ export default function InvoicePreview() {
       setB64(base64); setUseBase64(true);
     } catch (e) {
       setFatal(e?.message || "Could not load PDF.");
-    } finally {
-      setLoading(false);
-    }
-  }, [invoiceId, signedUrl, ensurePdfUrl]);
+    } finally { setLoading(false); }
+  }, [invoiceId, signedUrl, pollUntilPdf]);
 
   /* actions */
   async function downloadToCache(srcUrl, name = pdfName) {
@@ -290,7 +277,7 @@ export default function InvoicePreview() {
   const onShare = async () => {
     try {
       setBusy("share");
-      const url = signedUrl || (await ensurePdfUrl());
+      const url = signedUrl || (await pollUntilPdf());
       if (!url) throw new Error("No PDF available.");
       const { uri, fname } = await downloadToCache(url, pdfName);
       if (await Sharing.isAvailableAsync()) {
@@ -306,7 +293,7 @@ export default function InvoicePreview() {
   const onSave = async () => {
     try {
       setBusy("save");
-      const url = signedUrl || (await ensurePdfUrl());
+      const url = signedUrl || (await pollUntilPdf());
       if (!url) throw new Error("No PDF available.");
       const { uri, fname } = await downloadToCache(url, pdfName);
       if (Platform.OS === "android") {
@@ -332,7 +319,7 @@ export default function InvoicePreview() {
   const onOpenExternally = async () => {
     try {
       setBusy("open");
-      const url = signedUrl || (await ensurePdfUrl());
+      const url = signedUrl || (await pollUntilPdf());
       if (!url) throw new Error("No PDF available.");
       const { uri } = await downloadToCache(url, pdfName);
       if (Platform.OS === "android") {
@@ -348,14 +335,12 @@ export default function InvoicePreview() {
     finally { setBusy(null); }
   };
 
-  /* render */
   const htmlUrl    = useMemo(() => (signedUrl && !useBase64 ? makePdfHtmlFromUrl(signedUrl, viewerWidth) : ""), [signedUrl, viewerWidth, useBase64]);
   const htmlBase64 = useMemo(() => (useBase64 && b64 ? makePdfHtmlFromBase64(b64, viewerWidth) : ""), [useBase64, b64, viewerWidth]);
-  const goBack = () => { vibrateTap(); router.replace(invoicesIndexHref); };
+  const goBack = () => { Haptics.selectionAsync().catch(()=>{}); router.replace(invoicesIndexHref); };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={goBack} style={styles.backBtn} android_ripple={{ color: "rgba(0,0,0,0.06)" }}>
           <ChevronLeft size={18} color={BRAND} />
@@ -364,7 +349,6 @@ export default function InvoicePreview() {
         <View style={{ width: 52 }} />
       </View>
 
-      {/* Viewer */}
       <View style={styles.viewerCard} onLayout={(e) => setViewerWidth(e.nativeEvent.layout.width)}>
         {(loading || (!htmlUrl && !htmlBase64)) && (
           <View style={styles.loading}>
@@ -372,7 +356,14 @@ export default function InvoicePreview() {
             <Text style={styles.loadingText}>{fatal ? fatal : useBase64 ? "Preparing your PDF…" : "Fetching/creating PDF…"}</Text>
             {!!fatal && (
               <Pressable
-                onPress={() => { vibrateTap(); setFatal(""); setUseBase64(false); setSignedUrl(""); setB64(""); setLoading(true); (async()=>{ const url = await ensurePdfUrl(); setSignedUrl(url||""); setLoading(false); if(!url) setFatal("Could not locate invoice PDF."); })(); }}
+                onPress={async () => {
+                  Haptics.selectionAsync().catch(()=>{});
+                  setFatal(""); setUseBase64(false); setSignedUrl(""); setB64(""); setLoading(true);
+                  const u = await pollUntilPdf();
+                  setSignedUrl(u ? withBust(u) : "");
+                  setLoading(false);
+                  if (!u) setFatal("Still generating your PDF… If this persists, tap Retry.");
+                }}
                 style={styles.retryBtn}
                 android_ripple={{ color: "rgba(255,255,255,0.15)" }}
               >
@@ -421,7 +412,6 @@ export default function InvoicePreview() {
         )}
       </View>
 
-      {/* Actions */}
       <View style={styles.actionBar}>
         <ActionButton label={busy === "share" ? "Sharing" : "Share"} Icon={Share2} onPress={onShare} disabled={!!busy || !!fatal} busy={busy === "share"} />
         <ActionButton label={busy === "save" ? "Saving" : "Save"} Icon={Download} onPress={onSave} disabled={!!busy || !!fatal} busy={busy === "save"} />
@@ -441,9 +431,7 @@ export default function InvoicePreview() {
 /* ---------- styles ---------- */
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: BG },
-  header: {
-    height: 48, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-  },
+  header: { height: 48, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   backBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 10 },
   backTxt: { color: BRAND, fontWeight: "800", fontSize: 16 },
 
@@ -455,7 +443,7 @@ const styles = StyleSheet.create({
 
   loading: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", padding: 14, gap: 8, backgroundColor: CARD },
   loadingText: { color: "#6b7280", textAlign: "center" },
-  retryBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: BRAND },
+  retryBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: BRAND, marginTop: 6 },
   retryText: { color: "#fff", fontWeight: "800" },
 
   actionBar: {

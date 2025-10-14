@@ -13,7 +13,7 @@ import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
-import * as NavigationBar from 'expo-navigation-bar';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Theme
 const BRAND  = '#2a86ff';
@@ -27,9 +27,9 @@ const OK     = '#16a34a';
 const DISABLED = '#9ca3af';
 
 const BUCKET = 'logos';
-
 const TOTAL_STEPS = 4;
 const STEP_TITLES = ["Logo & Basics", "Address & Trade", "Company Details", "Rates & Terms"];
+const ONBOARDING_COMPLETE_KEY = 'onboarding_profile_complete';
 
 /* ---------- helpers ---------- */
 function base64ToBytes(b64) {
@@ -76,21 +76,6 @@ export default function Onboarding() {
   // Check if onboarding is needed based on profile
   const [visible, setVisible] = useState(false);
   const [profileChecked, setProfileChecked] = useState(false);
-
-  // Status/nav bar to light
-  useEffect(() => {
-    StatusBar.setBarStyle("dark-content");
-    if (Platform.OS === "android") {
-      StatusBar.setBackgroundColor(BG_HEX, true);
-      (async () => {
-        try {
-          await NavigationBar.setBackgroundColorAsync("#FFFFFF"); // ✅ Ensure white
-          await NavigationBar.setButtonStyleAsync("dark");
-          await NavigationBar.setDividerColorAsync("transparent");
-        } catch {}
-      })();
-    }
-  }, []);
 
   // Steps
   const [step, setStep] = useState(1);
@@ -148,22 +133,24 @@ export default function Onboarding() {
     return parts.map(p => p.charAt(0).toUpperCase()).join('') || 'U';
   }, [businessName]);
 
-  // Profile check effect
+  // Simplified profile check effect
   useEffect(() => {
     const checkProfileComplete = async () => {
       try {
+        console.log('[ONBOARDING] Starting profile check...');
+        
         const { data } = await supabase.auth.getUser();
         const user = data?.user;
         if (!user) { 
-          // Don't navigate immediately - wait for component to be fully mounted
-          setTimeout(() => {
-            router.replace(loginHref);
-          }, 100);
+          console.log('[ONBOARDING] No user found, redirecting to login');
+          router.replace(loginHref);
           return; 
         }
 
+        console.log('[ONBOARDING] User found:', user.email);
         setEmail(user.email ?? '');
 
+        console.log('[ONBOARDING] Checking profile completeness...');
         const { data: profile, error } = await supabase
           .from('profiles')
           .select('business_name, hourly_rate, materials_markup_pct, phone, address_line1')
@@ -171,11 +158,13 @@ export default function Onboarding() {
           .maybeSingle();
 
         if (error) {
-          console.error('Profile check error:', error);
+          console.error('[ONBOARDING] Profile check error:', error);
           setVisible(true);
           setProfileChecked(true);
           return;
         }
+
+        console.log('[ONBOARDING] Profile data:', profile);
 
         const needsOnboarding = !profile || 
           !profile.business_name || 
@@ -188,40 +177,56 @@ export default function Onboarding() {
           !profile.address_line1 ||
           profile.address_line1.trim() === '';
 
+        console.log('[ONBOARDING] Needs onboarding:', needsOnboarding);
+
         if (needsOnboarding) {
+          console.log('[ONBOARDING] Profile incomplete, showing onboarding');
           setVisible(true);
         } else {
+          console.log('[ONBOARDING] Profile complete, navigating to quotes');
           setVisible(false);
-          // Navigate to tabs instead of direct quotes route
-          setTimeout(() => {
-            router.replace('/(app)/(tabs)/quotes');
-          }, 100);
+          router.replace('/(app)/quotes/list');
         }
       } catch (error) {
-        console.error('Profile check error:', error);
+        console.error('[ONBOARDING] Profile check error:', error);
+        // Show onboarding on error to avoid infinite loading
         setVisible(true);
       } finally {
+        console.log('[ONBOARDING] Profile check complete');
         setProfileChecked(true);
       }
     };
 
-    // Add a small delay to ensure component is mounted
-    const timer = setTimeout(checkProfileComplete, 50);
-    return () => clearTimeout(timer);
+    // Run immediately without delay
+    checkProfileComplete();
   }, [router]);
 
-  // loading state while checking profile
+  // loading state while checking profile - simplified with 3 second timeout
   if (!profileChecked) {
+    // Fallback timeout to prevent infinite loading
+    setTimeout(() => {
+      if (!profileChecked) {
+        console.log('[ONBOARDING] Timeout fallback - showing onboarding');
+        setVisible(true);
+        setProfileChecked(true);
+      }
+    }, 3000); // 3 second timeout
+
     return (
       <View style={{ flex: 1, backgroundColor: BG, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator color={BRAND} size="large" />
         <Text style={{ color: MUTED, marginTop: 16 }}>Checking your profile...</Text>
+        <Text style={{ color: MUTED, marginTop: 8, fontSize: 12 }}>If this takes too long, check your connection</Text>
       </View>
     );
   }
 
   // Don't render modal if not needed
-  if (!visible) return null;
+  if (!visible) {
+    // If profile is complete but modal not visible, we should be navigating
+    console.log('[ONBOARDING] Profile complete, modal not visible - this should redirect');
+    return null;
+  }
 
   const pickAndUploadLogo = async () => {
     try {
@@ -416,12 +421,22 @@ export default function Onboarding() {
         .eq('id', user.id);
       if (error) throw error;
 
-      Alert.alert('Profile Complete!', 'Welcome to TradeMate! You can now create quotes.');
-      setVisible(false);
-      setTimeout(() => {
-        // Navigate to tabs route to ensure tabs are visible
-        router.replace('/(app)/(tabs)/quotes');
-      }, 300);
+      console.log('[ONBOARDING] Profile saved successfully, navigating to quotes list');
+      
+      // Simple alert and immediate navigation
+      Alert.alert(
+        'Profile Complete!', 
+        'Welcome to TradeMate!',
+        [
+          {
+            text: 'Continue',
+            onPress: () => {
+              router.replace('/(app)/quotes/list');
+            }
+          }
+        ]
+      );
+      
     } catch (e) {
       showPolishedAlert('Save Failed', e?.message ?? 'Could not save profile. Please try again.');
     } finally {

@@ -10,7 +10,6 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { supabase } from "../../../lib/supabase";
 import * as Haptics from "expo-haptics";
 import { BlurView } from "expo-blur";
-import * as NavigationBar from "expo-navigation-bar";
 import { Feather } from "@expo/vector-icons";
 import { loginHref, quotesListHref } from "../../../lib/nav";
 import { getPremiumStatus } from "../../../lib/premium";
@@ -22,7 +21,6 @@ const sysBG =
     : PlatformColor?.("@android:color/system_neutral2_100") ?? "#EEF2F6";
 
 const BG = sysBG;
-const BG_HEX = "#EEF2F6";
 const CARD = "#ffffff";
 const TEXT = "#0b1220";
 const MUTED = "#6b7280";
@@ -122,20 +120,6 @@ export default function CreateQuote() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const paramsQuoteId = params?.quoteId ? String(params.quoteId) : null;
-
-  useEffect(() => {
-    StatusBar.setBarStyle("dark-content");
-    if (Platform.OS === "android") {
-      StatusBar.setBackgroundColor("#FFFFFF", true);
-      (async () => {
-        try {
-          await NavigationBar.setBackgroundColorAsync("#FFFFFF");
-          await NavigationBar.setButtonStyleAsync("dark");
-          await NavigationBar.setDividerColorAsync("transparent");
-        } catch {}
-      })();
-    }
-  }, []);
 
   // Steps
   const [step, setStep] = useState(1);
@@ -389,10 +373,10 @@ export default function CreateQuote() {
         return;
       }
 
-      // 🚫 Do NOT allocate a quote number at draft time — let the function do it on generation
+      // no quote number at draft time
       const draftRow = {
         user_id: user.id,
-        quote_number: null, // allow multiple drafts without numbers
+        quote_number: null,
         status: "draft",
         client_name: clientName || "Client",
         client_email: clientEmail || null,
@@ -417,159 +401,235 @@ export default function CreateQuote() {
     } finally { setSaving(false); }
   };
 
-  /* ---------- helper for logs ---------- */
-  const safe = (o, k, d = null, logKey) => {
-    const v = o && o[k] !== undefined ? o[k] : d;
-    if (logKey) console.log("[create]", logKey, "=", v);
-    return v;
-  };
-
   /* --------------- AI -> PDF flow --------------- */
   const bump = (msg, pct) => { setLoaderMsg(msg); setLoaderPct(pct); };
 
- const generateAIAndPDF = async () => {
-  let triedFreshQuoteNumber = false;
-  try {
-    if (isFinalized) { showAlert("Locked", "Already generated."); return; }
-    if (isBlank(jobSummary) || isBlank(jobDetails)) { showAlert("Add job info", "Summary + details required."); return; }
-    Keyboard.dismiss();
-    setGenLoading(true);
+  const generateAIAndPDF = async () => {
+    let triedFreshQuoteNumber = false;
+    try {
+      if (isFinalized) { showAlert("Locked", "Already generated."); return; }
+      if (isBlank(jobSummary) || isBlank(jobDetails)) { showAlert("Add job info", "Summary + details required."); return; }
+      Keyboard.dismiss();
+      setGenLoading(true);
 
-    bump("Preparing data…", 0.12);
-    await sleep(300);
+      bump("Preparing data…", 0.12);
+      await sleep(300);
 
-    const prof = await getProfileOrThrow();
-    const { data: userData } = await supabase.auth.getUser();
-    const user = userData?.user;
-    if (!user) throw new Error("Not signed in");
+      const prof = await getProfileOrThrow();
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData?.user;
+      if (!user) throw new Error("Not signed in");
 
-    bump("Calculating travel costs…", 0.22);
-    await sleep(200);
-    if (!distanceMiles) await autoCalcDistance();
+      bump("Calculating travel costs…", 0.22);
+      await sleep(200);
+      if (!distanceMiles) await autoCalcDistance();
 
-    // Prepare quote payload
-    let quotePayload = {
-      is_estimate: true,
-      client_name: clientName || "Client",
-      client_address: clientAddress || null,
-      site_address: sameAsBilling ? clientAddress : siteAddress || null,
-      job_summary: jobSummary || "New job",
-      totals: { vat_rate: (prof?.vat_registered ? num(prof?.invoice_tax_rate, 20) / 100 : 0) },
-      meta: {
-        travel: {
-          distance_miles: num(distanceMiles, 0),
-          round_trip_miles: num(distanceMiles, 0) * 2,
-          travel_charge: num(travelCharge, 0),
+      // Prepare quote payload
+      let quotePayload = {
+        is_estimate: true,
+        client_name: clientName || "Client",
+        client_address: clientAddress || null,
+        site_address: sameAsBilling ? clientAddress : siteAddress || null,
+        job_summary: jobSummary || "New job",
+        totals: { vat_rate: (prof?.vat_registered ? num(prof?.invoice_tax_rate, 20) / 100 : 0) },
+        meta: {
+          travel: {
+            distance_miles: num(distanceMiles, 0),
+            round_trip_miles: num(distanceMiles, 0) * 2,
+            travel_charge: num(travelCharge, 0),
+          },
         },
-      },
-    };
+      };
 
-    // Only add quote_number if we have an existing quote that already has one
-    if (existing?.quote_number) {
-      quotePayload.quote_number = existing.quote_number;
-    }
-
-    let pdfPayload = {
-      user_id: user.id,
-      web_search: true,
-      branding: {
-        tier: isPremium ? "premium" : "free",
-        business_name: prof?.business_name || "Trade Business",
-        custom_logo_url: prof?.custom_logo_url || null,
-        powered_by_footer: !isPremium,
-        address_line1: prof?.address_line1 || "",
-        city: prof?.city || "",
-        postcode: prof?.postcode || "",
-      },
-      description: (jobSummary + ". " + jobDetails).trim(),
-      profile: {
-        business_name: prof?.business_name || "",
-        trade_type: prof?.trade_type || "",
-        hourly_rate: num(prof?.hourly_rate, 0),
-        materials_markup_pct: num(prof?.materials_markup_pct, 0),
-        vat_registered: !!prof?.vat_registered,
-        invoice_tax_rate: num(prof?.invoice_tax_rate, 20),
-        payment_terms: prof?.payment_terms || "",
-        warranty_text: prof?.warranty_text || "",
-        travel_rate_per_mile: num(prof?.travel_rate_per_mile, 0),
-        hours_per_day: num(prof?.hours_per_day, 8),
-        city: prof?.city || "",
-        postcode: prof?.postcode || "",
-        currency: "GBP",
-      },
-      quote: quotePayload,
-    };
-
-    let resp, pdfData, pdfErr;
-    let duplicateKeyError = false;
-
-    do {
-      bump("AI researching and building your quote…", 0.4);
-
-      resp = await supabase.functions.invoke("pdf-builder", { body: pdfPayload });
-      pdfData = resp?.data || {};
-      pdfErr  = resp?.error || null;
-
-      duplicateKeyError = pdfErr && String(pdfErr.message || pdfErr).includes("duplicate key value violates unique constraint");
-
-      // If duplicate key error, request a fresh quote number and retry once
-      if (duplicateKeyError && !triedFreshQuoteNumber) {
-        const { data: nextNo, error: nErr } = await supabase.rpc("next_quote_number", { p_user_id: user.id });
-        if (nErr) throw nErr;
-        pdfPayload.quote.quote_number = nextNo;
-        triedFreshQuoteNumber = true;
-        continue;
+      // Only add quote_number if an existing row already has it
+      if (existing?.quote_number) {
+        quotePayload.quote_number = existing.quote_number;
       }
-      break;
-    } while (duplicateKeyError && !triedFreshQuoteNumber);
 
-    let signedUrl   = pdfData?.signedUrl || pdfData?.signed_url || null;
-    let storagePath = pdfData?.path || pdfData?.key || pdfData?.objectPath || null;
-    let bucket      = "quotes";
+      let pdfPayload = {
+        user_id: user.id,
+        web_search: true, // research always on
+        branding: {
+          tier: isPremium ? "premium" : "free",
+          business_name: prof?.business_name || "Trade Business",
+          custom_logo_url: prof?.custom_logo_url || null,
+          powered_by_footer: !isPremium,
+          address_line1: prof?.address_line1 || "",
+          city: prof?.city || "",
+          postcode: prof?.postcode || "",
+        },
+        description: (jobSummary + ". " + jobDetails).trim(),
+        profile: {
+          business_name: prof?.business_name || "",
+          trade_type: prof?.trade_type || "",
+          hourly_rate: num(prof?.hourly_rate, 0),
+          materials_markup_pct: num(prof?.materials_markup_pct, 0),
+          vat_registered: !!prof?.vat_registered,
+          invoice_tax_rate: num(prof?.invoice_tax_rate, 20),
+          payment_terms: prof?.payment_terms || "",
+          warranty_text: prof?.warranty_text || "",
+          travel_rate_per_mile: num(prof?.travel_rate_per_mile, 0),
+          hours_per_day: num(prof?.hours_per_day, 8),
+          city: prof?.city || "",
+          postcode: prof?.postcode || "",
+          currency: "GBP",
+        },
+        quote: quotePayload,
+      };
 
-    const parsed = storagePath
-      ? { bucket, path: storagePath }
-      : (pdfData?.publicUrl || signedUrl ? parseStorageUrl(pdfData.publicUrl || signedUrl) : null);
-    if (parsed) { bucket = parsed.bucket || "quotes"; storagePath = parsed.path; }
+      let resp, pdfData, pdfErr;
+      let duplicateKeyError = false;
 
-    let publicUrl = null;
-    if (storagePath) {
-      const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
-      publicUrl = pub?.publicUrl || null;
+      do {
+        bump("AI researching and building your quote…", 0.4);
+
+        resp = await supabase.functions.invoke("pdf-builder", { body: pdfPayload });
+        pdfData = resp?.data || {};
+        pdfErr  = resp?.error || null;
+
+        duplicateKeyError = pdfErr && String(pdfErr.message || pdfErr).includes("duplicate key value violates unique constraint");
+
+        if (duplicateKeyError && !triedFreshQuoteNumber) {
+          const { data: nextNo, error: nErr } = await supabase.rpc("next_quote_number", { p_user_id: user.id });
+          if (nErr) throw nErr;
+          pdfPayload.quote.quote_number = nextNo;
+          triedFreshQuoteNumber = true;
+          continue;
+        }
+        break;
+      } while (duplicateKeyError && !triedFreshQuoteNumber);
+
+      // classify research failures only
+      const isResearchFailure = (err) => {
+        const s = String(err || "").toLowerCase();
+        return (
+          s.includes("insufficient_quota") ||
+          s.includes("web_search") ||
+          s.includes("research") ||
+          s.includes("responses api") ||
+          s.includes("o4-mini") ||
+          s.includes("429") ||
+          (s.includes("could not fetch") && s.includes("search"))
+        );
+      };
+
+      let signedUrl   = pdfData?.signedUrl || pdfData?.signed_url || null;
+      let storagePath = pdfData?.path || pdfData?.key || pdfData?.objectPath || null;
+      let bucket      = "quotes";
+
+      const parsed = storagePath
+        ? { bucket, path: storagePath }
+        : (pdfData?.publicUrl || signedUrl ? parseStorageUrl(pdfData.publicUrl || signedUrl) : null);
+      if (parsed) { bucket = parsed.bucket || "quotes"; storagePath = parsed.path; }
+
+      // Resolve the quote id now so Preview can receive it
+      let effectiveQuoteId = pdfData?.quote_id || pdfData?.quoteId || existing?.id || null;
+
+      // We’ll only proceed to preview *after* we can reach the file.
+      let previewUrl = null;
+
+      // 1) public URL if reachable
+      if (storagePath) {
+        const { data: pub } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+        const pubUrl = pub?.publicUrl || null;
+        if (pubUrl && await probeUrl(pubUrl)) previewUrl = pubUrl;
+      }
+
+      // 2) signed URL poll
+      if (!previewUrl && storagePath) {
+        bump("Finalizing…", 0.86);
+        signedUrl = await pollSignedUrlReady(storagePath, { tries: 20, baseDelay: 250, step: 250, maxDelay: 900 });
+        if (signedUrl) previewUrl = signedUrl;
+      }
+
+      // 3) lookup quotes table by id / number
+      if (!previewUrl) {
+        bump("Finalizing…", 0.9);
+
+        if (!effectiveQuoteId && pdfData?.quote_number) {
+          const { data: qRow } = await supabase
+            .from("quotes")
+            .select("id, pdf_url")
+            .eq("user_id", user.id)
+            .eq("quote_number", pdfData.quote_number)
+            .maybeSingle();
+          if (qRow?.id) effectiveQuoteId = qRow.id;
+          if (qRow?.pdf_url && await probeUrl(qRow.pdf_url)) previewUrl = qRow.pdf_url;
+        }
+
+        if (!previewUrl && effectiveQuoteId) {
+          const { data: q1 } = await supabase
+            .from("quotes")
+            .select("pdf_url")
+            .eq("id", effectiveQuoteId)
+            .maybeSingle();
+          if (q1?.pdf_url && await probeUrl(q1.pdf_url)) previewUrl = q1.pdf_url;
+        }
+      }
+
+      // 4) last-chance short poll
+      if (!previewUrl && storagePath) {
+        bump("Wrapping up…", 0.95);
+        const extraSigned = await pollSignedUrlReady(storagePath, { tries: 16, baseDelay: 300, step: 300, maxDelay: 1000 });
+        if (extraSigned) previewUrl = extraSigned;
+      }
+
+      if (!previewUrl) {
+        if (pdfErr && isResearchFailure(pdfErr.message || pdfErr)) {
+          showAlert(
+            "Please be more specific",
+            "I need a bit more detail to research this job.\n\nTip: mention the room, quantities/sizes, materials or finishes, access limits, and anything unusual."
+          );
+          return;
+        }
+        showAlert(
+          "Almost ready",
+          "The quote has been generated, but the file link isn’t ready yet. Please try again in a few seconds."
+        );
+        return;
+      }
+
+      // ensure we have an id for Preview (fallback by matching storage path)
+      if (!effectiveQuoteId && storagePath) {
+        const { data: matchRow } = await supabase
+          .from("quotes")
+          .select("id")
+          .ilike("pdf_url", `%${storagePath}`)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (matchRow?.id) effectiveQuoteId = matchRow.id;
+      }
+
+      // ✅ navigate only when URL is reachable
+      const fileName =
+        (pdfData?.quote_number
+          ? ("QUO-" + (new Date().getFullYear()) + "-" + String(pdfData.quote_number).padStart(4, "0"))
+          : "quote") + ".pdf";
+
+      router.replace({
+        pathname: "/(app)/quotes/preview",
+        params: {
+          url: encodeURIComponent(previewUrl),
+          name: fileName,
+          id: effectiveQuoteId ? String(effectiveQuoteId) : "",
+        },
+      });
+    } catch (e) {
+      console.log("[create] error:", e?.message || e);
+      if (String(e?.message || e).includes("duplicate key value violates unique constraint")) {
+        showAlert("Quote Error", "This quote number is already in use. Please try again.");
+      } else {
+        showAlert("Error", e.message || "Generation failed. Please check function logs.");
+      }
+    } finally {
+      setGenLoading(false);
+      setTimeout(() => {
+        setLoaderMsg("Preparing data…");
+        setLoaderPct(0.1);
+      }, 400);
     }
-
-    bump("Finalizing…", 0.85);
-    if (!signedUrl && storagePath) {
-      signedUrl = await pollSignedUrlReady(storagePath, { tries: 120, baseDelay: 500, step: 500, maxDelay: 2000 });
-    }
-    const previewUrl = publicUrl || signedUrl || null;
-
-    if (!previewUrl) {
-      const msg = (pdfErr && (pdfErr.message || pdfErr)) || "Generation failed. Please check function logs.";
-      throw new Error(msg);
-    }
-
-    const fileName =
-      (pdfData?.quote_number
-        ? ("QUO-" + (new Date().getFullYear()) + "-" + String(pdfData.quote_number).padStart(4, "0"))
-        : "quote") + ".pdf";
-
-    router.replace({
-      pathname: "/(app)/quotes/preview",
-      params: { url: encodeURIComponent(previewUrl), name: fileName },
-    });
-  } catch (e) {
-    console.log("[create] error:", e?.message || e);
-    if (String(e?.message || e).includes("duplicate key value violates unique constraint")) {
-      showAlert("Quote Error", "This quote number is already in use. Please try again.");
-    } else {
-      showAlert("Error", e.message || "Generation failed. Please check function logs.");
-    }
-  } finally {
-    setGenLoading(false);
-    setTimeout(() => { setLoaderMsg("Preparing data…"); setLoaderPct(0.1); }, 400);
-  }
-}
+  };
 
   // ---------- Derived: disable actions ----------
   const actionsDisabled = saving || genLoading || profileLoading;
@@ -582,15 +642,35 @@ export default function CreateQuote() {
       <StatusBar backgroundColor="#FFFFFF" barStyle="dark-content" />
       
       {/* Header */}
-      <View style={{
-        flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-        paddingHorizontal: 16, paddingVertical: 12, backgroundColor: "#FFFFFF",
-        borderBottomWidth: 1, borderBottomColor: BORDER
-      }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          paddingHorizontal: 16,
+          paddingVertical: 12,
+          backgroundColor: "#FFFFFF",
+          borderBottomWidth: 1,
+          borderBottomColor: BORDER,
+        }}
+      >
         <Text style={{ color: TEXT, fontSize: 20, fontWeight: "900" }}>
-          {existing ? (isFinalized ? (existing.reference || quoteRef(existing.quote_number, existing.created_at)) : "Create Quote") : "Create Quote"}
+          {existing
+            ? (isFinalized
+                ? (existing.reference ||
+                   quoteRef(existing.quote_number, existing.created_at))
+                : "Create Quote")
+            : "Create Quote"}
         </Text>
-        <SmallBtn variant="light" onPress={() => { Haptics.selectionAsync(); router.back(); }}>Close</SmallBtn>
+        <SmallBtn
+          variant="light"
+          onPress={() => {
+            Haptics.selectionAsync();
+            router.back();
+          }}
+        >
+          Close
+        </SmallBtn>
       </View>
 
       {/* Step header */}
@@ -598,7 +678,7 @@ export default function CreateQuote() {
         <StepHeader step={step} total={TOTAL_STEPS} title={STEP_TITLES[step - 1]} />
       </View>
 
-      {/* Content (compact to fit on screen) */}
+      {/* Content */}
       <ScrollView
         style={{ flex: 1, backgroundColor: "#FFFFFF" }}
         contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 110 }}
@@ -608,16 +688,22 @@ export default function CreateQuote() {
       >
         {!HAS_PLACES_KEY && (
           <Card tight>
-            <Text style={{ color: AMBER, fontWeight: "800" }}>Address search requires a Google Maps key.</Text>
+            <Text style={{ color: AMBER, fontWeight: "800" }}>
+              Address search requires a Google Maps key.
+            </Text>
             <Hint>Set EXPO_PUBLIC_GOOGLE_MAPS_KEY in your app config.</Hint>
           </Card>
         )}
+
         {isFinalized && (
           <Card tight>
-            <Text style={{ color: BRAND, fontWeight: "800" }}>This quote has been generated.</Text>
+            <Text style={{ color: BRAND, fontWeight: "800" }}>
+              This quote has been generated.
+            </Text>
             <Hint>You can't generate it again.</Hint>
           </Card>
         )}
+
         {profileLoading && (
           <Card tight>
             <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
@@ -626,6 +712,7 @@ export default function CreateQuote() {
             </View>
           </Card>
         )}
+
         {!!profileError && !profileLoading && (
           <Pressable onPress={loadProfile}>
             <Card tight>
@@ -640,24 +727,62 @@ export default function CreateQuote() {
           <View style={{ gap: 8 }}>
             <Card tight>
               <Label>Client</Label>
-              <Input placeholder="Client name" value={clientName} onChangeText={setClientName} />
+              <Input
+                placeholder="Client name"
+                value={clientName}
+                onChangeText={setClientName}
+              />
               <View style={{ flexDirection: "row", gap: 8 }}>
-                <Input style={{ flex: 1 }} placeholder="Email (optional)" keyboardType="email-address" autoCapitalize="none" value={clientEmail} onChangeText={setClientEmail} />
-                <Input style={{ flex: 1 }} placeholder="Phone (optional)" keyboardType="phone-pad" value={clientPhone} onChangeText={setClientPhone} />
+                <Input
+                  style={{ flex: 1 }}
+                  placeholder="Email (optional)"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  value={clientEmail}
+                  onChangeText={setClientEmail}
+                />
+                <Input
+                  style={{ flex: 1 }}
+                  placeholder="Phone (optional)"
+                  keyboardType="phone-pad"
+                  value={clientPhone}
+                  onChangeText={setClientPhone}
+                />
               </View>
               <Pressable onPress={() => setBillingOpen(true)} style={{ marginTop: 2 }}>
-                <Input value={clientAddress} editable={false} placeholder="Billing address (tap to search or edit)" style={{ color: clientAddress ? TEXT : MUTED }} />
+                <Input
+                  value={clientAddress}
+                  editable={false}
+                  placeholder="Billing address (tap to search or edit)"
+                  style={{ color: clientAddress ? TEXT : MUTED }}
+                />
               </Pressable>
             </Card>
 
             <Card tight>
               <Label>Location</Label>
               <Pressable
-                onPress={() => { Haptics.selectionAsync(); setSameAsBilling((v) => !v); }}
-                style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setSameAsBilling((v) => !v);
+                }}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                  marginBottom: 8,
+                }}
               >
-                <Checkbox checked={sameAsBilling} onPress={() => { Haptics.selectionAsync(); setSameAsBilling((v) => !v); }} />
-                <Text style={{ color: TEXT }}>Site address is the same as billing</Text>
+                <Checkbox
+                  checked={sameAsBilling}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    setSameAsBilling((v) => !v);
+                  }}
+                />
+                <Text style={{ color: TEXT }}>
+                  Site address is the same as billing
+                </Text>
               </Pressable>
 
               <Pressable onPress={() => !sameAsBilling && setSiteOpen(true)}>
@@ -670,12 +795,38 @@ export default function CreateQuote() {
               </Pressable>
 
               <View style={{ flexDirection: "row", gap: 8 }}>
-                <Input style={{ flex: 1 }} placeholder="Distance (miles)" keyboardType="decimal-pad" value={distanceMiles} onChangeText={setDistanceMiles} />
-                <View style={{ flex: 1, borderRadius: 10, borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center", paddingHorizontal: 8 }}>
+                <Input
+                  style={{ flex: 1 }}
+                  placeholder="Distance (miles)"
+                  keyboardType="decimal-pad"
+                  value={distanceMiles}
+                  onChangeText={setDistanceMiles}
+                />
+                <View
+                  style={{
+                    flex: 1,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: BORDER,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    paddingHorizontal: 8,
+                  }}
+                >
                   {autoDistLoading ? (
                     <ActivityIndicator style={{ paddingVertical: 10 }} />
                   ) : (
-                    <Text style={{ color: TEXT, fontWeight: "700", paddingVertical: 10, textAlign: "center" }} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+                    <Text
+                      style={{
+                        color: TEXT,
+                        fontWeight: "700",
+                        paddingVertical: 10,
+                        textAlign: "center",
+                      }}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.85}
+                    >
                       Travel (round trip): £{(travelCharge || 0).toFixed(2)}
                     </Text>
                   )}
@@ -691,7 +842,11 @@ export default function CreateQuote() {
           <View style={{ gap: 8 }}>
             <Card tight>
               <Label>Job</Label>
-              <Input placeholder="Job title (short)" value={jobSummary} onChangeText={setJobSummary} />
+              <Input
+                placeholder="Job title (short)"
+                value={jobSummary}
+                onChangeText={setJobSummary}
+              />
               <View style={{ position: "relative" }}>
                 <Input
                   placeholder="Describe the work to be done… (max 250)"
@@ -701,11 +856,29 @@ export default function CreateQuote() {
                   numberOfLines={8}
                   style={{ minHeight: 160, textAlignVertical: "top", paddingRight: 60 }}
                 />
-                <View style={{ position: "absolute", right: 10, bottom: 10, backgroundColor: CARD, borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4 }}>
+                <View
+                  style={{
+                    position: "absolute",
+                    right: 10,
+                    bottom: 10,
+                    backgroundColor: CARD,
+                    borderWidth: 1,
+                    borderColor: BORDER,
+                    borderRadius: 10,
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                  }}
+                >
                   <Text
                     style={{
-                      color: jobLen >= MAX_JOB_DETAILS ? WARN : jobLen >= COUNTER_AMBER_AT ? AMBER : BRAND,
-                      fontWeight: "800", fontSize: 12,
+                      color:
+                        jobLen >= MAX_JOB_DETAILS
+                          ? WARN
+                          : jobLen >= COUNTER_AMBER_AT
+                          ? AMBER
+                          : BRAND,
+                      fontWeight: "800",
+                      fontSize: 12,
                     }}
                   >
                     {remaining} left
@@ -719,24 +892,62 @@ export default function CreateQuote() {
 
       {/* FOOTER */}
       {!isFinalized && (
-        <View style={{
-          position: "absolute", bottom: 0, left: 0, right: 0,
-          backgroundColor: "#FFFFFF", borderTopWidth: 1, borderTopColor: BORDER,
-          paddingHorizontal: 16, paddingVertical: 12,
-          paddingBottom: Platform.OS === "ios" ? 30 : 16,
-          ...Platform.select({ ios: { shadowColor: "#0b1220", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -4 } }, android: { elevation: 10 } })
-        }}>
+        <View
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            backgroundColor: "#FFFFFF",
+            borderTopWidth: 1,
+            borderTopColor: BORDER,
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+            paddingBottom: Platform.OS === "ios" ? 30 : 16,
+            ...Platform.select({
+              ios: {
+                shadowColor: "#0b1220",
+                shadowOpacity: 0.08,
+                shadowRadius: 12,
+                shadowOffset: { width: 0, height: -4 },
+              },
+              android: { elevation: 10 },
+            }),
+          }}
+        >
           <View style={{ flexDirection: "row", gap: 8 }}>
             {step === 1 ? (
-              <Btn variant="secondary" onPress={() => { router.back(); }} disabled={saving || genLoading || profileLoading}>Close</Btn>
+              <Btn
+                variant="secondary"
+                onPress={() => {
+                  router.back();
+                }}
+                disabled={actionsDisabled}
+              >
+                Close
+              </Btn>
             ) : (
-              <Btn variant="secondary" onPress={back} disabled={saving || genLoading || profileLoading}>Back</Btn>
+              <Btn variant="secondary" onPress={back} disabled={actionsDisabled}>
+                Back
+              </Btn>
             )}
-            {step < TOTAL_STEPS && <Btn onPress={next} disabled={saving || genLoading || profileLoading}>Next</Btn>}
+            {step < TOTAL_STEPS && (
+              <Btn onPress={next} disabled={actionsDisabled}>
+                Next
+              </Btn>
+            )}
             {step === TOTAL_STEPS && (
               <>
-                <Btn variant="secondary" onPress={saveDraftOnly} disabled={saving || genLoading || profileLoading}>{saving ? "Saving…" : "Save Draft"}</Btn>
-                <Btn onPress={generateAIAndPDF} disabled={saving || genLoading || profileLoading}>{genLoading ? "Generating…" : "Generate Quote"}</Btn>
+                <Btn
+                  variant="secondary"
+                  onPress={saveDraftOnly}
+                  disabled={actionsDisabled}
+                >
+                  {saving ? "Saving…" : "Save Draft"}
+                </Btn>
+                <Btn onPress={generateAIAndPDF} disabled={actionsDisabled}>
+                  {genLoading ? "Generating…" : "Generate Quote"}
+                </Btn>
               </>
             )}
           </View>
@@ -749,12 +960,17 @@ export default function CreateQuote() {
           title="Billing address"
           GOOGLE={GOOGLE}
           initialText={clientAddress}
-          onUse={(addr) => { setClientAddress(addr); if (sameAsBilling) setSiteAddress(addr); }}
+          onUse={(addr) => {
+            setClientAddress(addr);
+            if (sameAsBilling) setSiteAddress(addr);
+          }}
           onClose={() => setBillingOpen(false)}
         />
       </CenteredEditor>
+
       <CenteredEditor visible={siteOpen} onClose={() => setSiteOpen(false)}>
-        <AddressEditor title="Site address"
+        <AddressEditor
+          title="Site address"
           GOOGLE={GOOGLE}
           initialText={siteAddress || clientAddress}
           onUse={(addr) => setSiteAddress(addr)}
@@ -806,7 +1022,9 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
     setMode((initialText || "").trim() ? "edit" : "search");
     setQuery(initialText || "");
     setEditValue(initialText || "");
-    setSuggestions([]); setBusy(false); setError("");
+    setSuggestions([]);
+    setBusy(false);
+    setError("");
   }, [initialText]);
 
   const debounceRef = useRef();
@@ -816,7 +1034,7 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
     if (q.length < 3) { setSuggestions([]); setError(""); return; }
     if (!GOOGLE) { setError("Google key missing. Set EXPO_PUBLIC_GOOGLE_MAPS_KEY."); return; }
     setError("");
-    clearTimeout(debounceRef.current);
+    clearTimeout(debounceRef?.current);
     debounceRef.current = setTimeout(async () => {
       try {
         setBusy(true);
@@ -827,10 +1045,18 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
           "&sessiontoken=" + sessionToken + "&key=" + GOOGLE;
         const j = await tryJson(url, {}, 2);
         const status = String(j?.status || "OK");
-        if (status !== "OK") { setSuggestions([]); setError(status !== "ZERO_RESULTS" ? "Search error: " + status : ""); return; }
+        if (status !== "OK") {
+          setSuggestions([]);
+          setError(status !== "ZERO_RESULTS" ? "Search error: " + status : "");
+          return;
+        }
         setSuggestions(Array.isArray(j?.predictions) ? j.predictions : []);
-      } catch { setSuggestions([]); setError("Network error. Try again."); }
-      finally { setBusy(false); }
+      } catch {
+        setSuggestions([]);
+        setError("Network error. Try again.");
+      } finally {
+        setBusy(false);
+      }
     }, 160);
     return () => clearTimeout(debounceRef.current);
   }, [query, GOOGLE, sessionToken, mode]);
@@ -847,7 +1073,9 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
         const j = await tryJson(url, {}, 2);
         if (String(j?.status || "OK") !== "OK") return null;
         return j?.result || null;
-      } catch { return null; }
+      } catch {
+        return null;
+      }
     },
     [GOOGLE, sessionToken]
   );
@@ -860,7 +1088,8 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
     Haptics.selectionAsync();
     try {
       const details = await fetchDetails(item.place_id);
-      const formatted = normaliseFormatted(details?.formatted_address || item?.description || "");
+      const formatted =
+        normaliseFormatted(details?.formatted_address || item?.description || "");
       setEditValue(formatted);
       setMode("edit");
     } finally {
@@ -886,17 +1115,37 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
             autoCapitalize="none"
             autoCorrect={false}
           />
-          {busy && <Text style={{ color: MUTED, fontSize: 12, marginBottom: 6 }}>Searching…</Text>}
-          {!!error && <Text style={{ color: WARN, fontWeight: "700", marginBottom: 6 }}>{error}</Text>}
+          {busy && (
+            <Text style={{ color: MUTED, fontSize: 12, marginBottom: 6 }}>
+              Searching…
+            </Text>
+          )}
+          {!!error && (
+            <Text style={{ color: WARN, fontWeight: "700", marginBottom: 6 }}>
+              {error}
+            </Text>
+          )}
 
           {Array.isArray(suggestions) && suggestions.length > 0 && (
-            <View style={{ borderWidth: 1, borderColor: BORDER, borderRadius: 10, overflow: "hidden" }}>
+            <View
+              style={{
+                borderWidth: 1,
+                borderColor: BORDER,
+                borderRadius: 10,
+                overflow: "hidden",
+              }}
+            >
               <ScrollView style={{ maxHeight: 240 }}>
                 {suggestions.map((it) => (
                   <Pressable
                     key={String(it.place_id)}
                     onPress={() => pickSuggestion(it)}
-                    style={{ paddingVertical: 10, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: BORDER }}
+                    style={{
+                      paddingVertical: 10,
+                      paddingHorizontal: 10,
+                      borderBottomWidth: 1,
+                      borderBottomColor: BORDER,
+                    }}
                   >
                     <Text style={{ color: TEXT }}>{it.description}</Text>
                   </Pressable>
@@ -917,7 +1166,9 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
             style={{ minHeight: 100, textAlignVertical: "top" }}
           />
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <Btn variant="secondary" onPress={() => setMode("search")}>Back to search</Btn>
+            <Btn variant="secondary" onPress={() => setMode("search")}>
+              Back to search
+            </Btn>
             <Btn
               onPress={() => {
                 if (!canUse) return;
@@ -939,8 +1190,6 @@ function AddressEditor({ title = "Address", GOOGLE, initialText, onUse, onClose 
 /* ---------------- Fancy Builder Loader ---------------- */
 function FancyBuilderLoader({ visible, message = "Preparing data…", progress = 0.1 }) {
   const scale = useRef(new Animated.Value(1)).current;
-  const rotate = useRef(new Animated.Value(0)).current;
-  const rotate2 = useRef(new Animated.Value(0)).current;
   const bounce = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(0)).current;
 
@@ -957,7 +1206,7 @@ function FancyBuilderLoader({ visible, message = "Preparing data…", progress =
 
     const bounceAnim = Animated.sequence([
       Animated.timing(bounce, { toValue: 1, duration: 200, easing: Easing.out(Easing.back(1.5)), useNativeDriver: true }),
-      Animated.timing(bounce, { toValue: 0, duration: 300, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      Animated.timing(bounce, { toValue: 0, duration: 300, useNativeDriver: true }),
     ]);
 
     pulse.start(); bounceAnim.start();
@@ -974,9 +1223,7 @@ function FancyBuilderLoader({ visible, message = "Preparing data…", progress =
       <Animated.View style={[styles.loaderCard, { transform: [{ scale: bounceScale }] }]}>
         <Text style={styles.loaderTitle}>Building your quote</Text>
         <Text style={styles.loaderSub}>{message}</Text>
-        
         <Text style={styles.loaderHint}>This usually takes a moment</Text>
-
         <View style={styles.dotsContainer}>
           <LoadingDot delay={0} />
           <LoadingDot delay={200} />
@@ -992,7 +1239,6 @@ function LoadingDot({ delay = 0 }) {
   useEffect(() => {
     const animation = Animated.loop(
       Animated.sequence([
-
         Animated.delay(delay),
         Animated.timing(bounce, { toValue: 1, duration: 400, easing: Easing.out(Easing.quad), useNativeDriver: true }),
         Animated.timing(bounce, { toValue: 0, duration: 400, easing: Easing.in(Easing.quad), useNativeDriver: true }),
@@ -1053,7 +1299,6 @@ function Input(props) {
     <TextInput
       {...props}
       style={[
-
         {
           backgroundColor: CARD,
           borderColor: BORDER,
@@ -1074,12 +1319,32 @@ function Input(props) {
 function Btn(props) {
   const disabled = !!props.disabled;
   const variant = props.variant || "primary";
-  const bg = disabled ? DISABLED : variant === "secondary" ? BORDER : variant === "primary" ? OK : BRAND;
+  const bg =
+    disabled
+      ? DISABLED
+      : variant === "secondary"
+      ? BORDER
+      : variant === "primary"
+      ? OK
+      : BRAND;
   const color = variant === "secondary" ? TEXT : "#ffffff";
   return (
     <TouchableOpacity
-      onPress={disabled ? () => {} : () => { Haptics.selectionAsync(); props.onPress && props.onPress(); }}
-      style={{ flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: "center", backgroundColor: bg }}
+      onPress={
+        disabled
+          ? () => {}
+          : () => {
+              Haptics.selectionAsync();
+              props.onPress && props.onPress();
+            }
+      }
+      style={{
+        flex: 1,
+        paddingVertical: 12,
+        borderRadius: 10,
+        alignItems: "center",
+        backgroundColor: bg,
+      }}
     >
       <Text style={{ color, fontWeight: "800" }}>
         {typeof props.children === "string" ? props.children : "Button"}
@@ -1092,7 +1357,13 @@ function SmallBtn({ children, onPress, variant = "default" }) {
   const bg = variant === "danger" ? "#ef4444" : variant === "light" ? "#f3f4f6" : BORDER;
   const color = variant === "danger" ? "#fff" : TEXT;
   return (
-    <TouchableOpacity onPress={() => { Haptics.selectionAsync(); onPress && onPress(); }} style={{ paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: bg }}>
+    <TouchableOpacity
+      onPress={() => {
+        Haptics.selectionAsync();
+        onPress && onPress();
+      }}
+      style={{ paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: bg }}
+    >
       <Text style={{ color, fontWeight: "700" }}>
         {typeof children === "string" ? children : "Action"}
       </Text>
@@ -1103,12 +1374,19 @@ function SmallBtn({ children, onPress, variant = "default" }) {
 function Checkbox({ checked, onPress }) {
   return (
     <Pressable
-      onPress={() => { Haptics.selectionAsync(); onPress && onPress(); }}
+      onPress={() => {
+        Haptics.selectionAsync();
+        onPress && onPress();
+      }}
       style={{
-        width: 22, height: 22, borderRadius: 6, borderWidth: 2,
+        width: 22,
+        height: 22,
+        borderRadius: 6,
+        borderWidth: 2,
         borderColor: checked ? BRAND : "#cbd5e1",
-        alignItems: "center", justifyContent: "center",
-        backgroundColor: checked ? BRAND : "#fff"
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: checked ? BRAND : "#fff",
       }}
     >
       {checked ? <Feather name="check" size={14} color="#fff" /> : null}
@@ -1120,57 +1398,64 @@ function StepHeader({ step, total, title }) {
   const pct = Math.max(0, Math.min(1, step / total));
   return (
     <View style={{ marginBottom: 4 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 6,
+        }}
+      >
         <Text style={{ color: TEXT, fontWeight: "900", fontSize: 16 }}>{title}</Text>
         <Text style={{ color: MUTED, fontWeight: "700", fontSize: 12 }}>
-              Step {step} of {total}
-            </Text>
-          </View>
-          <View style={{ height: 6, backgroundColor: "#dde3ea", borderRadius: 999 }}>
-            <View
-              style={{
-                width: `${pct * 100}%`,
-                height: 6,
-                backgroundColor: BRAND,
-                borderRadius: 999,
-              }}
-            />
-          </View>
-        </View>
-      );
-    }
+          Step {step} of {total}
+        </Text>
+      </View>
+      <View style={{ height: 6, backgroundColor: "#dde3ea", borderRadius: 999 }}>
+        <View
+          style={{
+            width: (pct * 100) + "%",
+            height: 6,
+            backgroundColor: BRAND,
+            borderRadius: 999,
+          }}
+        />
+      </View>
+    </View>
+  );
+}
 
-    /* --- Loader styles --- */
-    const styles = StyleSheet.create({
-      loaderBackdrop: {
-        position: "absolute",
-        inset: 0,
-        justifyContent: "center",
-        alignItems: "center",
-        padding: 24,
-      },
-      loaderBackground: {
-        position: "absolute",
-        inset: 0,
-        backgroundColor: "#FFFFFF",
-      },
-      loaderCard: {
-        width: Math.min(Dimensions.get("window").width - 40, 380),
-        backgroundColor: CARD,
-        borderRadius: 20,
-        borderWidth: 1,
-        borderColor: BORDER,
-        padding: 28,
-        alignItems: "center",
-        shadowColor: "#0b1220",
-        shadowOpacity: 0.15,
-        shadowRadius: 24,
-        shadowOffset: { width: 0, height: 12 },
-        elevation: 16,
-      },
-      loaderTitle: { color: TEXT, fontWeight: "900", fontSize: 20, marginBottom: 6 },
-      loaderSub: { color: MUTED, marginBottom: 20, textAlign: "center", fontSize: 15, lineHeight: 20 },
-      loaderHint: { color: MUTED, fontSize: 13, textAlign: "center", marginBottom: 16 },
-      dotsContainer: { flexDirection: "row", gap: 8, alignItems: "center" },
-      loadingDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: BRAND, opacity: 0.6 },
-    });
+/* --- Loader styles --- */
+const styles = StyleSheet.create({
+  loaderBackdrop: {
+    position: "absolute",
+    inset: 0,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  loaderBackground: {
+    position: "absolute",
+    inset: 0,
+    backgroundColor: "#FFFFFF",
+  },
+  loaderCard: {
+    width: Math.min(Dimensions.get("window").width - 40, 380),
+    backgroundColor: CARD,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 28,
+    alignItems: "center",
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 16,
+  },
+  loaderTitle: { color: TEXT, fontWeight: "900", fontSize: 20, marginBottom: 6 },
+  loaderSub: { color: MUTED, marginBottom: 20, textAlign: "center", fontSize: 15, lineHeight: 20 },
+  loaderHint: { color: MUTED, fontSize: 13, textAlign: "center", marginBottom: 16 },
+  dotsContainer: { flexDirection: "row", gap: 8, alignItems: "center" },
+  loadingDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: BRAND, opacity: 0.6 },
+});
