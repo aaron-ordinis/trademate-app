@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { View } from "react-native";
 import { Tabs, useRouter } from "expo-router";
 import { FileText, CalendarDays, ClipboardCheck } from "lucide-react-native";
 import { supabase } from "../../../lib/supabase";
@@ -12,6 +12,7 @@ const BORDER = "#e6e9ee";
 
 export default function TabsLayout() {
   const [isReady, setIsReady] = useState(false);
+  const [tabsFullyMounted, setTabsFullyMounted] = useState(false);
   const router = useRouter();
 
   // Check if user should be in onboarding before showing tabs
@@ -57,6 +58,10 @@ export default function TabsLayout() {
         }
 
         setIsReady(true);
+        // Add delay to ensure all tab content is ready
+        setTimeout(() => {
+          setTabsFullyMounted(true);
+        }, 100);
       } catch (error) {
         console.error("Onboarding check error:", error);
         router.replace("/(app)/onboarding");
@@ -66,17 +71,16 @@ export default function TabsLayout() {
     checkOnboardingStatus();
   }, [router]);
 
-  if (!isReady) {
+  // Don't render anything until fully ready
+  if (!isReady || !tabsFullyMounted) {
     return (
       <View
         style={{
           flex: 1,
-          backgroundColor: "#f5f7fb",
-          alignItems: "center",
-          justifyContent: "center",
+          backgroundColor: "#ffffff",
         }}
       >
-        <ActivityIndicator color="#2a86ff" size="large" />
+        {/* Removed ActivityIndicator - just show blank white screen */}
       </View>
     );
   }
@@ -96,13 +100,14 @@ export default function TabsLayout() {
           paddingBottom: 8,
         },
         tabBarLabelStyle: { fontWeight: "700", marginBottom: 4 },
+        animation: 'none',
       }}
     >
       {/* Quotes left */}
       <Tabs.Screen
         name="quotes/index"
         options={{
-          title: "Quotes", // ✅ clean label
+          title: "Quotes",
           tabBarIcon: ({ color, size }) => (
             <FileText size={size} color={color} />
           ),

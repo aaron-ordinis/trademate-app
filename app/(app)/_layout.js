@@ -1,11 +1,13 @@
 // app/(app)/_layout.tsx
 import React, { useCallback, useEffect, useState } from "react";
-import { Platform, StatusBar, PlatformColor, View, ActivityIndicator, BackHandler } from "react-native";
+import { Platform, StatusBar, PlatformColor, View, BackHandler } from "react-native";
 import { Stack, usePathname, useRouter } from "expo-router";
 import * as NavigationBar from "expo-navigation-bar";
 import { supabase } from "../../lib/supabase";
 import { getPremiumStatus } from "../../lib/premium";
 import PaywallModal from "../../components/PaywallModal";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import * as SystemUI from "expo-system-ui";
 
 const sysBG =
   Platform.OS === "ios"
@@ -29,23 +31,35 @@ export default function AppGroupLayout() {
   const pathname = usePathname() || "";
 
   const [checking, setChecking] = useState(true);
-  const [blocked, setBlocked]   = useState(false);
+  const [blocked, setBlocked] = useState(false);
   const [forceHide, setForceHide] = useState(false);
+  const [layoutReady, setLayoutReady] = useState(false);
+  const [fullyMounted, setFullyMounted] = useState(false);
 
   useEffect(() => {
-    StatusBar.setBarStyle("dark-content");
-    if (Platform.OS === "android") {
-      StatusBar.setBackgroundColor(BG_HEX, true);
-      (async () => {
-        try {
-          await NavigationBar.setBackgroundColorAsync("#FFFFFF"); // ✅ Ensure white
-          await NavigationBar.setButtonStyleAsync("dark");
-          await NavigationBar.setDividerColorAsync("transparent");
-          await NavigationBar.setBehaviorAsync("inset-swipe");
-          await NavigationBar.setVisibilityAsync("visible");
-        } catch {}
-      })();
-    }
+    const setAppColors = async () => {
+      try {
+        await SystemUI.setBackgroundColorAsync('#ffffff');
+        StatusBar.setBarStyle('dark-content', true);
+        
+        if (Platform.OS === 'android') {
+          StatusBar.setBackgroundColor('#ffffff', true);
+          (async () => {
+            try {
+              await NavigationBar.setBackgroundColorAsync("#FFFFFF"); // ✅ Ensure white
+              await NavigationBar.setButtonStyleAsync("dark");
+              await NavigationBar.setDividerColorAsync("transparent");
+              await NavigationBar.setBehaviorAsync("inset-swipe");
+              await NavigationBar.setVisibilityAsync("visible");
+            } catch {}
+          })();
+        }
+      } catch (error) {
+        console.log('App layout color setting error:', error);
+      }
+    };
+
+    setAppColors();
   }, []);
 
   const checkGate = useCallback(async () => {
@@ -72,9 +86,22 @@ export default function AppGroupLayout() {
   useEffect(() => {
     checkGate();
     const sub = supabase.auth.onAuthStateChange(() => checkGate());
-    // @ts-ignore
     return () => sub?.data?.subscription?.unsubscribe?.();
   }, [checkGate]);
+
+  // Mark layout as ready when checking is complete
+  useEffect(() => {
+    if (!checking) {
+      const timer = setTimeout(() => {
+        setLayoutReady(true);
+        // Add additional delay to ensure all child components are ready
+        setTimeout(() => {
+          setFullyMounted(true);
+        }, 150);
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [checking]);
 
   // Reset forceHide when on a safe path
   useEffect(() => {
@@ -92,48 +119,36 @@ export default function AppGroupLayout() {
     return () => sub.remove();
   }, [paywallVisible]);
 
-  if (checking) {
+  // Don't render anything until fully mounted
+  if (!layoutReady || !fullyMounted) {
     return (
-      <View style={{ flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator color={BRAND} />
+      <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
       </View>
     );
   }
 
   return (
     <>
-      <StatusBar translucent={false} backgroundColor={BG_HEX} barStyle="dark-content" />
+      <StatusBar translucent={false} backgroundColor="#ffffff" barStyle="dark-content" />
 
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: BG },
-          detachPreviousScreen: false,
-        }}
-      >
-        <Stack.Screen
-          name="quotes/create"
-          options={{
-            presentation: "transparentModal",
-            animation: "fade",
+      <SafeAreaProvider style={{ backgroundColor: '#ffffff' }}>
+        <Stack
+          screenOptions={{
             headerShown: false,
-            contentStyle: { backgroundColor: "transparent" },
-            gestureEnabled: true,
+            contentStyle: { backgroundColor: '#ffffff' },
+            presentation: 'card',
+            animation: 'none',
           }}
-        />
-        <Stack.Screen
-          name="invoices/wizard"
-          options={{
-            presentation: "transparentModal",
-            animation: "fade",
-            headerShown: false,
-            contentStyle: { backgroundColor: "transparent" },
-            gestureEnabled: true,
-          }}
-        />
-      </Stack>
+        >
+          <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="quotes" options={{ headerShown: false }} />
+          <Stack.Screen name="jobs" options={{ headerShown: false }} />
+          <Stack.Screen name="invoices" options={{ headerShown: false }} />
+          <Stack.Screen name="settings" options={{ headerShown: false }} />
+        </Stack>
+      </SafeAreaProvider>
 
-      {/* SINGLE global paywall */}
       <PaywallModal
         visible={paywallVisible}
         blocking

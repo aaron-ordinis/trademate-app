@@ -11,6 +11,10 @@ const BORDER = "#e6e9ee";
 const ORANGE = "#f59e0b";
 const GREEN = "#16a34a";
 
+/** optional debug logs toggle */
+const LOG = false;
+const TAG = "[calendar]";
+
 /** status helpers */
 const normalizeStatus = (s) =>
   String(s || "")
@@ -29,6 +33,7 @@ const sameDay = (a, b) =>
 const pad = (n) => String(n).padStart(2, "0");
 const toYMD = (d) =>
   d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+
 const atMidnight = (d) => {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
@@ -66,7 +71,7 @@ const addWorkingDays = (startDate, days, includeWeekends) => {
   return cur;
 };
 
-/** Jobs→day map (DOTS), respecting include_weekends */
+/** Jobs→day map (DOTS), respecting include_weekends, using Y-M-D keys */
 const buildJobsByDayKey = (jobs = []) => {
   const m = new Map();
   for (const j of jobs) {
@@ -76,9 +81,8 @@ const buildJobsByDayKey = (jobs = []) => {
     const inc = !!j.include_weekends;
     const cur = new Date(s0);
     while (cur <= e0) {
-      // Only add job to this day if weekends are included OR it's not a weekend
       if (inc || !isWeekend(cur)) {
-        const k = `${cur.getFullYear()}-${cur.getMonth()}-${cur.getDate()}`;
+        const k = toYMD(cur);
         const arr = m.get(k) || [];
         arr.push(j);
         m.set(k, arr);
@@ -90,7 +94,7 @@ const buildJobsByDayKey = (jobs = []) => {
 };
 
 /**
- * Build week micro-bands for jobs, *splitting at weekends* if include_weekends=false.
+ * Build week micro-bands for jobs, splitting at weekends if include_weekends=false.
  * For each job, we create a 7-bool array (Mon..Sun) of "active" columns and compress
  * it into contiguous [startCol,endCol] segments. Then we lane-pack those segments (≤3 lanes).
  */
@@ -109,7 +113,6 @@ function buildWeekRanges(weekDays, jobs) {
     for (let col = 0; col < 7; col++) {
       const d = atMidnight(weekDays[col]);
       const within = d >= js && d <= je;
-      // Only mark active if weekends are included OR it's not a weekend
       active[col] = within && (inc || !isWeekend(d));
     }
 
@@ -121,7 +124,7 @@ function buildWeekRanges(weekDays, jobs) {
 
       if (
         startCol !== null &&
-        (!active[col] || last) // end reached or last column
+        (!active[col] || last)
       ) {
         const endCol = (!active[col] && !last) ? col - 1 : (active[col] ? col : col - 1);
         if (endCol >= startCol) {
@@ -167,7 +170,7 @@ export default function SharedCalendar({
 
   // span segments for a given week (also weekend-aware)
   const spanSegmentsForWeek = (week) => {
-    if (!span?.start || !span?.days) return [];
+    if (!span || !span.start || !span.days) return [];
     const s = atMidnight(span.start);
     const e = addWorkingDays(s, Math.max(1, Math.floor(span.days || 1)), !!span.includeWeekends);
 
@@ -211,10 +214,12 @@ export default function SharedCalendar({
           onPress={() => {
             const d = new Date(month);
             d.setMonth(d.getMonth() - 1);
-            onChangeMonth?.(d);
+            onChangeMonth && onChangeMonth(d);
+            LOG && console.log(TAG, "nav.prev", d.toISOString());
             buzz();
           }}
           activeOpacity={0.85}
+          accessibilityLabel="Previous month"
         >
           <ChevronLeft size={18} color={TEXT} />
         </TouchableOpacity>
@@ -226,10 +231,12 @@ export default function SharedCalendar({
           onPress={() => {
             const d = new Date(month);
             d.setMonth(d.getMonth() + 1);
-            onChangeMonth?.(d);
+            onChangeMonth && onChangeMonth(d);
+            LOG && console.log(TAG, "nav.next", d.toISOString());
             buzz();
           }}
           activeOpacity={0.85}
+          accessibilityLabel="Next month"
         >
           <ChevronRight size={18} color={TEXT} />
         </TouchableOpacity>
@@ -263,7 +270,7 @@ export default function SharedCalendar({
           const pct = (c) => (c * 100) / 7;
 
           return (
-            <View key={`w-${wi}`} style={[st.weekRow, { height: rowH }]}>
+            <View key={"w-" + wi} style={[st.weekRow, { height: rowH }]}>
               {/* job bands */}
               <View style={st.bandsLayer} pointerEvents="none">
                 {ranges.map((r, i) => {
@@ -297,18 +304,17 @@ export default function SharedCalendar({
                     style={[
                       {
                         position: "absolute",
-                        top: 6,                    // Add some padding from top
-                        bottom: 6,                 // Add some padding from bottom
+                        top: 6,                    // padding from top
+                        bottom: 6,                 // padding from bottom
                         left: pct(c0) + "%",
                         width: pct(c1 - c0 + 1) + "%",
                         backgroundColor: BRAND,
-                        opacity: 0.12,             // Reduced opacity for more subtle look
-                        borderRadius: 12,          // Rounded corners
-                        borderWidth: 1.5,          // Subtle border
-                        borderColor: BRAND + "40", // Semi-transparent border
-                        marginHorizontal: 2,       // Small horizontal margin
+                        opacity: 0.12,             // subtle look
+                        borderRadius: 12,          // rounded corners
+                        borderWidth: 1.5,          // subtle border
+                        borderColor: BRAND + "40", // semi-transparent border
+                        marginHorizontal: 2,
                       },
-                      // Add a subtle inner glow effect
                       Platform.select({
                         ios: {
                           shadowColor: BRAND,
@@ -322,15 +328,14 @@ export default function SharedCalendar({
                       }),
                     ]}
                   >
-                    {/* Optional: Add a subtle gradient overlay for extra polish */}
-                    <View 
+                    <View
                       style={{
-                        position: 'absolute',
+                        position: "absolute",
                         top: 0,
                         left: 0,
                         right: 0,
-                        height: '50%',
-                        backgroundColor: 'rgba(255, 255, 255, 0.15)',
+                        height: "50%",
+                        backgroundColor: "rgba(255, 255, 255, 0.15)",
                         borderTopLeftRadius: 11,
                         borderTopRightRadius: 11,
                       }}
@@ -343,13 +348,14 @@ export default function SharedCalendar({
                 const inMonth = day.getMonth() === month.getMonth();
                 const isSel = selectedDate && sameDay(day, selectedDate);
                 const isToday = sameDay(day, new Date());
-                const key = `${day.getFullYear()}-${day.getMonth()}-${day.getDate()}`;
+                const key = toYMD(day);
                 const jobsOnDay = jobsByDayKey.get(key) || [];
 
                 const blocked =
                   !!(blockStarts &&
-                  span?.days &&
-                  span?.start &&
+                  span &&
+                  span.days &&
+                  span.start &&
                   jobsOnDay.length > 0);
 
                 return (
@@ -358,8 +364,13 @@ export default function SharedCalendar({
                     style={st.dayCell}
                     activeOpacity={blocked ? 1 : 0.9}
                     disabled={blocked}
-                    onPress={() => onSelectDate?.(atMidnight(day))}
-                    onLongPress={() => onDayLongPress?.(day, jobsOnDay)}
+                    onPress={() => {
+                      LOG && console.log(TAG, "day.press", key, { blocked, jobs: jobsOnDay.length });
+                      onSelectDate && onSelectDate(atMidnight(day));
+                    }}
+                    onLongPress={() => onDayLongPress && onDayLongPress(day, jobsOnDay)}
+                    accessibilityLabel={"Day " + day.getDate()}
+                    accessibilityHint={blocked ? "Start date blocked" : "Select date"}
                   >
                     <View
                       style={[
@@ -435,7 +446,6 @@ const st = StyleSheet.create({
   weekRow: { position: "relative", flexDirection: "row", marginBottom: 2 },
   bandsLayer: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0 },
   jobBand: { position: "absolute", height: 4, borderRadius: 6 },
-  microBand: { position: "absolute", left: 0, top: 40, height: 6, borderRadius: 6 },
 
   dayCell: { flex: 1, alignItems: "center" },
   dayNumWrap: {

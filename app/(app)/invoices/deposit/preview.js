@@ -12,6 +12,8 @@ import * as IntentLauncher from "expo-intent-launcher";
 import * as Haptics from "expo-haptics";
 import { Feather } from "@expo/vector-icons";
 import { supabase } from "../../../../lib/supabase";
+import ReviewAppModal from "../../../../components/ReviewAppModal";
+import { shouldShowReviewPrompt, launchReviewFlow } from "../../../../lib/reviewPrompt";
 
 /* ---- theme ---- */
 const BRAND = "#2a86ff";
@@ -107,6 +109,9 @@ export default function DepositPreview() {
   const [busy, setBusy] = useState(null);
   const [cachedUri, setCachedUri] = useState("");
   const [base64Pdf, setBase64Pdf] = useState("");
+
+  const [showReview, setShowReview] = useState(false);
+  const hasAskedRef = useRef(false);
 
   // Resolve URL from: direct url -> docId -> latest invoice_pdf by jobId
   const resolveUrl = useCallback(async () => {
@@ -339,9 +344,15 @@ export default function DepositPreview() {
             originWhitelist={["*"]}
             javaScriptEnabled
             domStorageEnabled
-            onMessage={(e) => {
+            onMessage={async (e) => {
               const msg = String(e?.nativeEvent?.data || "");
               if (msg.indexOf("error:") === 0) Alert.alert("Viewer error", msg.slice(6));
+              else if (msg === "rendered" && !hasAskedRef.current) {
+                hasAskedRef.current = true;
+                try {
+                  if (await shouldShowReviewPrompt()) setShowReview(true);
+                } catch {}
+              }
             }}
             style={{ flex: 1 }}
           />
@@ -356,6 +367,15 @@ export default function DepositPreview() {
         <ActionBtn label={busy === "open" ? "Opening" : "Open"} icon="external-link"
                    onPress={openExternal} disabled={!!busy || !!fatal} busy={busy === "open"} />
       </View>
+
+      <ReviewAppModal
+        visible={showReview}
+        onLater={() => setShowReview(false)}
+        onRateNow={async () => {
+          setShowReview(false);
+          await launchReviewFlow();
+        }}
+      />
     </SafeAreaView>
   );
 }

@@ -7,29 +7,32 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  ActivityIndicator,
   ScrollView,
   Image,
   Modal,
   Pressable,
   Platform,
   Linking,
+  StatusBar,
 } from "react-native";
-  // SafeArea + navigation
+// SafeArea + navigation
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
-  // Files + Supabase
+// Files + Supabase
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system";
 import { supabase } from "../../../lib/supabase";
 
-  // Icons
+// (optional but nice on Android to fully match Create screen white chrome)
+import * as NavigationBar from "expo-navigation-bar";
+import * as SystemUI from "expo-system-ui";
+
+// Icons - Updated to match create.js
+import { Feather } from "@expo/vector-icons";
 import {
   ChevronRight,
-  Crown,
   Building2,
-  CreditCard,
   HelpCircle,
   LogOut,
   Image as ImageIcon,
@@ -37,7 +40,9 @@ import {
   Pencil,
   Trash2,
   ExternalLink,
-  ChevronLeft,
+  Shield, // owner-only Admin row
+  CreditCard, // for subscription
+  Crown, // for premium features
 } from "lucide-react-native";
 
 /* ---------------- theme ---------------- */
@@ -45,7 +50,7 @@ const BRAND = "#2a86ff";
 const TEXT = "#0b1220";
 const MUTED = "#6b7280";
 const CARD = "#ffffff";
-const BG = "#f5f7fb";
+const BG = "#ffffff";           // 👈 background now white to match create.js
 const BORDER = "#e6e9ee";
 
 /* -------- helpers -------- */
@@ -93,12 +98,9 @@ function getPremiumStatus(profile) {
   const tier = String(profile.plan_tier || "").toLowerCase();
   const status = String(profile.plan_status || "").toLowerCase();
 
-  // Active subscription wins
   if (tier === "pro" && status === "active") {
     return { isPremium: true, chip: "Premium", color: "#10b981" };
   }
-
-  // Trial window
   if (profile.trial_ends_at) {
     const ends = new Date(profile.trial_ends_at);
     const now = new Date();
@@ -107,8 +109,6 @@ function getPremiumStatus(profile) {
       return { isPremium: true, chip: "Trial · " + days + "d left", color: "#2a86ff" };
     }
   }
-
-  // Otherwise expired
   return { isPremium: false, chip: "Expired", color: "#9ca3af" };
 }
 
@@ -116,14 +116,26 @@ export default function SettingsHome() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const [loading, setLoading] = useState(true);
   const [userProfileData, setUserProfileData] = useState(null);
   const [userEmail, setUserEmail] = useState("");
   const [userId, setUserId] = useState("");
   const [working, setWorking] = useState(false);
+  const [dataLoaded, setDataLoaded] = useState(false);
 
   const [logoModalOpen, setLogoModalOpen] = useState(false);
   const [errBanner, setErrBanner] = useState("");
+
+  // Force white system chrome like create.js
+  useEffect(() => {
+    StatusBar.setBarStyle("dark-content", false);
+    if (Platform.OS === "android") {
+      StatusBar.setBackgroundColor("#ffffff", false);
+      NavigationBar.setBackgroundColorAsync?.("#ffffff");
+      NavigationBar.setButtonStyleAsync?.("dark");
+      NavigationBar.setBorderColorAsync?.("#ffffff");
+    }
+    SystemUI.setBackgroundColorAsync?.("#ffffff");
+  }, []);
 
   const showError = (msg) => {
     setErrBanner(msg || "Something went wrong");
@@ -147,10 +159,9 @@ export default function SettingsHome() {
       setUserEmail(user.email || "");
       setUserId(user.id);
 
-      // NOTE: single string (no template literals or comments) - removed reminder columns
       const { data, error } = await supabase
         .from("profiles")
-        .select("id,business_name,trade_type,custom_logo_url,plan_tier,plan_status,trial_ends_at")
+        .select("id,business_name,trade_type,custom_logo_url,plan_tier,plan_status,trial_ends_at,admin_owner,reminder_due_enabled,reminder_days_before,reminder_overdue_enabled,reminder_overdue_every_days,reminder_send_hour_utc")
         .eq("id", user.id)
         .maybeSingle();
       if (error) throw error;
@@ -161,20 +172,20 @@ export default function SettingsHome() {
     }
 
     try {
-      setLoading(true);
       const p = await attempt();
       if (!p) return;
       setUserProfileData(p);
+      setDataLoaded(true);
     } catch (e1) {
       try {
         const p = await attempt();
         if (!p) return;
         setUserProfileData(p);
+        setDataLoaded(true);
       } catch (e2) {
         showError(e2?.message || String(e2));
+        setDataLoaded(true); // Set loaded even on error to prevent infinite loading
       }
-    } finally {
-      setLoading(false);
     }
   }, [router]);
 
@@ -186,7 +197,6 @@ export default function SettingsHome() {
   }, [router, loadProfile]);
 
   const planInfo = useMemo(() => getPremiumStatus(userProfileData), [userProfileData]);
-  const isPremium = planInfo.isPremium;
   const planLabel = planInfo.chip;
 
   const initials = useMemo(() => {
@@ -201,7 +211,6 @@ export default function SettingsHome() {
   const hasLogo = !!normalizeLogo(userProfileData?.custom_logo_url);
   const isPdfLogo = hasLogo && /\.pdf($|\?)/i.test(userProfileData?.custom_logo_url || "");
 
-  // Human summary for reminder prefs
   const reminderSummary = useMemo(() => {
     if (!userProfileData) return "Configure when to chase invoices";
     const dueOn = (userProfileData.reminder_due_enabled ?? true)
@@ -218,6 +227,11 @@ export default function SettingsHome() {
     try { await supabase.auth.signOut(); }
     catch (e) { showError(e?.message || String(e)); }
     finally { router.replace(loginHref); }
+  };
+
+  /** Navigate to subscription management */
+  const handleSubscription = () => {
+    router.push("/(app)/settings/subscription");
   };
 
   /** Upload / replace logo to logos/users/<uid>/logo.<ext> */
@@ -265,6 +279,7 @@ export default function SettingsHome() {
         .eq("id", userId);
       if (upd.error) throw upd.error;
 
+      // Optimistic update
       setUserProfileData((p) => ({ ...(p || {}), custom_logo_url: publicishUrl }));
     } catch (e) {
       showError(e?.message || String(e));
@@ -277,6 +292,9 @@ export default function SettingsHome() {
   const removeLogo = async () => {
     try {
       if (!hasLogo) { setLogoModalOpen(false); return; }
+      
+      // Optimistic update
+      setUserProfileData((p) => ({ ...(p || {}), custom_logo_url: null }));
       setWorking(true);
 
       const url = String(userProfileData?.custom_logo_url || "");
@@ -300,8 +318,9 @@ export default function SettingsHome() {
       const upd = await supabase.from("profiles").update({ custom_logo_url: null }).eq("id", userId);
       if (upd.error) throw upd.error;
 
-      setUserProfileData((p) => ({ ...(p || {}), custom_logo_url: null }));
     } catch (e) {
+      // Revert optimistic update on error
+      setUserProfileData((p) => ({ ...(p || {}), custom_logo_url: userProfileData?.custom_logo_url }));
       showError(e?.message || String(e));
     } finally {
       setWorking(false);
@@ -309,39 +328,39 @@ export default function SettingsHome() {
     }
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView edges={["top", "left", "right", "bottom"]} style={styles.loading}>
-        <ActivityIndicator color={BRAND} />
-      </SafeAreaView>
-    );
-  }
+  const isOwner = Boolean(userProfileData?.admin_owner);
+  const isPremium = planInfo.isPremium;
+
+  // Show content immediately with skeletons
+  const showProfile = dataLoaded || userEmail; // Show if we have any data
 
   return (
     <SafeAreaView edges={["top", "left", "right", "bottom"]} style={styles.wrap}>
+      {/* Top safe-area fill to match create.js */}
+      <View style={{ height: insets.top, backgroundColor: CARD }} />
+
+      {/* Header — same structure as create.js */}
+      <View style={styles.header}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => router.back()}
+          activeOpacity={0.7}
+        >
+          <Feather name="arrow-left" size={20} color={TEXT} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Settings</Text>
+        {/* right spacer for symmetry */}
+        <View style={{ width: 40 }} />
+      </View>
+
       <ScrollView
         contentContainerStyle={{
           paddingHorizontal: 16,
           paddingTop: 12,
           paddingBottom: Math.max(insets.bottom, 28),
+          backgroundColor: BG, // stays white
         }}
       >
-        {/* Back Button */}
-        <TouchableOpacity 
-          style={styles.backButton}
-          onPress={() => router.back()}
-          activeOpacity={0.7}
-        >
-          <ChevronLeft size={20} color={BRAND} />
-          <Text style={styles.backText}>Back</Text>
-        </TouchableOpacity>
-
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.h1}>Settings</Text>
-          <Text style={styles.hint}>Manage your account and preferences</Text>
-        </View>
-
         {/* Profile / hero card */}
         <View style={styles.centerRow}>
           <View style={styles.profileCard}>
@@ -352,9 +371,13 @@ export default function SettingsHome() {
                 <View style={[styles.avatar, { backgroundColor: "#fef3c7", borderColor: "#fde68a" }]}>
                   <FileText size={22} color="#92400e" />
                 </View>
-              ) : (
+              ) : showProfile ? (
                 <View style={styles.avatar}>
                   <Text style={styles.avatarText}>{initials}</Text>
+                </View>
+              ) : (
+                <View style={[styles.avatar, { backgroundColor: "#f3f4f6" }]}>
+                  <View style={styles.skeletonAvatar} />
                 </View>
               )}
               <View style={styles.editBadge}>
@@ -362,21 +385,46 @@ export default function SettingsHome() {
               </View>
             </TouchableOpacity>
 
-            <Text style={styles.bizName} numberOfLines={1}>
-              {userProfileData?.business_name || "Your Business"}
-            </Text>
-            <Text style={styles.email} numberOfLines={1}>{userEmail}</Text>
+            {showProfile ? (
+              <>
+                <Text style={styles.bizName} numberOfLines={1}>
+                  {userProfileData?.business_name || "Your Business"}
+                </Text>
+                <Text style={styles.email} numberOfLines={1}>{userEmail}</Text>
 
-            <View style={styles.badgesRow}>
-              <View style={[styles.badge, { backgroundColor: planInfo.color }]}>
-                <Text style={styles.badgeText}>{planLabel}</Text>
-              </View>
-              {!!userProfileData?.trade_type && (
-                <View style={[styles.badge, styles.badgeMuted]}>
-                  <Text style={styles.badgeText}>{String(userProfileData.trade_type).trim()}</Text>
+                <View style={styles.badgesRow}>
+                  <View style={[styles.badge, { backgroundColor: planInfo.color }]}>
+                    <Text style={styles.badgeText}>{planLabel}</Text>
+                  </View>
+                  {!!userProfileData?.trade_type && (
+                    <View style={[styles.badge, styles.badgeMuted]}>
+                      <Text style={styles.badgeText}>{String(userProfileData.trade_type).trim()}</Text>
+                    </View>
+                  )}
                 </View>
-              )}
-            </View>
+              </>
+            ) : (
+              <>
+                <View style={[styles.skeletonText, { width: 150, height: 18, marginBottom: 4 }]} />
+                <View style={[styles.skeletonText, { width: 180, height: 14, marginBottom: 12 }]} />
+                <View style={styles.badgesRow}>
+                  <View style={[styles.skeletonText, { width: 60, height: 24, borderRadius: 12 }]} />
+                  <View style={[styles.skeletonText, { width: 80, height: 24, borderRadius: 12 }]} />
+                </View>
+              </>
+            )}
+
+            {/* Subscription CTA if not premium */}
+            {showProfile && !isPremium && (
+              <TouchableOpacity 
+                style={styles.upgradeBtn} 
+                onPress={handleSubscription}
+                activeOpacity={0.9}
+              >
+                <Crown size={16} color="#fff" />
+                <Text style={styles.upgradeBtnText}>Upgrade to Premium</Text>
+              </TouchableOpacity>
+            )}
 
             {hasLogo && (
               <TouchableOpacity onPress={() => Linking.openURL(userProfileData.custom_logo_url)} style={{ flexDirection: "row", alignItems: "center", marginTop: 10 }}>
@@ -387,36 +435,146 @@ export default function SettingsHome() {
           </View>
         </View>
 
-        {/* Upsell banner (only if not actively subscribed) */}
-        {!isPremium && (
-          <View style={styles.upgradeCard}>
-            <View style={styles.upgradeLeft}>
-              <View style={styles.crownWrap}>
-                <Crown size={18} color={BRAND} />
-              </View>
-              <View style={{ flexShrink: 1 }}>
-                <Text style={styles.upTitle}>Upgrade to Premium</Text>
-                <Text style={styles.upSub} numberOfLines={2}>
-                  Unlock duplication, advanced editing, and pro features.
-                </Text>
-              </View>
-            </View>
-            <TouchableOpacity onPress={() => router.push(accountHref)} style={styles.upBtn} activeOpacity={0.92}>
-              <Text style={styles.upBtnText}>Upgrade</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+        {/* ===== Sections ===== */}
 
-        {/* Sections */}
+        {/* Subscription & Billing */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Account</Text>
-          <Row icon={<CreditCard size={18} color={MUTED} />} title="Plan & Billing" subtitle="Manage / Upgrade" onPress={() => router.push(accountHref)} />
-          <Row icon={<Building2 size={18} color={MUTED} />} title="Business Profile" subtitle="Edit details & branding" onPress={() => router.push(profileHref)} />
+          <Text style={styles.sectionTitle}>Subscription & Billing</Text>
+          <Row
+            icon={<CreditCard size={18} color={MUTED} />}
+            title="Subscription"
+            subtitle={showProfile ? (isPremium ? "Manage your premium subscription" : "Upgrade to unlock premium features") : "Loading..."}
+            onPress={handleSubscription}
+          />
         </View>
 
+        {/* Account */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Support</Text>
-          <Row icon={<HelpCircle size={18} color={MUTED} />} title="Help & Support" subtitle="FAQs, guides, contact us" onPress={() => router.push(supportHref)} />
+          <Text style={styles.sectionTitle}>Account</Text>
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Account Details"
+            subtitle="Name & sign-in email"
+            onPress={() => router.push("/(app)/settings/account")}
+          />
+          <Row
+            icon={<Building2 size={18} color={MUTED} />}
+            title="Company Details"
+            subtitle="Business name, address, phone, VAT"
+            onPress={() => router.push("/(app)/settings/company")}
+          />
+          <Row
+            icon={<ImageIcon size={18} color={MUTED} />}
+            title="Branding & Logo"
+            subtitle="Logo & brand colour"
+            onPress={() => router.push("/(app)/settings/branding")}
+          />
+          {showProfile && isOwner && (
+            <Row
+              icon={<Shield size={18} color={MUTED} />}
+              title="Admin Access"
+              subtitle="Enable Admin on this device"
+              onPress={() => router.push("/(app)/settings/admin")}
+            />
+          )}
+        </View>
+
+        {/* Documents */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Documents</Text>
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Invoice Settings"
+            subtitle="Terms, footer, due days, tax"
+            onPress={() => router.push("/(app)/settings/invoice")}
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Quote Settings"
+            subtitle="Default markup, rounding, currency"
+            onPress={() => router.push("/(app)/settings/quote")}
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Templates & Layouts"
+            subtitle="Choose invoice/quote styles"
+            onPress={() => router.push("/(app)/settings/templates")}
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Forms & Certificates"
+            subtitle="EICR, Gas Safe (coming soon)"
+            onPress={() => router.push("/(app)/settings/forms")}
+          />
+        </View>
+
+        {/* Reminders & Communication */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Reminders & Communication</Text>
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Reminders & Notifications"
+            subtitle={showProfile ? (reminderSummary || "Due/overdue email timing") : "Loading..."}
+            onPress={() => router.push("/(app)/settings/reminders")}
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Email & Message Templates"
+            subtitle="Edit subject lines and content"
+            onPress={() => router.push("/(app)/settings/messages")} // placeholder
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Client Portal"
+            subtitle="Let clients view quotes & invoices"
+            onPress={() => router.push("/(app)/settings/portal")}
+          />
+        </View>
+
+        {/* Finance */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Finance</Text>
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Tax & Currency"
+            subtitle="VAT toggle, default tax rate, currency"
+            onPress={() => router.push("/(app)/settings/tax")}
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="CIS (UK)"
+            subtitle="Construction Industry Scheme"
+            onPress={() => router.push("/(app)/settings/cis")}
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Reports & Analytics"
+            subtitle="Revenue, payments, exports"
+            onPress={() => router.push("/(app)/settings/reports")}
+          />
+        </View>
+
+        {/* Support & About */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Support & About</Text>
+          <Row
+            icon={<HelpCircle size={18} color={MUTED} />}
+            title="Help & Support"
+            subtitle="FAQs, guides, contact us"
+            onPress={() => router.push("/(app)/settings/help")}
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="Terms & Privacy"
+            subtitle="Open website legal pages"
+            onPress={() => router.push("/(app)/settings/legal")}
+          />
+          <Row
+            icon={<FileText size={18} color={MUTED} />}
+            title="App Info"
+            subtitle="Version & diagnostics"
+            onPress={() => router.push("/(app)/settings/info")}
+          />
         </View>
 
         <TouchableOpacity style={[styles.logoutBtn]} activeOpacity={0.9} onPress={onLogout}>
@@ -441,7 +599,9 @@ export default function SettingsHome() {
 
           <TouchableOpacity style={[styles.primaryBtn, working && { opacity: 0.6 }]} disabled={working} onPress={pickAndUploadLogo} activeOpacity={0.9}>
             {working ? (
-              <ActivityIndicator color="#fff" />
+              <>
+                <Text style={styles.primaryBtnText}>Uploading...</Text>
+              </>
             ) : (
               <>
                 <ImageIcon size={18} color="#fff" style={{ marginRight: 8 }} />
@@ -485,28 +645,32 @@ function Row({ icon, title, subtitle, onPress }) {
 /* ------------------ styles ------------------ */
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: BG },
-  loading: { flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" },
-  
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    marginLeft: -8,
-    marginBottom: 8,
-  },
-  backText: {
-    color: BRAND,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  
-  header: { alignItems: "center", marginBottom: 12 },
-  h1: { color: TEXT, fontSize: 24, fontWeight: "800" },
-  hint: { color: MUTED, marginTop: 4 },
 
-  centerRow: { alignItems: "center", marginTop: 6 },
+  // Header now matches create.js (white bar with bottom border, centered title)
+  header: {
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: TEXT,
+  },
+
+  centerRow: { alignItems: "center", marginTop: 12 },
   profileCard: {
     width: "100%", maxWidth: 520, backgroundColor: CARD, borderRadius: 16,
     paddingVertical: 18, paddingHorizontal: 16, borderWidth: 1, borderColor: BORDER,
@@ -535,22 +699,26 @@ const styles = StyleSheet.create({
   badgeText: { color: "#fff", fontWeight: "800", fontSize: 12 },
   badgeMuted: { backgroundColor: "#6b7280" },
 
-  upgradeCard: {
-    width: "100%", maxWidth: 520, alignSelf: "center", marginTop: 14, backgroundColor: CARD,
-    borderRadius: 16, borderWidth: 1, borderColor: BORDER, padding: 14, flexDirection: "row",
-    alignItems: "center", justifyContent: "space-between",
-    shadowColor: "#0b1220", shadowOpacity: 0.05, shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 }, elevation: 2,
+  upgradeBtn: {
+    marginTop: 12,
+    backgroundColor: "#10b981",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    shadowColor: "#10b981",
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
-  upgradeLeft: { flexDirection: "row", alignItems: "center", gap: 12, flexShrink: 1 },
-  crownWrap: {
-    height: 34, width: 34, borderRadius: 17, backgroundColor: BRAND + "15",
-    borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center",
+  upgradeBtnText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
   },
-  upTitle: { color: TEXT, fontWeight: "900" },
-  upSub: { color: MUTED, marginTop: 2 },
-  upBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: BRAND },
-  upBtnText: { color: "#fff", fontWeight: "800" },
 
   section: {
     width: "100%", maxWidth: 520, alignSelf: "center", backgroundColor: CARD,
@@ -602,6 +770,18 @@ const styles = StyleSheet.create({
 
   secondaryBtn: { marginTop: 10, backgroundColor: "#eef2f7", borderRadius: 12, paddingVertical: 12, alignItems: "center" },
   secondaryBtnText: { color: TEXT, fontWeight: "800" },
+
+  skeletonAvatar: {
+    width: 30,
+    height: 30,
+    backgroundColor: '#e2e8f0',
+    borderRadius: 15,
+  },
+
+  skeletonText: {
+    backgroundColor: '#f3f4f6',
+    borderRadius: 4,
+  },
 });
 
 const rowStyles = StyleSheet.create({

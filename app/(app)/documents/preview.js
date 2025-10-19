@@ -11,8 +11,12 @@ import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import * as IntentLauncher from "expo-intent-launcher";
 import * as Haptics from "expo-haptics";
+import * as NavigationBar from "expo-navigation-bar";
+import * as SystemUI from "expo-system-ui";
 import { Feather } from "@expo/vector-icons";
 import { supabase } from "../../../lib/supabase";
+import ReviewAppModal from "../../../components/ReviewAppModal";
+import { shouldShowReviewPrompt, launchReviewFlow } from "../../../lib/reviewPrompt";
 
 /* ---- theme ---- */
 const BRAND = "#2a86ff";
@@ -20,6 +24,7 @@ const TEXT = "#0b1220";
 const BORDER = "#e6e9ee";
 const CARD = "#ffffff";
 const BG = "#f5f7fb";
+const BG_HEX = "#f5f7fb";
 
 /* ---- utils ---- */
 const safeName = (v) => (v || "document.pdf").replace(/[^\w.-]/g, "_");
@@ -122,6 +127,8 @@ export default function DocumentPreview() {
   const [cachedUri, setCachedUri] = useState("");
   const [base64Pdf, setBase64Pdf] = useState("");
   const [documentInfo, setDocumentInfo] = useState(null);
+  const [showReview, setShowReview] = useState(false);
+  const hasAskedRef = useRef(false);
 
   // Resolve URL from direct URL or database lookup
   const resolveUrl = useCallback(async () => {
@@ -279,9 +286,15 @@ export default function DocumentPreview() {
             originWhitelist={["*"]}
             javaScriptEnabled
             domStorageEnabled
-            onMessage={(e) => {
+            onMessage={async (e) => {
               const msg = String(e?.nativeEvent?.data || "");
               if (msg.indexOf("error:") === 0) Alert.alert("Viewer error", msg.slice(6));
+              else if (msg === "rendered" && !hasAskedRef.current) {
+                hasAskedRef.current = true;
+                try {
+                  if (await shouldShowReviewPrompt()) setShowReview(true);
+                } catch {}
+              }
             }}
             style={{ flex: 1 }}
           />
@@ -296,6 +309,15 @@ export default function DocumentPreview() {
         <ActionBtn label={busy === "open" ? "Opening" : "Open"} icon="external-link"
                    onPress={openExternal} disabled={!!busy || !!fatal} busy={busy === "open"} />
       </View>
+
+      <ReviewAppModal
+        visible={showReview}
+        onLater={() => setShowReview(false)}
+        onRateNow={async () => {
+          setShowReview(false);
+          await launchReviewFlow();
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -346,6 +368,6 @@ const styles = StyleSheet.create({
     alignItems: "center", gap: 6, flexDirection: "row", justifyContent: "center",
     backgroundColor: "#fff", borderWidth: 1, borderColor: BORDER,
   },
-  actionTxt: { color: TEXT, fontWeight: "900" },
-  busy: { opacity: 0.55 },
-});
+    actionTxt: { color: TEXT, fontWeight: "900" },
+    busy: { opacity: 0.55 },
+  });

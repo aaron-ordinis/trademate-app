@@ -13,10 +13,15 @@ import {
   Modal,
   Pressable,
   TextInput,
+  StatusBar,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as NavigationBar from "expo-navigation-bar";
+import * as SystemUI from "expo-system-ui";
 import * as ImagePicker from "expo-image-picker";
+import { Feather } from "@expo/vector-icons";
 
 import { supabase } from "../../../../../lib/supabase";
 import { jobHref } from "../../../../../lib/nav";
@@ -34,12 +39,10 @@ import {
   ExternalLink,
   Trash2,
   Pencil,
-  X,
-  ChevronLeft, // ← back icon to match previews
 } from "lucide-react-native";
 
-/* ---------- theme ---------- */
-const BG = "#f5f7fb";
+/* ---------- theme (match create.js / expenses) ---------- */
+const BG = "#ffffff";
 const CARD = "#ffffff";
 const TEXT = "#0b1220";
 const MUTED = "#6b7280";
@@ -86,11 +89,12 @@ const iconFor = (mime = "", name = "") => {
 
 export default function JobDocuments() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams();
   const jobId = String(id || "");
 
   const [busy, setBusy] = useState(false);
-  const [items, setItems] = useState([]);
+  const [docs, setDocs] = useState([]);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   // rename modal
@@ -98,12 +102,31 @@ export default function JobDocuments() {
   const [renameValue, setRenameValue] = useState("");
   const [renameItem, setRenameItem] = useState(null);
 
+  /* ---------- Force white system chrome like create.js/expenses ---------- */
+  useEffect(() => {
+    const forceWhite = async () => {
+      try {
+        StatusBar.setBarStyle("dark-content", false);
+        if (Platform.OS === "android") {
+          StatusBar.setBackgroundColor("#ffffff", false);
+          await NavigationBar.setBackgroundColorAsync("#ffffff");
+          await NavigationBar.setButtonStyleAsync("dark");
+          if (NavigationBar.setBorderColorAsync) {
+            await NavigationBar.setBorderColorAsync("#ffffff");
+          }
+        }
+        await SystemUI.setBackgroundColorAsync("#ffffff");
+      } catch {}
+    };
+    forceWhite();
+  }, []);
+
   const load = useCallback(async () => {
     if (!jobId) return;
     setBusy(true);
     try {
       const rows = await listJobDocs(jobId);
-      setItems(rows);
+      setDocs(rows);
     } catch (e) {
       console.error("[docs] load", e);
       Alert.alert("Error", e?.message || "Failed to load documents.");
@@ -252,34 +275,44 @@ export default function JobDocuments() {
     }
   };
 
+  /* ---------- UI ---------- */
+  const countLabel = `${docs.length} ${docs.length === 1 ? "file" : "files"}`;
+
   return (
     <View style={s.screen}>
-      {/* header (Back like previews) */}
-      <View style={s.top}>
-        <Pressable
-          onPress={() => router.replace(jobHref(jobId))}
-          style={s.backBtn}
-          android_ripple={{ color: "rgba(0,0,0,0.06)" }}
-        >
-          <ChevronLeft size={18} color={BRAND} />
-          <Text style={s.backTxt}>Back</Text>
-        </Pressable>
+      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
+      {/* Safe top like create.js / expenses */}
+      <View style={{ height: insets.top, backgroundColor: CARD }} />
 
-        <Text style={s.title}>Documents</Text>
-        <View style={{ width: 72 }} />
+      {/* Header: back, centered title, spacer */}
+      <View style={s.header}>
+        <TouchableOpacity
+          style={s.backBtn}
+          onPress={() => router.replace(jobHref(jobId))}
+        >
+          <Feather name="arrow-left" size={20} color={TEXT} />
+        </TouchableOpacity>
+        <Text style={s.headerTitle}>Documents</Text>
+        <View style={{ width: 40 }} />
       </View>
 
-      {busy ? <ActivityIndicator style={{ marginTop: 8 }} color={BRAND} /> : null}
+      {/* Info row (identical concept to Expenses' total pill) */}
+      <View style={s.infoRow}>
+        <View style={s.totalPill}>
+          <Text style={s.totalPillTxt}>{countLabel}</Text>
+        </View>
+        {busy ? <ActivityIndicator size="small" color={BRAND} /> : null}
+      </View>
 
       <FlatList
-        data={items}
+        data={docs}
         keyExtractor={(it) => String(it.id)}
         refreshing={busy}
         onRefresh={load}
-        contentContainerStyle={{ padding: 12, paddingBottom: 96 }}
+        contentContainerStyle={{ padding: 12, paddingBottom: 96 + insets.bottom }}
         renderItem={({ item }) => (
           <TouchableOpacity
-            activeOpacity={0.85}
+            activeOpacity={0.88}
             onPress={() => openRow(item)}
             style={s.card}
           >
@@ -288,9 +321,8 @@ export default function JobDocuments() {
               <Text style={s.name} numberOfLines={1}>
                 {item.name || item.kind}
               </Text>
-              <Text style={s.meta}>
-                {(item.mime || "file")} •{" "}
-                {new Date(item.created_at).toLocaleString()}
+              <Text style={s.meta} numberOfLines={1}>
+                {(item.mime || "file")} • {new Date(item.created_at).toLocaleString()}
               </Text>
             </View>
 
@@ -309,10 +341,7 @@ export default function JobDocuments() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[
-                s.iconBtn,
-                { backgroundColor: "#fee2e2", borderColor: "#fecaca" },
-              ]}
+              style={[s.iconBtn, s.iconBtnDanger]}
               onPress={() => removeRow(item)}
             >
               <Trash2 size={18} color={DANGER} />
@@ -321,8 +350,8 @@ export default function JobDocuments() {
         )}
         ListEmptyComponent={
           !busy ? (
-            <View style={{ alignItems: "center", marginTop: 28 }}>
-              <Text style={{ color: MUTED, fontWeight: "800" }}>
+            <View style={{ alignItems: "center", marginTop: 24 }}>
+              <Text style={{ color: MUTED, fontWeight: "800", fontSize: 13 }}>
                 No documents yet.
               </Text>
             </View>
@@ -330,21 +359,23 @@ export default function JobDocuments() {
         }
       />
 
-      {/* Floating Add Button */}
+      {/* FAB (match Expenses sizing/feel) */}
       <TouchableOpacity
-        style={s.fab}
+        style={[s.fab, { bottom: 24 + insets.bottom }]}
         onPress={() => setSheetOpen(true)}
-        activeOpacity={0.9}
+        activeOpacity={0.92}
       >
-        <Plus size={22} color="#fff" />
+        <Plus size={20} color="#fff" />
       </TouchableOpacity>
 
       {/* Add options sheet */}
       <Modal visible={sheetOpen} animationType="fade" transparent>
         <Pressable style={s.backdrop} onPress={() => setSheetOpen(false)} />
         <View style={s.sheet}>
-          <View style={s.sheetHandle} />
-          <Text style={s.sheetTitle}>Add document</Text>
+          <View style={s.handle} />
+          <View style={s.sheetHead}>
+            <Text style={s.sheetTitle}>Add document</Text>
+          </View>
 
           <TouchableOpacity style={s.sheetBtn} onPress={addFromPicker}>
             <FileText size={18} color={TEXT} />
@@ -371,18 +402,13 @@ export default function JobDocuments() {
       <Modal visible={renameOpen} animationType="fade" transparent>
         <Pressable style={s.backdrop} onPress={() => setRenameOpen(false)} />
         <View style={s.renameBox}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
+          <View style={s.renameHeader}>
             <Text style={s.renameTitle}>Rename file</Text>
             <TouchableOpacity onPress={() => setRenameOpen(false)} style={s.iconBtn}>
-              <X size={18} color={MUTED} />
+              <Feather name="x" size={18} color={MUTED} />
             </TouchableOpacity>
           </View>
+
           <TextInput
             value={renameValue}
             onChangeText={setRenameValue}
@@ -398,63 +424,96 @@ export default function JobDocuments() {
               <Text style={[s.sheetBtnTxt, { color: TEXT }]}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[s.sheetBtn, { flex: 1, backgroundColor: BRAND, borderColor: BRAND }]}
+              style={[s.primaryAction, { flex: 1 }]}
               onPress={saveRename}
+              activeOpacity={0.9}
             >
-              <Text style={[s.sheetBtnTxt, { color: "#fff" }]}>Save</Text>
+              <Text style={s.primaryActionTxt}>Save</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
+
+      {/* Safe bottom */}
+      <View style={{ height: insets.bottom, backgroundColor: "#ffffff" }} />
     </View>
   );
 }
 
+/* ---------- styles (mirrors Expenses) ---------- */
 const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
+  screen: { flex: 1, backgroundColor: BG },
 
-  top: {
-    height: 52,
+  /* header (match create.js / expenses) */
+  header: {
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 12,
   },
   backBtn: {
-    minWidth: 72,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: TEXT,
+  },
+
+  /* info row under header */
+  infoRow: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 6,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 6,
-    paddingRight: 8,
-    paddingLeft: 2,
-    borderRadius: 10,
+    gap: 10,
   },
-  backTxt: { color: BRAND, fontWeight: "800", fontSize: 16 },
+  totalPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#eef2ff",
+    borderWidth: 1,
+    borderColor: "#c7d2fe",
+  },
+  totalPillTxt: { color: BRAND, fontWeight: "900", fontSize: 13 },
 
-  title: { flex: 1, textAlign: "center", fontSize: 18, fontWeight: "900", color: TEXT },
-
+  /* card list (compact like expenses) */
   card: {
     backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 8,
     flexDirection: "row",
     alignItems: "center",
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.03,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 1,
+    gap: 10,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0b1220",
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 2 },
+      },
+      android: { elevation: 2 },
+    }),
   },
-  name: { color: TEXT, fontWeight: "900" },
-  meta: { color: MUTED, marginTop: 2, fontWeight: "700" },
+  name: { color: TEXT, fontWeight: "900", fontSize: 14 },
+  meta: { color: MUTED, marginTop: 2, fontWeight: "700", fontSize: 12 },
 
   iconBtn: {
-    height: 32,
-    width: 32,
+    height: 28,
+    width: 28,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -462,48 +521,49 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
+  iconBtnDanger: { backgroundColor: "#fee2e2", borderColor: "#fecaca" },
 
   /* FAB */
   fab: {
     position: "absolute",
     right: 16,
-    bottom: 24 + (Platform.OS === "ios" ? 12 : 0),
-    height: 56,
-    width: 56,
-    borderRadius: 28,
+    height: 52,
+    width: 52,
+    borderRadius: 26,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: BRAND,
     shadowColor: "#1e293b",
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
     elevation: 3,
   },
 
-  /* Sheet */
+  /* bottom sheet (match expenses) */
   backdrop: { flex: 1, backgroundColor: "#0008" },
   sheet: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-    padding: 16,
     backgroundColor: CARD,
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
+    padding: 16,
     borderTopWidth: 1,
     borderColor: BORDER,
   },
-  sheetHandle: {
+  handle: {
     alignSelf: "center",
     width: 44,
     height: 5,
     borderRadius: 999,
     backgroundColor: BORDER,
-    marginBottom: 10,
+    marginBottom: 8,
   },
-  sheetTitle: { color: TEXT, fontWeight: "900", fontSize: 16, marginBottom: 6 },
+  sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  sheetTitle: { color: TEXT, fontWeight: "900", fontSize: 16 },
   sheetBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -518,7 +578,7 @@ const s = StyleSheet.create({
   },
   sheetBtnTxt: { color: TEXT, fontWeight: "800" },
 
-  /* Rename modal */
+  /* rename modal (match compact styles) */
   renameBox: {
     position: "absolute",
     left: 14,
@@ -529,20 +589,40 @@ const s = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: BORDER,
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.1,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0b1220",
+        shadowOpacity: 0.1,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 8 },
+      },
+      android: { elevation: 4 },
+    }),
   },
-  renameTitle: { color: TEXT, fontWeight: "900", fontSize: 18, marginBottom: 10 },
+  renameHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  renameTitle: { color: TEXT, fontWeight: "900", fontSize: 16 },
   renameInput: {
     backgroundColor: "#fff",
     color: TEXT,
     borderRadius: 10,
-    padding: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
     borderWidth: 1,
     borderColor: BORDER,
     marginBottom: 12,
+    fontSize: 14,
+    fontWeight: "600",
   },
+
+  /* primary action (reuse from expenses look) */
+  primaryAction: {
+    backgroundColor: BRAND,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: BRAND,
+  },
+  primaryActionTxt: { color: "#fff", fontWeight: "900" },
 });

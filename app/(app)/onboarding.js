@@ -3,25 +3,26 @@ import { loginHref, quotesListHref } from "../../lib/nav";
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TextInput, Switch, TouchableOpacity,
-  StyleSheet, Alert, ScrollView, Image, Platform,
-  ActivityIndicator, Modal, Pressable, Linking, Dimensions, StatusBar
+  StyleSheet, ScrollView, Image, Platform,
+  Modal, Pressable, Linking, Dimensions, StatusBar
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
-import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as NavigationBar from 'expo-navigation-bar';
+import * as SystemUI from 'expo-system-ui';
 
 // Theme
 const BRAND  = '#2a86ff';
 const TEXT   = '#0b1220';
 const MUTED  = '#6b7280';
 const CARD   = '#ffffff';
-const BG     = '#f5f7fb';
-const BG_HEX = '#f5f7fb';
+const BG     = '#ffffff';   // white background
+const BG_HEX = '#ffffff';   // white background
 const BORDER = '#e6e9ee';
 const OK     = '#16a34a';
 const DISABLED = '#9ca3af';
@@ -73,9 +74,56 @@ export default function Onboarding() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  // Check if onboarding is needed based on profile
-  const [visible, setVisible] = useState(false);
-  const [profileChecked, setProfileChecked] = useState(false);
+  // Force white colors aggressively and repeatedly
+  useEffect(() => {
+    const forceWhiteColors = () => {
+      // Force status bar white immediately and synchronously
+      StatusBar.setBarStyle('dark-content', false);
+      if (Platform.OS === 'android') {
+        StatusBar.setBackgroundColor('#ffffff', false);
+      }
+    };
+
+    const forceWhiteAsync = async () => {
+      try {
+        if (Platform.OS === 'android') {
+          // Force navigation bar white
+          await NavigationBar.setBackgroundColorAsync('#ffffff');
+          await NavigationBar.setButtonStyleAsync('dark');
+          if (NavigationBar.setBorderColorAsync) {
+            await NavigationBar.setBorderColorAsync('#ffffff');
+          }
+        }
+        
+        // Force system UI white
+        await SystemUI.setBackgroundColorAsync('#ffffff');
+      } catch (error) {
+        console.log('Force white error:', error);
+      }
+    };
+
+    // Force immediately
+    forceWhiteColors();
+    forceWhiteAsync();
+
+    // Force every 100ms for the first 2 seconds to override any interference
+    const intervals = [];
+    for (let i = 0; i < 20; i++) {
+      intervals.push(setTimeout(() => {
+        forceWhiteColors();
+        if (i === 0) forceWhiteAsync();
+      }, i * 100));
+    }
+
+    return () => intervals.forEach(clearTimeout);
+  }, []);
+
+  // Force white colors on every render
+  StatusBar.setBarStyle('dark-content', false);
+  if (Platform.OS === 'android') {
+    StatusBar.setBackgroundColor('#ffffff', false);
+    NavigationBar.setBackgroundColorAsync('#ffffff').catch(() => {});
+  }
 
   // Steps
   const [step, setStep] = useState(1);
@@ -133,99 +181,42 @@ export default function Onboarding() {
     return parts.map(p => p.charAt(0).toUpperCase()).join('') || 'U';
   }, [businessName]);
 
-  // Simplified profile check effect
+  // Get user email on mount
   useEffect(() => {
-    const checkProfileComplete = async () => {
+    const getUser = async () => {
       try {
-        console.log('[ONBOARDING] Starting profile check...');
-        
         const { data } = await supabase.auth.getUser();
         const user = data?.user;
-        if (!user) { 
-          console.log('[ONBOARDING] No user found, redirecting to login');
+        if (!user) {
           router.replace(loginHref);
-          return; 
-        }
-
-        console.log('[ONBOARDING] User found:', user.email);
-        setEmail(user.email ?? '');
-
-        console.log('[ONBOARDING] Checking profile completeness...');
-        const { data: profile, error } = await supabase
-          .from('profiles')
-          .select('business_name, hourly_rate, materials_markup_pct, phone, address_line1')
-          .eq('id', user.id)
-          .maybeSingle();
-
-        if (error) {
-          console.error('[ONBOARDING] Profile check error:', error);
-          setVisible(true);
-          setProfileChecked(true);
           return;
         }
-
-        console.log('[ONBOARDING] Profile data:', profile);
-
-        const needsOnboarding = !profile || 
-          !profile.business_name || 
-          profile.business_name.trim() === '' ||
-          profile.hourly_rate == null ||
-          profile.hourly_rate === '' ||
-          profile.hourly_rate <= 0 ||
-          !profile.phone ||
-          profile.phone.trim() === '' ||
-          !profile.address_line1 ||
-          profile.address_line1.trim() === '';
-
-        console.log('[ONBOARDING] Needs onboarding:', needsOnboarding);
-
-        if (needsOnboarding) {
-          console.log('[ONBOARDING] Profile incomplete, showing onboarding');
-          setVisible(true);
-        } else {
-          console.log('[ONBOARDING] Profile complete, navigating to quotes');
-          setVisible(false);
-          router.replace('/(app)/quotes/list');
-        }
-      } catch (error) {
-        console.error('[ONBOARDING] Profile check error:', error);
-        // Show onboarding on error to avoid infinite loading
-        setVisible(true);
-      } finally {
-        console.log('[ONBOARDING] Profile check complete');
-        setProfileChecked(true);
+        setEmail(user.email ?? '');
+      } catch {
+        router.replace(loginHref);
       }
     };
-
-    // Run immediately without delay
-    checkProfileComplete();
+    getUser();
   }, [router]);
 
-  // loading state while checking profile - simplified with 3 second timeout
-  if (!profileChecked) {
-    // Fallback timeout to prevent infinite loading
-    setTimeout(() => {
-      if (!profileChecked) {
-        console.log('[ONBOARDING] Timeout fallback - showing onboarding');
-        setVisible(true);
-        setProfileChecked(true);
-      }
-    }, 3000); // 3 second timeout
-
+  // loading state while checking profile - REMOVE SPINNER
+  if (!email) {
     return (
-      <View style={{ flex: 1, backgroundColor: BG, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator color={BRAND} size="large" />
-        <Text style={{ color: MUTED, marginTop: 16 }}>Checking your profile...</Text>
-        <Text style={{ color: MUTED, marginTop: 8, fontSize: 12 }}>If this takes too long, check your connection</Text>
+      <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          {/* Removed ActivityIndicator */}
+          <Text style={{ color: MUTED, marginTop: 16 }}>Loading...</Text>
+        </View>
       </View>
     );
   }
 
-  // Don't render modal if not needed
-  if (!visible) {
-    // If profile is complete but modal not visible, we should be navigating
-    console.log('[ONBOARDING] Profile complete, modal not visible - this should redirect');
-    return null;
+  // Force white immediately when component renders
+  StatusBar.setBarStyle('dark-content', false);
+  if (Platform.OS === 'android') {
+    StatusBar.setBackgroundColor('#ffffff', false);
+    NavigationBar.setBackgroundColorAsync('#ffffff').catch(() => {});
   }
 
   const pickAndUploadLogo = async () => {
@@ -279,7 +270,7 @@ export default function Onboarding() {
 
       setLogoUrl(publicishUrl + (publicishUrl.includes('?') ? '&' : '?') + 't=' + Date.now());
     } catch (e) {
-      Alert.alert('Upload failed', e?.message || 'Could not upload logo.');
+      console.error('Logo upload error:', e);
     } finally {
       setLogoWorking(false);
       setLogoModalOpen(false);
@@ -304,7 +295,7 @@ export default function Onboarding() {
 
       setLogoUrl(null);
     } catch (e) {
-      Alert.alert('Error', e?.message || 'Could not remove logo.');
+      console.error('Logo remove error:', e);
     } finally {
       setLogoWorking(false);
       setLogoModalOpen(false);
@@ -345,21 +336,11 @@ export default function Onboarding() {
     }
   };
 
-  const showPolishedAlert = (title, message) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    Alert.alert(title, message, [{ text: 'OK', style: 'default' }], {
-      userInterfaceStyle: 'light',
-      cancelable: true
-    });
-  };
-
   // NOTE: define the handlers actually used in JSX
   const goNext = () => {
     const errors = getCurrentStepErrors();
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors);
-      const firstError = Object.values(errors)[0];
-      showPolishedAlert('Complete Required Fields', 'Please fill in all required fields before continuing. ' + firstError);
       return;
     }
     setFieldErrors({});
@@ -384,13 +365,12 @@ export default function Onboarding() {
     const allErrors = { ...validateStep1(), ...validateStep2(), ...validateStep4() };
     if (Object.keys(allErrors).length > 0) {
       setFieldErrors(allErrors);
-      const firstError = Object.values(allErrors)[0];
-      showPolishedAlert('Profile Incomplete', 'Please complete all required fields: ' + firstError);
       return;
     }
 
     try {
       setSaving(true);
+      
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
       if (!user) throw new Error('Not signed in.');
@@ -421,24 +401,10 @@ export default function Onboarding() {
         .eq('id', user.id);
       if (error) throw error;
 
-      console.log('[ONBOARDING] Profile saved successfully, navigating to quotes list');
-      
-      // Simple alert and immediate navigation
-      Alert.alert(
-        'Profile Complete!', 
-        'Welcome to TradeMate!',
-        [
-          {
-            text: 'Continue',
-            onPress: () => {
-              router.replace('/(app)/quotes/list');
-            }
-          }
-        ]
-      );
-      
+      // Navigate to the tab structure, not directly to list
+      router.replace('/(app)/(tabs)/quotes');
     } catch (e) {
-      showPolishedAlert('Save Failed', e?.message ?? 'Could not save profile. Please try again.');
+      console.error('Save error:', e);
     } finally {
       setSaving(false);
     }
@@ -451,24 +417,28 @@ export default function Onboarding() {
   const scrollMax = Math.max(240, Math.min(height - chromePad, 560));
 
   return (
-    <Modal
-      visible={visible}
-      animationType="fade"
-      transparent
-      presentationStyle="overFullScreen"
-      statusBarTranslucent={Platform.OS === 'android'}
-    >
-      {/* Fullscreen blur */}
-      <BlurView 
-        intensity={10} 
-        tint="systemThinMaterialLight" 
-        style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} 
-      />
+    <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
+      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
+      
+      {/* White safe area top */}
+      <View style={{ height: insets.top, backgroundColor: '#ffffff' }} />
 
-      <StatusBar backgroundColor="rgba(245,247,251,0.9)" barStyle="dark-content" translucent />
-
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 12 }}>
-        <View style={[modalCard, { width: maxCardW, maxWidth: maxCardW, backgroundColor: CARD, overflow: "hidden" }]}>
+      {/* Main container with white background */}
+      <View style={{ 
+        flex: 1, 
+        backgroundColor: '#ffffff', 
+        justifyContent: "center", 
+        alignItems: "center", 
+        padding: 12 
+      }}>
+        {/* Main Card - force white background */}
+        <View style={[modalCard, { 
+          width: maxCardW, 
+          maxWidth: maxCardW, 
+          backgroundColor: '#ffffff', 
+          overflow: "hidden" 
+        }]}
+        >
           {/* Header */}
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", paddingHorizontal: 12, paddingTop: 10, marginBottom: 6 }}>
             <Text style={{ color: TEXT, fontSize: 18, fontWeight: "900" }}>Business Profile</Text>
@@ -483,7 +453,7 @@ export default function Onboarding() {
           <View style={{ maxHeight: scrollMax, paddingHorizontal: 12 }}>
             <ScrollView contentContainerStyle={{ paddingBottom: 12, paddingTop: 2 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" showsVerticalScrollIndicator={false}>
               <View style={{ alignItems: 'center', marginBottom: 8 }}>
-                <Text style={styles.hintHeader}>Set this once. Used on every quote.</Text>
+                <Text style={styles.hintHeader}>Set this once. Used on all documents.</Text>
               </View>
 
               {/* STEP 1 — Logo & Basics */}
@@ -672,7 +642,7 @@ export default function Onboarding() {
 
                     <View style={{ flexDirection: 'row', gap: 8 }}>
                       <View style={{ flex: 1 }}>
-                        <Label required>Travel Fee (£/mile)</Label>
+                        <Label required>Travel (£/mile)</Label>
                         <Input
                           placeholder="e.g. 0.45"
                           keyboardType="decimal-pad"
@@ -688,7 +658,7 @@ export default function Onboarding() {
                         {fieldErrors.travelRate && <ErrorText>{fieldErrors.travelRate}</ErrorText>}
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Label required>Hours per day</Label>
+                        <Label required>Hours/day</Label>
                         <Input
                           placeholder="e.g. 8"
                           keyboardType="decimal-pad"
@@ -705,35 +675,35 @@ export default function Onboarding() {
                       </View>
                     </View>
 
-                    {/* Day Rate (auto) */}
-                    <View style={styles.calcRow}>
-                      <Text style={styles.calcLabel}>Day Rate (auto)</Text>
+                    {/* Day Rate (auto) - more compact */}
+                    <View style={[styles.calcRow, { marginBottom: 4 }]}>
+                      <Text style={styles.calcLabel}>Day Rate</Text>
                       <Text style={styles.calcValue}>£{dayRate.toFixed(2)}</Text>
                     </View>
-                    <Text style={styles.hint}>Day rate = Hourly × Hours/Day. Used when a job spans multiple days.</Text>
                   </Card>
 
                   <Card>
-                    <Text style={styles.cardTitle}>Terms</Text>
-                    <Text style={styles.optionalText}>Optional</Text>
-                    <Label>Payment Terms</Label>
-                    <Input 
-                      placeholder="e.g. Payment due within 7 days" 
-                      value={terms} 
-                      onChangeText={setTerms} 
-                      multiline
-                      numberOfLines={2}
-                      style={{ minHeight: 60, textAlignVertical: 'top' }}
-                    />
-                    <Label>Warranty</Label>
-                    <Input 
-                      placeholder="e.g. 12 months warranty on all work" 
-                      value={warranty} 
-                      onChangeText={setWarranty}
-                      multiline
-                      numberOfLines={2}
-                      style={{ minHeight: 60, textAlignVertical: 'top' }}
-                    />
+                    <Text style={styles.cardTitle}>Terms (Optional)</Text>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <View style={{ flex: 1 }}>
+                        <Label>Payment</Label>
+                        <Input 
+                          placeholder="e.g. 7 days" 
+                          value={terms} 
+                          onChangeText={setTerms}
+                          style={{ marginBottom: 4 }}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Label>Warranty</Label>
+                        <Input 
+                          placeholder="e.g. 12 months" 
+                          value={warranty} 
+                          onChangeText={setWarranty}
+                          style={{ marginBottom: 4 }}
+                        />
+                      </View>
+                    </View>
                   </Card>
                 </View>
               )}
@@ -755,6 +725,9 @@ export default function Onboarding() {
         </View>
       </View>
 
+      {/* White safe area bottom */}
+      <View style={{ height: insets.bottom, backgroundColor: '#ffffff' }} />
+
       {/* Logo sheet */}
       <Modal visible={logoModalOpen} animationType="fade" transparent>
         <Pressable style={styles.modalBackdrop} onPress={() => !logoWorking && setLogoModalOpen(false)} />
@@ -769,11 +742,7 @@ export default function Onboarding() {
             onPress={pickAndUploadLogo}
             activeOpacity={0.9}
           >
-            {logoWorking ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.primaryBtnText}>{logoUrl ? 'Choose new logo' : 'Choose logo'}</Text>
-            )}
+            <Text style={styles.primaryBtnText}>{logoUrl ? 'Choose new logo' : 'Choose logo'}</Text>
           </TouchableOpacity>
 
           {logoUrl && (
@@ -783,18 +752,23 @@ export default function Onboarding() {
           )}
         </View>
       </Modal>
-    </Modal>
+    </View>
   );
 }
 
 // UI primitives
 const modalShadow = Platform.select({
-  ios: { shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 18, shadowOffset: { width: 0, height: 6 } },
+  ios: {
+    shadowColor: '#0b1220',
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+  },
   android: { elevation: 18 },
 });
 
 const modalCard = {
-  backgroundColor: BG,
+  backgroundColor: '#ffffff',  // Force white
   borderRadius: 18,
   paddingTop: 12,
   borderWidth: 1,
@@ -805,7 +779,7 @@ const modalCard = {
 const footerWrap = {
   borderTopWidth: 1,
   borderTopColor: BORDER,
-  backgroundColor: CARD,
+  backgroundColor: '#ffffff',  // Force white
   borderBottomLeftRadius: 18,
   borderBottomRightRadius: 18,
 };
@@ -814,15 +788,20 @@ function Card({ children }) {
   return (
     <View
       style={{
-        backgroundColor: CARD,
+        backgroundColor: '#ffffff',  // Force white instead of CARD constant
         borderRadius: 12,
         padding: 10,
         borderWidth: 1,
         borderColor: BORDER,
         marginBottom: 8,
         ...Platform.select({
-          ios: { shadowColor: "#000", shadowOpacity: 0.07, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
-          android: { elevation: 4 },
+          ios: {
+            shadowColor: '#0b1220',
+            shadowOpacity: 0.12,
+            shadowRadius: 14,
+            shadowOffset: { width: 0, height: 8 },
+          },
+          android: { elevation: 6 },
         }),
       }}
     >
@@ -845,7 +824,16 @@ function Input(props) {
     <TextInput
       {...props}
       style={[
-        { backgroundColor: CARD, borderColor: BORDER, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 10, color: TEXT, marginBottom: 8 },
+        { 
+          backgroundColor: '#ffffff',  // Force white instead of CARD constant
+          borderColor: BORDER, 
+          borderWidth: 1, 
+          borderRadius: 10, 
+          paddingHorizontal: 10, 
+          paddingVertical: 10, 
+          color: TEXT, 
+          marginBottom: 8 
+        },
         props.style || {},
       ]}
       placeholderTextColor={MUTED}
@@ -932,17 +920,12 @@ const styles = StyleSheet.create({
   calcLabel: { color: MUTED, fontWeight: '700' },
   calcValue: { color: TEXT, fontWeight: '900' },
 
-  btnSave: {
-    backgroundColor: BRAND, borderRadius: 14, padding: 14, alignItems: 'center',
-    shadowColor: BRAND, shadowOpacity: 0.2, shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 }, elevation: 3,
-  },
-  btnSaveText: { color: '#fff', fontWeight: '900' },
-
+  // Bottom sheet backdrop (logo only)
   modalBackdrop: { flex: 1, backgroundColor: '#0008' },
   sheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
-    backgroundColor: CARD, borderTopLeftRadius: 18, borderTopRightRadius: 18,
+    backgroundColor: '#ffffff',  // Force white instead of CARD constant
+    borderTopLeftRadius: 18, borderTopRightRadius: 18,
     padding: 16, borderTopWidth: 1, borderColor: BORDER,
   },
   sheetHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 999, backgroundColor: BORDER, marginBottom: 10 },

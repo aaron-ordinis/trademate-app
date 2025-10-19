@@ -1,289 +1,230 @@
 /* app/(auth)/login.js */
-import { onboardingHref, signupHref } from "../../lib/nav";
-import React, { useRef, useState } from 'react';
+import { onboardingHref } from "../../lib/nav";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet,
-  Alert, ActivityIndicator, Image, StatusBar,
-} from 'react-native';
-import { useRouter, Link } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
-import * as AuthSession from 'expo-auth-session';
-import * as SecureStore from 'expo-secure-store';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Eye, EyeOff } from 'lucide-react-native';
-import { AntDesign, FontAwesome } from '@expo/vector-icons';
-import { supabase } from '../../lib/supabase';
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Image,
+  StatusBar,
+} from "react-native";
+import { useRouter } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Eye, EyeOff } from "lucide-react-native";
+import { supabase } from "../../lib/supabase";
 
-WebBrowser.maybeCompleteAuthSession();
-
-const BRAND = '#2a86ff';
-const TEXT = '#0b1220';
-const SUBTLE = '#6b7280';
-const SURFACE = '#f6f7f9';
-const BORDER = '#e6e9ee';
-const GOOGLE_BORDER = '#dadce0';
-const GOOGLE_TEXT = '#3c4043';
-const FB_BLUE = '#1877F2';
+/* --- Brand tokens --- */
+const BRAND = "#2a86ff";
+const TEXT = "#0b1220";
+const SUBTLE = "#6b7280";
+const SURFACE = "#f6f7f9";
+const BORDER = "#e6e9ee";
+const OK = "#16a34a";
+const DANGER = "#b3261e";
 
 const STORAGE_KEYS = {
-  rememberMe: 'tmq.rememberMe',
-  rememberedEmail: 'tmq.rememberedEmail',
+  rememberMe: "tmq.rememberMe",
+  rememberedEmail: "tmq.rememberedEmail",
 };
-
-// 👉 Use Expo proxy to avoid PKCE state loss (works great in prod too)
-const USE_EXPO_PROXY = true;
-
-// Build redirect
-const makeRedirectUri = () =>
-  USE_EXPO_PROXY
-    ? AuthSession.makeRedirectUri({ useProxy: true })
-    : 'tradematequotes://auth';
 
 export default function Login() {
   const router = useRouter();
   const pwRef = useRef(null);
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
-  const [facebookLoading, setFacebookLoading] = useState(false);
   const [showPw, setShowPw] = useState(false);
-  const [authError, setAuthError] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
 
-  const anySocialBusy = googleLoading || facebookLoading;
+  // Inline message (no popups)
+  const [inlineMsg, setInlineMsg] = useState(""); // text
+  const [inlineKind, setInlineKind] = useState("info"); // "error" | "success" | "info"
+  const [showPwPanel, setShowPwPanel] = useState(false); // visibility of rules panel
+
   const normEmail = () => email.trim().toLowerCase();
 
-  const validate = () => {
-    setAuthError('');
-    const e = normEmail();
-    if (!e || !password.trim()) { setAuthError('Please enter both email and password.'); return false; }
-    if (!/^\S+@\S+\.\S+$/.test(e)) { setAuthError('Please enter a valid email address.'); return false; }
-    return true;
-  };
+  // ---- Password requirements (live) ----
+  const rules = useMemo(() => {
+    const pw = password || "";
+    return {
+      length: pw.length >= 8,
+      upper: /[A-Z]/.test(pw),
+      lower: /[a-z]/.test(pw),
+      digit: /\d/.test(pw),
+      special: /[^A-Za-z0-9]/.test(pw),
+    };
+  }, [password]);
+
+  const allRulesOk = rules.length && rules.upper && rules.lower && rules.digit && rules.special;
+
+  // Load remembered prefs
+  useEffect(() => {
+    (async () => {
+      try {
+        const [rememberFlag, remembered] = await Promise.all([
+          AsyncStorage.getItem(STORAGE_KEYS.rememberMe),
+          AsyncStorage.getItem(STORAGE_KEYS.rememberedEmail),
+        ]);
+        if (rememberFlag != null) setRememberMe(rememberFlag === "1");
+        if (rememberFlag === "1" && remembered) setEmail(remembered);
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => {
+    // Show the pw panel whenever user starts typing a password
+    setShowPwPanel(password.length > 0 || showPwPanel);
+  }, [password]);
 
   const mapSupabaseError = (err) => {
-    const msg = String(err?.message || '').toLowerCase();
-    const code = String(err?.code || '').toLowerCase();
-    if (code === 'invalid_credentials' || msg.includes('invalid login credentials')) return 'Email or password is incorrect.';
-    if (msg.includes('email not confirmed')) return 'Please confirm your email before signing in.';
-    return err?.message || 'Something went wrong. Please try again.';
+    const msg = String(err?.message || "").toLowerCase();
+    const code = String(err?.code || "").toLowerCase();
+    if (code === "invalid_credentials" || msg.includes("invalid login credentials"))
+      return "Email or password is incorrect.";
+    if (msg.includes("email not confirmed")) return "Please confirm your email before signing in.";
+    return err?.message || "Something went wrong. Please try again.";
   };
 
+  async function persistRemember(e) {
+    await Promise.all([
+      AsyncStorage.setItem(STORAGE_KEYS.rememberMe, rememberMe ? "1" : "0"),
+      rememberMe
+        ? AsyncStorage.setItem(STORAGE_KEYS.rememberedEmail, e)
+        : AsyncStorage.removeItem(STORAGE_KEYS.rememberedEmail),
+    ]);
+  }
+
+  function validateEmailPw() {
+    setInlineMsg("");
+    const e = normEmail();
+    if (!e || !password.trim()) {
+      setInlineKind("error");
+      setInlineMsg("Please enter both email and password.");
+      return false;
+    }
+    if (!/^\S+@\S+\.\S+$/.test(e)) {
+      setInlineKind("error");
+      setInlineMsg("Please enter a valid email address.");
+      return false;
+    }
+    return true;
+  }
+
+  // ---- Login ----
   const handleLogin = async () => {
-    if (loading || anySocialBusy) return;
-    if (!validate()) return;
+    if (loading) return;
+    if (!validateEmailPw()) return;
 
     try {
       setLoading(true);
       const e = normEmail();
-
-      // Store remember me preference and email only (not the large session)
-      await Promise.all([
-        AsyncStorage.setItem(STORAGE_KEYS.rememberMe, rememberMe ? '1' : '0'),
-        rememberMe
-          ? AsyncStorage.setItem(STORAGE_KEYS.rememberedEmail, e)
-          : AsyncStorage.removeItem(STORAGE_KEYS.rememberedEmail),
-      ]);
+      await persistRemember(e);
 
       const { data, error } = await supabase.auth.signInWithPassword({ email: e, password });
-      console.log('[LOGIN] signInWithPassword → session?', !!data?.session, 'error?', error?.message);
       if (error) throw error;
 
-      // Don't store the session in SecureStore - Supabase handles this automatically
-      // The session contains large JWT tokens that exceed SecureStore's 2048 byte limit
-      
-      router.replace('/(app)/onboarding');
+      // Remove navigation animation
+      router.replace({
+        pathname: "/(app)/onboarding",
+        params: { animation: 'none' }
+      });
     } catch (e) {
-      const nice = mapSupabaseError(e);
-      setAuthError(nice);
-      Alert.alert('Login failed', nice);
-      console.log('[LOGIN] Email/password login error:', e?.message);
-    } finally { setLoading(false); }
+      setInlineKind("error");
+      setInlineMsg(mapSupabaseError(e));
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleForgotPw = async () => {
-    if (loading || anySocialBusy) return;
-    const e = normEmail();
-    if (!e) { setAuthError('Enter your email above to receive a reset link.'); return; }
-    if (!/^\S+@\S+\.\S+$/.test(e)) { setAuthError('Please enter a valid email address.'); return; }
+  // ---- Register (same screen). Email confirmation is OFF. ----
+  const handleRegister = async () => {
+    if (loading) return;
+    if (!validateEmailPw()) return;
+
+    // Enforce strong password; keep panel visible
+    setShowPwPanel(true);
+    if (!allRulesOk) {
+      setInlineKind("error");
+      setInlineMsg("Password does not meet requirements.");
+      return;
+    }
 
     try {
       setLoading(true);
-      setAuthError('');
-      const { error } = await supabase.auth.resetPasswordForEmail(e, { redirectTo: 'tradematequotes://reset' });
-      if (error) throw error;
-      Alert.alert('Check your email', 'We sent a password reset link.');
-    } catch (e) {
-      const nice = mapSupabaseError(e);
-      setAuthError(nice);
-      Alert.alert('Reset failed', nice);
-      console.error('[TMQ][RESET] Error', e);
-    } finally { setLoading(false); }
-  };
+      const e = normEmail();
+      await persistRemember(e);
 
-  // ---- OAuth helpers (Google & Facebook) ----
-  const makeRedirectUri = () => {
-    const isDev = __DEV__ || process.env.NODE_ENV === 'development';
-    const baseUri = AuthSession.makeRedirectUri({ 
-      scheme: 'tradematequotes', 
-      path: 'auth', 
-      preferLocalhost: isDev 
-    });
-    
-    console.log('[OAUTH] Environment:', isDev ? 'development' : 'production');
-    console.log('[OAUTH] Redirect URI:', baseUri);
-    
-    return baseUri;
-  };
-
-  const openOAuth = async (provider, opts = {}) => {
-    const redirectTo = makeRedirectUri();
-    const isDev = __DEV__ || process.env.NODE_ENV === 'development';
-    
-    console.log('[OAUTH]', provider, 'Starting OAuth flow');
-    console.log('[OAUTH]', provider, 'Environment:', isDev ? 'EAS Development' : 'Production');
-    console.log('[OAUTH]', provider, 'Redirect URI:', redirectTo);
-
-    try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: { 
-          redirectTo, 
-          skipBrowserRedirect: true,
-          ...opts 
+      const { data, error } = await supabase.auth.signUp({
+        email: e,
+        password,
+        options: {
+          // With confirm OFF a session is returned; this value is ignored but harmless.
+          emailRedirectTo: "tradematequotes://auth/login",
+          data: { plan_tier: "free" },
         },
       });
+      if (error) throw error;
 
-      console.log('[OAUTH]', provider, 'Supabase response - error?', error?.message, 'data.url?', !!data?.url);
-      
-      if (error) {
-        console.log('[OAUTH]', provider, 'Supabase OAuth error details:', error);
-        
-        // Check for common development environment issues
-        if (error.message?.includes('redirect_uri') || error.message?.includes('client_id')) {
-          throw new Error(`OAuth configuration issue for ${isDev ? 'development' : 'production'} environment. Please check your Supabase OAuth settings.`);
-        }
-        
-        throw new Error(`OAuth setup error: ${error.message}`);
+      // With confirm OFF, we should get a session. Be defensive anyway.
+      if (data?.session) {
+        router.replace({
+          pathname: "/(app)/onboarding",
+          params: { animation: 'none' }
+        });
+      } else {
+        setInlineKind("success");
+        setInlineMsg("Account created. Signing you in…");
+        // Fallback: try password sign-in
+        const { error: e2 } = await supabase.auth.signInWithPassword({ email: e, password });
+        if (!e2) router.replace({
+          pathname: "/(app)/onboarding",
+          params: { animation: 'none' }
+        });
       }
-      
-      if (!data?.url) {
-        console.log('[OAUTH]', provider, 'No auth URL returned from Supabase');
-        console.log('[OAUTH]', provider, 'This often happens when:');
-        console.log('[OAUTH]', provider, '1. OAuth provider is not enabled in Supabase');
-        console.log('[OAUTH]', provider, '2. Client ID/Secret not configured');
-        console.log('[OAUTH]', provider, '3. Redirect URLs don\'t match');
-        console.log('[OAUTH]', provider, '4. Different config needed for EAS dev vs production');
-        
-        throw new Error(`${provider} OAuth is not properly configured for ${isDev ? 'development' : 'production'} builds. Please check your Supabase dashboard.`);
+    } catch (e) {
+      let nice = e?.message ?? "Please try again.";
+      if (e?.message?.includes("User already registered")) {
+        nice = "This email is already registered. Try logging in instead.";
+      } else if (e?.message?.includes("Invalid email")) {
+        nice = "Please enter a valid email address.";
       }
-
-      console.log('[OAUTH]', provider, 'Opening browser with URL:', data.url.slice(0, 100) + '...');
-      
-      const res = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-      console.log('[OAUTH]', provider, 'WebBrowser result:', res.type);
-      
-      if (res.type !== 'success' || !res.url) {
-        if (res.type === 'cancel') {
-          throw new Error('Sign-in was cancelled');
-        }
-        throw new Error('Authentication failed or was cancelled');
-      }
-
-      console.log('[OAUTH]', provider, 'Exchanging code for session...');
-      const { data: exData, error: exErr } = await supabase.auth.exchangeCodeForSession(res.url);
-      
-      if (exErr) {
-        console.log('[OAUTH]', provider, 'Exchange code error:', exErr);
-        throw new Error(`Authentication failed: ${exErr.message}`);
-      }
-
-      if (!exData?.session) {
-        throw new Error('No session returned after authentication');
-      }
-
-      console.log('[OAUTH]', provider, 'Successfully authenticated!');
-      router.replace('/(app)/onboarding');
-      
-    } catch (error) {
-      throw error;
+      setInlineKind("error");
+      setInlineMsg(nice);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleGoogle = async () => {
-    if (loading || anySocialBusy) return;
-    try {
-      setGoogleLoading(true);
-      setAuthError('');
-      await openOAuth('google', { 
-        queryParams: { 
-          access_type: 'offline', 
-          prompt: 'consent' 
-        } 
-      });
-    } catch (e) {
-      console.log('[OAUTH][Google] Failed:', e?.message);
-      
-      let userMessage = e?.message || 'Google sign-in failed. Please try again.';
-      
-      // Provide specific guidance for EAS development
-      if (userMessage.includes('not properly configured')) {
-        userMessage = __DEV__ 
-          ? 'Google sign-in is not configured for development builds. This is normal for EAS development - use email/password or configure OAuth for dev.'
-          : 'Google sign-in is not configured. Please contact support.';
-      } else if (userMessage.includes('configuration issue')) {
-        userMessage = 'OAuth configuration mismatch. Please check redirect URLs in Supabase.';
-      } else if (userMessage.includes('cancelled')) {
-        userMessage = 'Google sign-in was cancelled.';
-      }
-      
-      setAuthError(userMessage);
-      
-      // Don't show alert for expected dev environment issues
-      if (!__DEV__ || !userMessage.includes('development builds')) {
-        Alert.alert('Google Sign-in Error', userMessage);
-      }
-    } finally { 
-      setGoogleLoading(false); 
+  const handleForgotPw = async () => {
+    if (loading) return;
+    const e = normEmail();
+    if (!e) {
+      setInlineKind("error");
+      setInlineMsg("Enter your email above to receive a reset link.");
+      return;
     }
-  };
+    if (!/^\S+@\S+\.\S+$/.test(e)) {
+      setInlineKind("error");
+      setInlineMsg("Please enter a valid email address.");
+      return;
+    }
 
-  const handleFacebook = async () => {
-    if (loading || anySocialBusy) return;
     try {
-      setFacebookLoading(true);
-      setAuthError('');
-      await openOAuth('facebook', { 
-        queryParams: { 
-          display: 'popup' 
-        } 
+      setLoading(true);
+      const { error } = await supabase.auth.resetPasswordForEmail(e, {
+        redirectTo: "tradematequotes://reset",
       });
+      if (error) throw error;
+      setInlineKind("success");
+      setInlineMsg("Password reset link sent. Check your email.");
     } catch (e) {
-      console.log('[OAUTH][Facebook] Failed:', e?.message);
-      
-      let userMessage = e?.message || 'Facebook sign-in failed. Please try again.';
-      
-      // Provide specific guidance for EAS development
-      if (userMessage.includes('not properly configured')) {
-        userMessage = __DEV__ 
-          ? 'Facebook sign-in is not configured for development builds. This is normal for EAS development - use email/password or configure OAuth for dev.'
-          : 'Facebook sign-in is not configured. Please contact support.';
-      } else if (userMessage.includes('configuration issue')) {
-        userMessage = 'OAuth configuration mismatch. Please check redirect URLs in Supabase.';
-      } else if (userMessage.includes('cancelled')) {
-        userMessage = 'Facebook sign-in was cancelled.';
-      }
-      
-      setAuthError(userMessage);
-      
-      // Don't show alert for expected dev environment issues
-      if (!__DEV__ || !userMessage.includes('development builds')) {
-        Alert.alert('Facebook Sign-in Error', userMessage);
-      }
-    } finally { 
-      setFacebookLoading(false); 
+      setInlineKind("error");
+      setInlineMsg(mapSupabaseError(e));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -293,12 +234,54 @@ export default function Login() {
     <View style={styles.screen}>
       <StatusBar barStyle="dark-content" />
       <View style={styles.card}>
-        <Image source={require('../../assets/images/trademate-login-logo.png')} style={styles.logo} resizeMode="contain" />
+        <Image
+          source={require("../../assets/images/trademate-login-logo.png")}
+          style={styles.logo}
+          resizeMode="contain"
+        />
         <Text style={styles.title}>TradeMate</Text>
-        <Text style={styles.subtitle}>Sign in to start managing your trade business</Text>
+        <Text style={styles.subtitle}>Sign in or register to get started</Text>
 
-        {!!authError && <Text style={styles.errorText}>{authError}</Text>}
+        {/* Inline messages */}
+        {!!inlineMsg && (
+          <View
+            style={[
+              styles.inlineBox,
+              inlineKind === "error" && styles.inlineBoxError,
+              inlineKind === "success" && styles.inlineBoxSuccess,
+            ]}
+          >
+            <Text
+              style={[
+                styles.inlineText,
+                inlineKind === "error" && { color: DANGER },
+                inlineKind === "success" && { color: OK },
+              ]}
+            >
+              {inlineMsg}
+            </Text>
+          </View>
+        )}
 
+        {/* Password rules panel */}
+        {showPwPanel && (
+          <View
+            style={[
+              styles.rulesBox,
+              allRulesOk ? styles.rulesOk : styles.rulesWarn,
+            ]}
+          >
+            <Text style={[styles.rulesTitle, { color: allRulesOk ? OK : DANGER }]}>
+              Password requirements
+            </Text>
+            <Rule ok={rules.length} label="At least 8 characters" />
+            <Rule ok={rules.upper && rules.lower} label="Uppercase & lowercase" />
+            <Rule ok={rules.digit} label="A number" />
+            <Rule ok={rules.special} label="A special character" />
+          </View>
+        )}
+
+        {/* Inputs */}
         <View style={styles.inputWrap}>
           <TextInput
             placeholder="Email"
@@ -308,11 +291,14 @@ export default function Login() {
             autoComplete="email"
             textContentType="username"
             value={email}
-            onChangeText={(t) => { setEmail(t); if (authError) setAuthError(''); }}
+            onChangeText={(t) => {
+              setEmail(t);
+              if (inlineMsg) setInlineMsg("");
+            }}
             style={styles.input}
             returnKeyType="next"
             onSubmitEditing={onSubmitEmail}
-            editable={!loading && !anySocialBusy}
+            editable={!loading}
           />
         </View>
 
@@ -325,81 +311,160 @@ export default function Login() {
             autoComplete="password"
             textContentType="password"
             value={password}
-            onChangeText={(t) => { setPassword(t); if (authError) setAuthError(''); }}
+            onChangeText={(t) => {
+              setPassword(t);
+              if (inlineMsg) setInlineMsg("");
+            }}
             style={[styles.input, styles.inputHasIcon]}
             returnKeyType="go"
             onSubmitEditing={handleLogin}
-            editable={!loading && !anySocialBusy}
+            editable={!loading}
           />
-          <TouchableOpacity onPress={() => !loading && !anySocialBusy && setShowPw((s) => !s)} style={styles.eyeBtn} disabled={loading || anySocialBusy}>
+          <TouchableOpacity
+            onPress={() => !loading && setShowPw((s) => !s)}
+            style={styles.eyeBtn}
+            disabled={loading}
+          >
             {showPw ? <Eye color="#9aa0a6" size={20} /> : <EyeOff color="#9aa0a6" size={20} />}
           </TouchableOpacity>
         </View>
 
+        {/* Remember + Forgot */}
         <View style={styles.checksRowSingle}>
-          <TouchableOpacity onPress={() => setRememberMe((v) => !v)} style={styles.checkItem}>
+          <TouchableOpacity
+            onPress={() => setRememberMe((v) => !v)}
+            style={styles.checkItem}
+            disabled={loading}
+          >
             <View style={[styles.checkbox, rememberMe && styles.checkboxOn]}>
               {rememberMe ? <Text style={styles.tick}>✓</Text> : null}
             </View>
             <Text style={styles.checkLabel}>Remember me</Text>
           </TouchableOpacity>
+
+          <TouchableOpacity style={{ marginLeft: "auto" }} onPress={handleForgotPw} disabled={loading}>
+            <Text style={styles.linkText}>Forgot password?</Text>
+          </TouchableOpacity>
         </View>
 
-        <TouchableOpacity style={[styles.primaryBtn, (loading || anySocialBusy) && { opacity: 0.7 }]} onPress={handleLogin} disabled={loading || anySocialBusy}>
-          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>Sign In</Text>}
-        </TouchableOpacity>
+        {/* Actions */}
+        <View style={styles.row}>
+          <TouchableOpacity
+            style={[styles.primaryBtn, loading && { opacity: 0.7 }]}
+            onPress={handleLogin}
+            disabled={loading}
+          >
+            <Text style={styles.primaryBtnText}>Login</Text>
+          </TouchableOpacity>
 
-        <View style={styles.dividerWrap}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>or</Text>
-          <View style={styles.dividerLine} />
+          <TouchableOpacity style={styles.registerBtn} onPress={handleRegister} disabled={loading}>
+            <Text style={styles.registerBtnText}>Register</Text>
+          </TouchableOpacity>
         </View>
-
-        <TouchableOpacity style={[styles.socialBtnGoogle, (loading || anySocialBusy) && { opacity: 0.7 }]} onPress={handleGoogle} disabled={loading || anySocialBusy}>
-          {googleLoading ? <ActivityIndicator /> : (<><AntDesign name="google" size={18} color="#4285F4" style={{ marginRight: 8 }} /><Text style={styles.googleText}>Continue with Google</Text></>)}
-        </TouchableOpacity>
-
-        <TouchableOpacity style={[styles.socialBtnFacebook, (loading || anySocialBusy) && { opacity: 0.7 }]} onPress={handleFacebook} disabled={loading || anySocialBusy}>
-          {facebookLoading ? <ActivityIndicator color="#fff" /> : (<><FontAwesome name="facebook" size={18} color="#fff" style={{ marginRight: 8 }} /><Text style={styles.fbText}>Continue with Facebook</Text></>)}
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.linkBtn} onPress={handleForgotPw} disabled={loading || anySocialBusy}>
-          <Text style={styles.linkText}>Forgot password?</Text>
-        </TouchableOpacity>
-
-        <Text style={styles.footerText}>New here? <Link href={signupHref} style={styles.linkText}>Create account</Link></Text>
       </View>
     </View>
   );
 }
 
+/* ---- Small rule row ---- */
+function Rule({ ok, label }) {
+  return (
+    <View style={ruleStyles.row}>
+      <Text style={[ruleStyles.dot, { color: ok ? OK : DANGER }]}>{ok ? "✓" : "•"}</Text>
+      <Text style={[ruleStyles.text, { color: ok ? OK : DANGER }]}>{label}</Text>
+    </View>
+  );
+}
+
+const ruleStyles = StyleSheet.create({
+  row: { flexDirection: "row", alignItems: "center", marginTop: 4 },
+  dot: { width: 18, textAlign: "center", fontSize: 16, marginRight: 4 },
+  text: { fontSize: 14 },
+});
+
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#ffffff', paddingHorizontal: 20, justifyContent: 'center' },
-  card: { backgroundColor: '#ffffff', borderRadius: 18, padding: 22, alignItems: 'center', elevation: 4 },
+  screen: { flex: 1, backgroundColor: "#ffffff", paddingHorizontal: 20, justifyContent: "center" },
+  card: { backgroundColor: "#ffffff", borderRadius: 18, padding: 22, alignItems: "center", elevation: 4 },
   logo: { width: 156, height: 156, marginBottom: 14 },
-  title: { color: TEXT, fontSize: 26, fontWeight: '800', marginBottom: 6, textAlign: 'center' },
-  subtitle: { color: SUBTLE, fontSize: 14, marginBottom: 18, textAlign: 'center' },
-  errorText: { width: '100%', color: '#b3261e', backgroundColor: '#fdecec', borderColor: '#f7c8c8', borderWidth: 1, padding: 10, borderRadius: 10, marginBottom: 10 },
-  inputWrap: { width: '100%', marginBottom: 12, position: 'relative' },
-  input: { width: '100%', backgroundColor: SURFACE, color: TEXT, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 14, borderWidth: 1, borderColor: BORDER, fontSize: 16 },
+  title: { color: TEXT, fontSize: 26, fontWeight: "800", marginBottom: 6, textAlign: "center" },
+  subtitle: { color: SUBTLE, fontSize: 14, marginBottom: 12, textAlign: "center" },
+
+  inlineBox: {
+    width: "100%",
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#f8fafc",
+  },
+  inlineBoxError: { backgroundColor: "#fdecec", borderColor: "#f7c8c8" },
+  inlineBoxSuccess: { backgroundColor: "#ecfdf5", borderColor: "#bbf7d0" },
+  inlineText: { fontSize: 14, color: TEXT },
+
+  rulesBox: {
+    width: "100%",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+  },
+  rulesWarn: { backgroundColor: "#fff1f2", borderColor: "#fecdd3" },
+  rulesOk: { backgroundColor: "#ecfdf5", borderColor: "#bbf7d0" },
+  rulesTitle: { fontWeight: "800", marginBottom: 6, fontSize: 14 },
+
+  errorText: {
+    width: "100%",
+    color: DANGER,
+    backgroundColor: "#fdecec",
+    borderColor: "#f7c8c8",
+    borderWidth: 1,
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+
+  inputWrap: { width: "100%", marginBottom: 12, position: "relative" },
+  input: {
+    width: "100%",
+    backgroundColor: SURFACE,
+    color: TEXT,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    fontSize: 16,
+  },
   inputHasIcon: { paddingRight: 46 },
-  eyeBtn: { position: 'absolute', right: 10, top: 0, bottom: 0, justifyContent: 'center' },
-  checksRowSingle: { width: '100%', flexDirection: 'row', justifyContent: 'flex-start', marginTop: 2, marginBottom: 8 },
-  checkItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: BORDER, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
-  checkboxOn: { borderColor: BRAND, backgroundColor: '#e9f2ff' },
-  tick: { color: BRAND, fontWeight: '800', fontSize: 14, lineHeight: 14 },
+  eyeBtn: { position: "absolute", right: 10, top: 0, bottom: 0, justifyContent: "center" },
+
+  checksRowSingle: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 2,
+    marginBottom: 10,
+  },
+  checkItem: { flexDirection: "row", alignItems: "center", gap: 8 },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkboxOn: { borderColor: BRAND, backgroundColor: "#e9f2ff" },
+  tick: { color: BRAND, fontWeight: "800", fontSize: 14, lineHeight: 14 },
   checkLabel: { color: SUBTLE, fontSize: 13 },
-  primaryBtn: { width: '100%', backgroundColor: BRAND, borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 10 },
-  primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 16 },
-  dividerWrap: { width: '100%', marginVertical: 12, flexDirection: 'row', alignItems: 'center' },
-  dividerLine: { flex: 1, height: 1, backgroundColor: BORDER },
-  dividerText: { marginHorizontal: 10, color: SUBTLE, fontWeight: '700', fontSize: 12 },
-  socialBtnGoogle: { width: '100%', backgroundColor: '#fff', borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 2, borderWidth: 1, borderColor: GOOGLE_BORDER, flexDirection: 'row', justifyContent: 'center' },
-  googleText: { color: GOOGLE_TEXT, fontWeight: '800', fontSize: 16 },
-  socialBtnFacebook: { width: '100%', backgroundColor: FB_BLUE, borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 10, flexDirection: 'row', justifyContent: 'center' },
-  fbText: { color: '#fff', fontWeight: '800', fontSize: 16 },
-  linkBtn: { marginTop: 12 },
-  linkText: { color: BRAND, fontWeight: '700' },
-  footerText: { color: SUBTLE, marginTop: 16, textAlign: 'center' },
+  linkText: { color: BRAND, fontWeight: "700" },
+
+  row: { width: "100%", flexDirection: "row", gap: 12, marginTop: 10 },
+  primaryBtn: { flex: 1, backgroundColor: BRAND, borderRadius: 12, padding: 14, alignItems: "center" },
+  primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
+  registerBtn: { flex: 1, backgroundColor: "#facc15", borderRadius: 12, padding: 14, alignItems: "center" },
+  registerBtnText: { color: "#1b1b1b", fontWeight: "800", fontSize: 16 },
 });

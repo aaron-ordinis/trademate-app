@@ -13,13 +13,19 @@ import {
   TextInput,
   Alert,
   DeviceEventEmitter,
+  StatusBar,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as NavigationBar from "expo-navigation-bar";
+import * as SystemUI from "expo-system-ui";
 import { supabase } from "../../../../../lib/supabase";
 import { jobHref } from "../../../../../lib/nav";
-import { Plus, Trash2, X, Pencil, ChevronLeft } from "lucide-react-native";
+import { Plus, Trash2, X, Pencil } from "lucide-react-native";
+import { Feather } from "@expo/vector-icons";
 
-const BG = "#f5f7fb",
+/* ---------- THEME: match create.js ---------- */
+const BG = "#ffffff",
   CARD = "#ffffff",
   TEXT = "#0b1220",
   MUTED = "#6b7280",
@@ -27,16 +33,16 @@ const BG = "#f5f7fb",
   BRAND = "#2a86ff",
   DANGER = "#e11d48";
 
+/* ---------- helpers ---------- */
 const money = (v = 0) =>
   "£" + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-
-// helpers
 const isMissingColumn = (err) =>
   err && (err.code === "42703" || /column .* does not exist/i.test(err.message || ""));
 const isUniqueViolation = (err) => err && err.code === "23505";
 
 export default function JobExpenses() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams();
   const jobId = String(id || "");
 
@@ -56,7 +62,26 @@ export default function JobExpenses() {
     setNote("");
   };
 
-  // ---- server-first recalc (RPC), otherwise client fallback ----
+  /* ---------- Force white system chrome like create.js ---------- */
+  useEffect(() => {
+    const forceWhite = async () => {
+      try {
+        StatusBar.setBarStyle("dark-content", false);
+        if (Platform.OS === "android") {
+          StatusBar.setBackgroundColor("#ffffff", false);
+          await NavigationBar.setBackgroundColorAsync("#ffffff");
+          await NavigationBar.setButtonStyleAsync("dark");
+          if (NavigationBar.setBorderColorAsync) {
+            await NavigationBar.setBorderColorAsync("#ffffff");
+          }
+        }
+        await SystemUI.setBackgroundColorAsync("#ffffff");
+      } catch {}
+    };
+    forceWhite();
+  }, []);
+
+  /* ---------- server-first recalc (RPC), otherwise client fallback ---------- */
   const recalcJobTotals = useCallback(
     async (listForFallback) => {
       if (!jobId) return;
@@ -106,7 +131,7 @@ export default function JobExpenses() {
     [jobId]
   );
 
-  // ---- load expenses ----
+  /* ---------- load expenses ---------- */
   const load = useCallback(async () => {
     if (!jobId) return;
     setBusy(true);
@@ -141,7 +166,6 @@ export default function JobExpenses() {
       if (error) throw error;
 
       const mappedNew = (data || []).map((r) => {
-        // be tolerant of string numerics
         const totalNum = Number(r.total);
         const qtyNum = Number(r.qty);
         const unitNum = Number(r.unit_cost);
@@ -184,7 +208,7 @@ export default function JobExpenses() {
     [items]
   );
 
-  // ---- add OR edit expense ----
+  /* ---------- add OR edit expense ---------- */
   const saveSheet = async () => {
     try {
       const n = Number(String(amount).replace(/[^0-9.-]/g, ""));
@@ -226,7 +250,7 @@ export default function JobExpenses() {
           throw upd.error;
         }
       } else {
-        // INSERT (same behavior you had before)
+        // INSERT
         const { data: auth } = await supabase.auth.getUser();
         const userId = auth?.user?.id;
         if (!userId) throw new Error("Not signed in");
@@ -291,7 +315,7 @@ export default function JobExpenses() {
     }
   };
 
-  // ---- delete expense ----
+  /* ---------- delete expense ---------- */
   const remove = async (row) => {
     try {
       setBusy(true);
@@ -323,35 +347,37 @@ export default function JobExpenses() {
     router.replace(jobHref(jobId));
   };
 
+  /* ---------- UI ---------- */
   return (
     <View style={s.screen}>
-      {/* Top bar with unified Back button */}
-      <View style={s.top}>
-        <Pressable
-          onPress={goBackToJob}
-          style={s.backBtn}
-          android_ripple={{ color: "rgba(0,0,0,0.06)" }}
-        >
-          <ChevronLeft size={18} color={BRAND} />
-          <Text style={s.backTxt}>Back</Text>
-        </Pressable>
+      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
+      {/* Safe top like create.js */}
+      <View style={{ height: insets.top, backgroundColor: CARD }} />
 
-        <Text style={s.title}>Expenses</Text>
+      {/* Header: back, centered title, spacer */}
+      <View style={s.header}>
+        <TouchableOpacity style={s.backBtn} onPress={goBackToJob}>
+          <Feather name="arrow-left" size={20} color={TEXT} />
+        </TouchableOpacity>
+        <Text style={s.headerTitle}>Expenses</Text>
+        <View style={{ width: 40 }} />
+      </View>
 
+      {/* Tiny info row below header */}
+      <View style={s.infoRow}>
         <View style={s.totalPill}>
           <Text style={s.totalPillTxt}>Total {money(total)}</Text>
         </View>
+        {busy ? <ActivityIndicator size="small" color={BRAND} /> : null}
       </View>
 
-      {busy ? <ActivityIndicator style={{ marginTop: 8 }} color={BRAND} /> : null}
-
-      {/* Compact, wrap-friendly list */}
+      {/* Compact list */}
       <FlatList
         data={items}
         keyExtractor={(it) => String(it.id)}
         refreshing={busy}
         onRefresh={load}
-        contentContainerStyle={{ padding: 12, paddingBottom: 96 }}
+        contentContainerStyle={{ padding: 12, paddingBottom: 96 + insets.bottom }}
         renderItem={({ item }) => (
           <View style={s.card}>
             <View style={{ flex: 1 }}>
@@ -382,16 +408,16 @@ export default function JobExpenses() {
         )}
         ListEmptyComponent={
           !busy ? (
-            <View style={{ alignItems: "center", marginTop: 28 }}>
-              <Text style={{ color: MUTED, fontWeight: "800" }}>No expenses yet.</Text>
+            <View style={{ alignItems: "center", marginTop: 24 }}>
+              <Text style={{ color: MUTED, fontWeight: "800", fontSize: 13 }}>No expenses yet.</Text>
             </View>
           ) : null
         }
       />
 
-      {/* Sleek FAB */}
-      <TouchableOpacity style={s.fab} onPress={openAdd} activeOpacity={0.9}>
-        <Plus size={22} color="#fff" />
+      {/* FAB (slightly smaller, compact) */}
+      <TouchableOpacity style={[s.fab, { bottom: 24 + insets.bottom }]} onPress={openAdd} activeOpacity={0.92}>
+        <Plus size={20} color="#fff" />
       </TouchableOpacity>
 
       {/* Add/Edit Sheet */}
@@ -412,6 +438,7 @@ export default function JobExpenses() {
             value={title}
             onChangeText={setTitle}
             placeholder="e.g. Materials"
+            placeholderTextColor={MUTED}
           />
 
           <Text style={s.label}>Amount</Text>
@@ -421,6 +448,7 @@ export default function JobExpenses() {
             onChangeText={(t) => setAmount(t.replace(/[^0-9.-]/g, ""))}
             keyboardType="decimal-pad"
             placeholder="0.00"
+            placeholderTextColor={MUTED}
           />
 
           <Text style={s.label}>Note (optional)</Text>
@@ -429,47 +457,62 @@ export default function JobExpenses() {
             value={note}
             onChangeText={setNote}
             placeholder="Short note"
+            placeholderTextColor={MUTED}
           />
 
           <TouchableOpacity
-            style={[s.action, { backgroundColor: BRAND, borderColor: BRAND, justifyContent: "center", marginTop: 8 }]}
+            style={[s.primaryAction]}
             onPress={saveSheet}
+            activeOpacity={0.9}
           >
-            <Text style={[s.actionTxt, { color: "#fff" }]}>{editingId ? "Save changes" : "Save"}</Text>
+            <Text style={s.primaryActionTxt}>{editingId ? "Save changes" : "Save"}</Text>
           </TouchableOpacity>
         </View>
       </Modal>
+
+      {/* Safe bottom */}
+      <View style={{ height: insets.bottom, backgroundColor: "#ffffff" }} />
     </View>
   );
 }
 
+/* ---------- styles ---------- */
 const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
+  screen: { flex: 1, backgroundColor: BG },
 
-  /* top */
-  top: {
-    height: 52,
+  /* header (match create.js) */
+  header: {
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 12,
+  },
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: TEXT,
   },
 
-  // unified Back button (icon + label)
-  backBtn: {
-    minWidth: 72,
+  /* small info row below header */
+  infoRow: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 6,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 6,
-    paddingRight: 8,
-    paddingLeft: 2,
-    borderRadius: 10,
+    gap: 10,
   },
-  backTxt: { color: BRAND, fontWeight: "800", fontSize: 16 },
-
-  title: { flex: 1, textAlign: "center", fontSize: 18, fontWeight: "900", color: TEXT },
-
   totalPill: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -478,35 +521,39 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#c7d2fe",
   },
-  totalPillTxt: { color: BRAND, fontWeight: "900" },
+  totalPillTxt: { color: BRAND, fontWeight: "900", fontSize: 13 },
 
-  /* list card (compact & wrap-friendly) */
+  /* list card (compact) */
   card: {
     backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 10,
     marginBottom: 8,
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.03,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 1,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0b1220",
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 2 },
+      },
+      android: { elevation: 2 },
+    }),
   },
-  name: { color: TEXT, fontWeight: "900" },
-  meta: { color: MUTED, marginTop: 2, fontWeight: "700" },
+  name: { color: TEXT, fontWeight: "900", fontSize: 14 },
+  meta: { color: MUTED, marginTop: 2, fontWeight: "700", fontSize: 12 },
 
-  rightCol: { alignItems: "flex-end", gap: 6 },
-  amount: { color: TEXT, fontWeight: "900" },
+  rightCol: { alignItems: "flex-end", gap: 6, minWidth: 110 },
+  amount: { color: TEXT, fontWeight: "900", fontSize: 14 },
   rowBtns: { flexDirection: "row", gap: 6 },
 
   iconBtn: {
-    height: 30,
-    width: 30,
+    height: 28,
+    width: 28,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -516,31 +563,46 @@ const s = StyleSheet.create({
   },
   iconBtnDanger: { backgroundColor: "#fee2e2", borderColor: "#fecaca" },
 
-  action: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
+  /* modal actions & inputs */
+  label: { color: MUTED, fontWeight: "800", marginTop: 6, marginBottom: 4, fontSize: 12 },
+  input: {
+    backgroundColor: "#ffffff",
+    color: TEXT,
+    borderRadius: 10,
+    paddingHorizontal: 10,
     paddingVertical: 10,
-    borderRadius: 12,
     borderWidth: 1,
-    backgroundColor: "#fff",
+    borderColor: BORDER,
+    marginBottom: 8,
+    fontSize: 14,
+    fontWeight: "600",
   },
-  actionTxt: { color: TEXT, fontWeight: "900" },
 
+  primaryAction: {
+    marginTop: 8,
+    backgroundColor: BRAND,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: BRAND,
+  },
+  primaryActionTxt: { color: "#fff", fontWeight: "900" },
+
+  /* FAB */
   fab: {
     position: "absolute",
     right: 16,
-    bottom: 24 + (Platform.OS === "ios" ? 12 : 0),
-    height: 56,
-    width: 56,
-    borderRadius: 28,
+    height: 52,
+    width: 52,
+    borderRadius: 26,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: BRAND,
     shadowColor: "#1e293b",
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
     elevation: 3,
   },
@@ -559,18 +621,14 @@ const s = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: BORDER,
   },
-  handle: { alignSelf: "center", width: 44, height: 5, borderRadius: 999, backgroundColor: BORDER, marginBottom: 8 },
-  sheetHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  sheetTitle: { color: TEXT, fontWeight: "900", fontSize: 18 },
-
-  label: { color: MUTED, fontWeight: "800", marginTop: 8, marginBottom: 6 },
-  input: {
-    backgroundColor: "#fff",
-    color: TEXT,
-    borderRadius: 10,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: BORDER,
-    marginBottom: 10,
+  handle: {
+    alignSelf: "center",
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: BORDER,
+    marginBottom: 8,
   },
+  sheetHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
+  sheetTitle: { color: TEXT, fontWeight: "900", fontSize: 16 },
 });

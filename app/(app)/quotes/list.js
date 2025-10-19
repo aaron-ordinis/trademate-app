@@ -1,5 +1,5 @@
 // app/(app)/quotes/list.js
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -9,13 +9,13 @@ import {
   TextInput,
   Modal,
   Pressable,
-  ActivityIndicator,
   Platform,
   Switch,
   Alert,
-  ScrollView,
+  StatusBar,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../../lib/supabase";
 import {
   Search,
@@ -30,13 +30,18 @@ import {
   MapPin,
   Minus,
   Plus as PlusIcon,
-  CheckSquare,
-  Square,
   RefreshCcw,
 } from "lucide-react-native";
 
 import SharedCalendar from "../../../components/SharedCalendar";
+import AssistantFab from "../../../components/AssistantFab";
+import AssistantSheet from "../../../components/AssistantSheet";
 import { quoteCreateHref, quotePreviewHref, jobHref, loginHref } from "../../../lib/nav";
+
+/* ---------- tiny logger ---------- */
+const log = (tag, obj) => {
+  try { console.log("[quotes.list]", tag, obj || {}); } catch {}
+};
 
 /* ---------- theme ---------- */
 const BRAND = "#2a86ff";
@@ -134,202 +139,37 @@ const displayQuoteId = (q) => {
   return "QUO-" + year + "-" + String(numPart).padStart(4, "0");
 };
 
-/* ---------- deposit helpers ---------- */
-function splitQuoteItems(quote) {
-  const items = flattenItems(quote?.line_items);
-  const labourItems = [];
-  const materialItems = [];
-
-  items.forEach((it, idx) => {
-    const type = String(it.type ?? it.kind ?? "").toLowerCase();
-    const title = it.title ?? it.name ?? it.description ?? "Item";
-    const qty = num(it.qty ?? it.quantity, 1);
-    const unit = num(it.unit_price ?? it.price ?? it.rate, 0);
-    const total = calcAmount(it);
-    const ref =
-      it.id || it.key || it.code || fingerprintOf(`${title}|${qty}|${unit}|${idx}`);
-    const norm = { ref, title, qty, unit, total };
-
-    if (
-      type === "labour" ||
-      type === "labor" ||
-      /labou?r/i.test(type || title)
-    ) {
-      labourItems.push(norm);
-    } else if (
-      type === "material" ||
-      type === "materials" ||
-      /material/i.test(type || title)
-    ) {
-      materialItems.push(norm);
-    }
-  });
-
-  const labourSubtotal = labourItems.reduce((s, x) => s + (x.total || 0), 0);
-  return { labourSubtotal, materialItems };
-}
-
-/* ---------- scheduling helpers ---------- */
-const jobOverlapsWorking = (job, spanStart, spanDays, spanIncludeWeekends) => {
-  const js0 = job.start_date ? atMidnight(new Date(job.start_date)) : null;
-  const je0 = job.end_date ? atMidnight(new Date(job.end_date)) : js0;
-  if (!js0) return false;
-
-  const spanEndDate = addWorkingDays(
-    spanStart,
-    Math.max(1, spanDays),
-    spanIncludeWeekends
-  );
-
-  const spanKeys = new Set();
-  eachDay(spanStart, spanEndDate, (d) => {
-    if (spanIncludeWeekends || !isWeekend(d)) {
-      spanKeys.add(d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate());
-    }
-  });
-
-  const jobIncWknd = !!job.include_weekends;
-  let hit = false;
-  eachDay(js0, je0, (d) => {
-    if (hit) return;
-    const weekend = isWeekend(d);
-    if (jobIncWknd || !weekend) {
-      const k = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
-      if (spanKeys.has(k)) hit = true;
-    }
-  });
-  return hit;
-};
-
-const isSpanFree = (start, days, includeWeekends, allJobs) => {
-  for (const j of allJobs) {
-    if (jobOverlapsWorking(j, start, days, includeWeekends)) return false;
-  }
-  return true;
-};
-
-const nextAvailableStart = (
-  fromDate,
-  days,
-  includeWeekends,
-  allJobs,
-  lookaheadDays = 365
-) => {
-  const start = atMidnight(fromDate);
-  for (let i = 0; i < lookaheadDays; i++) {
-    const tryDate = new Date(start);
-    tryDate.setDate(start.getDate() + i);
-    if (isSpanFree(tryDate, days, includeWeekends, allJobs)) return tryDate;
-  }
-  return start;
-};
-
-/* Build expenses rows for non-labour items */
-const buildExpenseRows = ({ quote, jobId, userId, dateISO }) => {
-  const items = flattenItems(quote?.line_items);
-  const quoteId = quote?.id ?? quote?.source_quote_id ?? null;
-  const rows = [];
-
-  items.forEach((it, idx) => {
-    const type = String(it.type ?? it.kind ?? "").toLowerCase();
-    if (type === "labour" || type === "labor") return;
-
-    const amount = calcAmount(it);
-    if (!(amount > 0)) return;
-
-    const title = it.title ?? it.name ?? it.description ?? "Expense";
-    const base =
-      userId +
-      "|" +
-      jobId +
-      "|" +
-      (quoteId || "noquote") +
-      "|" +
-      title +
-      "|" +
-      amount.toFixed(2) +
-      "|" +
-      idx;
-    const fingerprint = fingerprintOf(base);
-
-    rows.push({
-      job_id: jobId,
-      user_id: userId,
-      title,
-      name: title || "Item",
-      amount: Number(amount),
-      total: Number(amount),
-      date: dateISO,
-      notes: it.description || null,
-      source_quote_id: quoteId,
-      fingerprint,
-      qty: num(it.qty ?? it.quantity, null) || null,
-      unit_cost: num(it.unit_price ?? it.price ?? it.rate, null) || null,
-    });
-  });
-
-  return rows;
-};
-
 /* ============================================= */
 /*                    SCREEN                      */
 /* ============================================= */
 export default function QuoteList() {
   const router = useRouter();
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [quotes, setQuotes] = useState([]);
   const [query, setQuery] = useState("");
-
   const [userId, setUserId] = useState(null);
   const [jobs, setJobs] = useState([]);
-
-  /* Action sheet */
-  const [actionOpen, setActionOpen] = useState(false);
+  const [screenReady, setScreenReady] = useState(true);
+  const [expandedQuoteId, setExpandedQuoteId] = useState(null);
   const [selectedQuote, setSelectedQuote] = useState(null);
 
-  /* Deposit UI */
-  const [depEnabled, setDepEnabled] = useState(false);
-  const [depMaterials, setDepMaterials] = useState([]); // {ref,title,qty,unit,total,selected}
-  const [depLabourPct, setDepLabourPct] = useState(10);
-  const [depLabourSubtotal, setDepLabourSubtotal] = useState(0);
-  const [vatEnabled, setVatEnabled] = useState(VAT_ENABLED_DEFAULT);
-  const [vatRate, setVatRate] = useState(VAT_RATE_DEFAULT);
+  // Assistant sheet
+  const [assistantOpen, setAssistantOpen] = useState(false);
 
-  /* Scheduling modal */
-  const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [cjDays, setCjDays] = useState(1);
-  const [cjIncludeWeekends, setCjIncludeWeekends] = useState(false);
-  const [cjStart, setCjStart] = useState(atMidnight(new Date()));
-  const [calMonth, setCalMonth] = useState(() => {
-    const d = new Date();
-    d.setDate(1);
-    return d;
-  });
-  const [cjBusy, setCjBusy] = useState(false);
-  const [cjError, setCjError] = useState("");
-
-  /* Derived dates */
-  const endDate = useMemo(
-    () => addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends),
-    [cjStart, cjDays, cjIncludeWeekends]
-  );
-
-  /* Haptics (soft) */
-  const haptic = useRef(null);
-  useEffect(() => {
-    (async () => {
-      try {
-        const m = await import("expo-haptics");
-        haptic.current = m;
-      } catch {}
-    })();
-  }, []);
-  const buzz = () => haptic.current?.selectionAsync?.();
+  // Guarded open/close with logs
+  const openAssistant = () => {
+    if (assistantOpen) return; // avoid double-tap spam
+    setAssistantOpen(true);
+    log("assistant.open", { screen: "quotes" });
+  };
+  const closeAssistant = () => {
+    setAssistantOpen(false);
+    log("assistant.close", { screen: "quotes" });
+  };
 
   /* Data */
   const loadQuotes = useCallback(async () => {
-    setLoading(true);
     try {
       const { data: auth } = await supabase.auth.getUser();
       const user = auth?.user;
@@ -338,18 +178,6 @@ export default function QuoteList() {
         return;
       }
       setUserId(user.id);
-
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("vat_enabled, vat_rate")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      if (profile) {
-        if (profile.vat_enabled != null) setVatEnabled(!!profile.vat_enabled);
-        if (profile.vat_rate != null)
-          setVatRate(Number(profile.vat_rate) || VAT_RATE_DEFAULT);
-      }
 
       let q = supabase
         .from("quotes")
@@ -368,73 +196,74 @@ export default function QuoteList() {
 
       const res = await q.limit(400);
       if (!res.error) setQuotes((res.data || []).filter((x) => !x.job_id));
-    } finally {
-      setLoading(false);
+    } catch (error) {
+      console.warn('[QuoteList] loadQuotes error:', error);
     }
   }, [router, query]);
 
   const loadJobs = useCallback(async () => {
     if (!userId) return [];
-    const { data, error } = await supabase
-      .from("jobs")
-      .select(
-        "id, title, start_date, end_date, status, include_weekends, user_id"
-      )
-      .eq("user_id", userId);
-    if (!error) {
-      setJobs(data || []);
-      return data || [];
+    try {
+      const { data, error } = await supabase
+        .from("jobs")
+        .select(
+          "id, title, start_date, end_date, status, include_weekends, user_id"
+        )
+        .eq("user_id", userId);
+      if (!error) {
+        setJobs(data || []);
+        return data || [];
+      }
+    } catch (error) {
+      console.warn('[QuoteList] loadJobs error:', error);
     }
     return [];
   }, [userId]);
 
   useEffect(() => {
-    loadQuotes();
-  }, [loadQuotes]);
-  useEffect(() => {
-    loadJobs();
-  }, [loadJobs, userId]);
+    const loadAllData = async () => {
+      await loadQuotes();
+      if (userId) {
+        await loadJobs();
+      }
+    };
+    loadAllData();
+  }, [loadQuotes, loadJobs, userId, query]);
 
-  /* ---------- open action ---------- */
-  const openActionFor = async (q) => {
-    setSelectedQuote(q);
-    setDepEnabled(false);
-    setDepMaterials([]);
-    setDepLabourPct(10);
-    setDepLabourSubtotal(0);
-    setCjError("");
-
-    const { data: full } = await supabase
-      .from("quotes")
-      .select("*")
-      .eq("id", q.id)
-      .maybeSingle();
-
-    if (full) {
-      const { labourSubtotal, materialItems } = splitQuoteItems(full);
-      setDepLabourSubtotal(labourSubtotal);
-      setDepMaterials((materialItems || []).map((m) => ({ ...m, selected: false })));
-    }
-
-    setActionOpen(true);
+  /* ---------- toggle expansion ---------- */
+  const toggleExpansion = (quoteId) => {
+    setExpandedQuoteId((prev) => (prev === quoteId ? null : quoteId));
+    setSelectedQuote(quotes.find((q) => q.id === quoteId));
   };
 
-  /* ---------- Create Job flow (Option 1) ---------- */
+  /* ---------- Create Job flow (trimmed) ---------- */
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [cjDays, setCjDays] = useState(1);
+  const [cjIncludeWeekends, setCjIncludeWeekends] = useState(false);
+  const [cjStart, setCjStart] = useState(atMidnight(new Date()));
+  const [calMonth, setCalMonth] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
+    return d;
+  });
+  const [cjBusy, setCjBusy] = useState(false);
+  const [cjError, setCjError] = useState("");
+  const endDate = useMemo(
+    () => addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends),
+    [cjStart, cjDays, cjIncludeWeekends]
+  );
+
   const createJobInternal = async () => {
     if (!selectedQuote) return;
-
     try {
       setCjBusy(true);
       setCjError("");
-
       const { data: auth } = await supabase.auth.getUser();
       const user = auth?.user;
       if (!user) {
         router.replace(loginHref);
         return;
       }
-
-      // Reload full quote for details
       const { data: full, error } = await supabase
         .from("quotes")
         .select("*")
@@ -445,9 +274,6 @@ export default function QuoteList() {
       const start = toYMD(cjStart);
       const end = toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends));
 
-      console.log("[CREATE_JOB] inserting job…", { start, end, cjDays, cjIncludeWeekends });
-
-      // Create job
       const ins = await supabase
         .from("jobs")
         .insert({
@@ -472,23 +298,8 @@ export default function QuoteList() {
 
       if (ins.error) throw ins.error;
       const jobId = ins.data.id;
-      console.log("[CREATE_JOB] job inserted:", jobId);
 
-      // Expenses for materials
-      const expenseRows = buildExpenseRows({
-        quote: full,
-        jobId,
-        userId: user.id,
-        dateISO: start,
-      });
-      if (expenseRows.length) {
-        const exIns = await supabase.from("expenses").insert(expenseRows);
-        if (exIns.error) console.warn("[CREATE_JOB] expenses insert failed", exIns.error);
-        else console.log("[CREATE_JOB] expenses inserted:", expenseRows.length);
-      }
-
-      // Link quote → job
-      const upQ = await supabase
+      await supabase
         .from("quotes")
         .update({
           status: "accepted",
@@ -496,232 +307,181 @@ export default function QuoteList() {
           job_id: jobId,
         })
         .eq("id", full.id);
-      if (upQ.error) console.warn("[CREATE_JOB] link quote->job failed", upQ.error);
-      else console.log("[CREATE_JOB] quote linked to job:", jobId);
 
-      if (depEnabled) {
-        // Call Edge Function to create deposit PDF -> documents + jobdocs
-        try {
-          const material_item_ids = depMaterials.filter((m) => m.selected).map((m) => m.ref);
-          const labour_percent = Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)));
-          const idempotency_key = `dep|${user.id}|${full.id}|job:${jobId}|${material_item_ids.slice().sort().join(",")}|${labour_percent}`;
-
-          const payload = {
-            user_id: user.id,
-            quote_id: full.id,
-            job_id: jobId, // critical
-            labour_percent,
-            material_item_ids,
-            idempotency_key,
-          };
-          console.log("[DEPOSIT] invoke payload:", payload);
-
-          const { data: efData, error: efError } = await supabase.functions.invoke(
-            "create_deposit_invoice",
-            { body: payload }
-          );
-
-          if (efError) {
-            console.warn("[DEPOSIT] EF network error", efError);
-            // Continue to job page even if deposit fails
-            setScheduleOpen(false);
-            setQuotes((prev) => prev.filter((x) => x.id !== full.id));
-            router.push(jobHref(jobId));
-            return;
-          }
-
-          console.log("[DEPOSIT] EF response:", JSON.stringify(efData, null, 2));
-          
-          if (efData?.ok || efData?.success) {
-            setScheduleOpen(false);
-            setQuotes((prev) => prev.filter((x) => x.id !== full.id));
-
-            // Try multiple navigation strategies based on response format
-            let navigated = false;
-
-            // Strategy 1: Direct document ID
-            if ((efData.document_id || efData.documentId) && (efData.document_id || efData.documentId) !== 'undefined') {
-              const docId = efData.document_id || efData.documentId;
-              console.log("[DEPOSIT] Navigating with document_id:", docId);
-              router.push(`/(app)/invoices/deposit/preview?docId=${encodeURIComponent(docId)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
-              navigated = true;
-            }
-            // Strategy 2: Direct PDF URL
-            else if ((efData.pdf_url || efData.pdfUrl || efData.url) && (efData.pdf_url || efData.pdfUrl || efData.url) !== 'undefined') {
-              const pdfUrl = efData.pdf_url || efData.pdfUrl || efData.url;
-              console.log("[DEPOSIT] Navigating with pdf_url:", pdfUrl);
-              router.push(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(pdfUrl)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
-              navigated = true;
-            }
-            // Strategy 3: Signed URL
-            else if ((efData.signed_url || efData.signedUrl) && (efData.signed_url || efData.signedUrl) !== 'undefined') {
-              const signedUrl = efData.signed_url || efData.signedUrl;
-              console.log("[DEPOSIT] Navigating with signed_url:", signedUrl);
-              router.push(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(signedUrl)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
-              navigated = true;
-            }
-            // Strategy 4: Check documents table by job_id with a slight delay
-            else {
-              console.log("[DEPOSIT] No direct URL, checking documents table after delay...");
-              setTimeout(async () => {
-                try {
-                  const { data: docCheck, error: docCheckError } = await supabase
-                    .from("documents")
-                    .select("id, url, name")
-                    .eq("job_id", jobId)
-                    .eq("kind", "invoice_pdf")
-                    .order("created_at", { ascending: false })
-                    .limit(1)
-                    .maybeSingle();
-                  
-                  console.log("[DEPOSIT] Documents check result:", { data: docCheck, error: docCheckError });
-                  
-                  if (!docCheckError && docCheck) {
-                    if (docCheck.id) {
-                      console.log("[DEPOSIT] Found document, navigating with ID:", docCheck.id);
-                      router.push(`/(app)/invoices/deposit/preview?docId=${encodeURIComponent(docCheck.id)}&jobId=${encodeURIComponent(jobId)}&name=${encodeURIComponent(docCheck.name || 'deposit.pdf')}`);
-                      return;
-                    } else if (docCheck.url) {
-                      console.log("[DEPOSIT] Found document, navigating with URL:", docCheck.url);
-                      router.push(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(docCheck.url)}&jobId=${encodeURIComponent(jobId)}&name=${encodeURIComponent(docCheck.name || 'deposit.pdf')}`);
-                      return;
-                    }
-                  }
-                  
-                  // If still no document found, navigate to job page
-                  console.warn("[DEPOSIT] No document found after delay, navigating to job");
-                  router.push(jobHref(jobId));
-                } catch (e) {
-                  console.error("[DEPOSIT] Error checking documents table:", e);
-                  router.push(jobHref(jobId));
-                }
-              }, 2000); // 2 second delay to allow document creation
-              
-              // Don't return here, let the timeout handle navigation
-            }
-
-            // If we haven't navigated by now and no timeout was set, go to job
-            if (!navigated && !(efData.document_id || efData.documentId || efData.pdf_url || efData.pdfUrl || efData.url || efData.signed_url || efData.signedUrl)) {
-              console.warn("[DEPOSIT] No valid document reference and no fallback, navigating to job");
-              router.push(jobHref(jobId));
-            }
-            
-            return;
-          } else {
-            console.warn("[DEPOSIT] EF returned not ok", efData);
-            // Continue to job page if deposit creation failed
-          }
-        } catch (ef) {
-          console.warn("[DEPOSIT] EF exception", ef?.message || ef);
-          // Continue to job page if deposit creation failed
-        }
-      }
-
-      // Default route: job page
       setScheduleOpen(false);
       setQuotes((prev) => prev.filter((x) => x.id !== full.id));
       router.push(jobHref(jobId));
     } catch (e) {
-      console.warn("[CREATE_JOB] error", e);
       setCjError(e?.message || "Create job failed");
     } finally {
       setCjBusy(false);
     }
   };
 
-  /* ---------- list rendering ---------- */
   const renderCard = ({ item }) => {
     const address = item.client_address || "";
     const dispId = displayQuoteId(item);
+    const isExpanded = expandedQuoteId === item.id;
+
     return (
-      <TouchableOpacity
-        onPress={() => openActionFor(item)}
-        activeOpacity={0.9}
-        style={styles.card}
-      >
+      <View style={styles.cardContainer}>
         <TouchableOpacity
-          style={styles.binBtn}
-          onPress={async () => {
-            Alert.alert("Delete quote?", "This will permanently delete this quote.", [
-              { text: "Cancel", style: "cancel" },
-              {
-                text: "Delete",
-                style: "destructive",
-                onPress: async () => {
-                  const del = await supabase.from("quotes").delete().eq("id", item.id);
-                  if (!del.error)
-                    setQuotes((prev) => prev.filter((x) => x.id !== item.id));
-                  else
-                    Alert.alert(
-                      "Delete failed",
-                      del.error.message || "Please try again."
-                    );
-                },
-              },
-            ]);
-          }}
-          activeOpacity={0.85}
+          onPress={() => toggleExpansion(item.id)}
+          activeOpacity={0.9}
+          style={[styles.card, isExpanded && styles.cardExpanded]}
         >
-          <Trash2 size={18} color="#b91c1c" />
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.binBtn}
+            onPress={async () => {
+              Alert.alert("Delete quote?", "This will permanently delete this quote.", [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Delete",
+                  style: "destructive",
+                  onPress: async () => {
+                    const del = await supabase.from("quotes").delete().eq("id", item.id);
+                    if (!del.error)
+                      setQuotes((prev) => prev.filter((x) => x.id !== item.id));
+                    else
+                      Alert.alert("Delete failed", del.error.message || "Please try again.");
+                  },
+                },
+              ]);
+            }}
+            activeOpacity={0.85}
+          >
+            <Trash2 size={18} color="#b91c1c" />
+          </TouchableOpacity>
 
-        {!!dispId && (
-          <Text style={styles.quoteTiny} numberOfLines={1}>
-            {dispId}
-          </Text>
-        )}
-
-        <View style={{ flexShrink: 1, paddingRight: 110 }}>
-          <Text style={styles.clientName} numberOfLines={1}>
-            {item.client_name || "—"}
-          </Text>
-
-          <View style={styles.rowMini}>
-            <CalendarDays size={16} color={MUTED} />
-            <Text style={styles.rowMiniText}>
-              {"  "}
-              {new Date(item.created_at).toLocaleDateString()}
+          {!!dispId && (
+            <Text style={styles.quoteTiny} numberOfLines={1}>
+              {dispId}
             </Text>
-          </View>
+          )}
 
-          {!!address && (
+          <View style={{ flexShrink: 1, paddingRight: 110 }}>
+            <Text style={styles.clientName} numberOfLines={1}>
+              {item.client_name || "—"}
+            </Text>
+
             <View style={styles.rowMini}>
-              <MapPin size={16} color={MUTED} />
-              <Text style={[styles.rowMiniText, { flexShrink: 1 }]} numberOfLines={1}>
-                {"  "}
-                {address}
+              <CalendarDays size={16} color={MUTED} />
+              <Text style={styles.rowMiniText}>
+                {"  "}{new Date(item.created_at).toLocaleDateString()}
               </Text>
             </View>
-          )}
-        </View>
 
-        <Text style={styles.totalBottom}>{money(item.total || 0)}</Text>
-        <ChevronRight
-          size={18}
-          color={MUTED}
-          style={{ position: "absolute", right: 46, top: 12, opacity: 0.6 }}
-        />
-      </TouchableOpacity>
+            {!!address && (
+              <View style={styles.rowMini}>
+                <MapPin size={16} color={MUTED} />
+                <Text style={[styles.rowMiniText, { flexShrink: 1 }]} numberOfLines={1}>
+                  {"  "}{address}
+                </Text>
+              </View>
+            )}
+          </View>
+
+          <Text style={styles.totalBottom}>{money(item.total || 0)}</Text>
+          <ChevronRight
+            size={18}
+            color={MUTED}
+            style={[
+              { position: "absolute", right: 46, top: 12, opacity: 0.6 },
+              isExpanded && { transform: [{ rotate: "90deg" }] },
+            ]}
+          />
+        </TouchableOpacity>
+
+        {isExpanded && (
+          <View style={styles.expandedActions}>
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.actionBtnPrimary]}
+                onPress={() => {
+                  setExpandedQuoteId(null);
+                  router.push(quotePreviewHref(item.id));
+                }}
+                activeOpacity={0.9}
+              >
+                <Eye size={18} color="#fff" />
+                <Text style={[styles.actionBtnText, { color: "#fff" }]}>View</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.actionBtnSecondary]}
+                onPress={() => {
+                  setExpandedQuoteId(null);
+                  setSelectedQuote(item);
+                  setScheduleOpen(true);
+                }}
+                activeOpacity={0.9}
+              >
+                <CalendarPlus size={18} color={TEXT} />
+                <Text style={styles.actionBtnText}>Create job</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </View>
     );
   };
 
-  return (
-    <View style={styles.screen}>
-      {/* Topbar */}
-      <View style={styles.topbar}>
-        <Text style={styles.h1}>Quotes</Text>
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <TouchableOpacity style={styles.iconBtn} onPress={loadQuotes}>
-            <RefreshCcw size={20} color={MUTED} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => router.push("/(app)/settings")}
-          >
-            <Settings size={20} color={MUTED} />
-          </TouchableOpacity>
+  if (!screenReady) {
+    return (
+      <View style={styles.screen}>
+        <StatusBar
+          translucent={false}
+          backgroundColor={CARD}
+          barStyle="dark-content"
+        />
+        <SafeAreaView edges={["top"]} style={styles.headerSafe}>
+          <View style={styles.header}>
+            <Text style={styles.headerTitle}>Quotes</Text>
+            <View style={styles.headerRight}>
+              <View style={[styles.iconBtn, { backgroundColor: '#f3f4f6' }]} />
+              <View style={[styles.iconBtn, { backgroundColor: '#f3f4f6' }]} />
+            </View>
+          </View>
+        </SafeAreaView>
+        <View style={styles.searchRow}>
+          <View style={{ width: 18, height: 18, backgroundColor: '#f3f4f6', borderRadius: 9 }} />
+          <View style={{ flex: 1, height: 18, backgroundColor: '#f3f4f6', borderRadius: 4, marginLeft: 8 }} />
         </View>
       </View>
+    );
+  }
+
+  return (
+    <View style={styles.screen}>
+      {/* Make the whole system/status bar area white */}
+      <StatusBar
+        translucent={false}
+        backgroundColor={CARD}
+        barStyle="dark-content"
+      />
+      <SafeAreaView edges={["top"]} style={styles.headerSafe}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Quotes</Text>
+          <View style={styles.headerRight}>
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={() => {
+                loadQuotes();
+              }}
+              activeOpacity={0.9}
+            >
+              <RefreshCcw size={18} color={MUTED} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={() => router.push("/(app)/settings")}
+              activeOpacity={0.9}
+            >
+              <Settings size={18} color={MUTED} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SafeAreaView>
 
       {/* Search */}
       <View style={styles.searchRow}>
@@ -729,7 +489,7 @@ export default function QuoteList() {
         <TextInput
           value={query}
           onChangeText={setQuery}
-          placeholder="Search client or quote number"
+          placeholder="Search client, quote number or address"
           placeholderTextColor={MUTED}
           style={styles.searchInput}
           returnKeyType="search"
@@ -738,31 +498,25 @@ export default function QuoteList() {
       </View>
 
       {/* List */}
-      {loading ? (
-        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-          <ActivityIndicator color={BRAND} />
-        </View>
-      ) : (
-        <FlatList
-          data={quotes}
-          keyExtractor={(it) => String(it.id)}
-          renderItem={renderCard}
-          contentContainerStyle={{
-            paddingBottom: 140,
-            paddingTop: 14,
-            paddingHorizontal: 16,
-          }}
-          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-          ListEmptyComponent={
-            <View style={{ paddingTop: 40, alignItems: "center" }}>
-              <PoundSterling size={28} color={MUTED} />
-              <Text style={{ color: MUTED, marginTop: 8 }}>No quotes found.</Text>
-            </View>
-          }
-        />
-      )}
+      <FlatList
+        data={quotes}
+        keyExtractor={(it) => String(it.id)}
+        renderItem={renderCard}
+        contentContainerStyle={{
+          paddingBottom: 140,
+          paddingTop: 14,
+          paddingHorizontal: 16,
+        }}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+        ListEmptyComponent={
+          <View style={{ paddingTop: 40, alignItems: "center" }}>
+            <PoundSterling size={28} color={MUTED} />
+            <Text style={{ color: MUTED, marginTop: 8 }}>No quotes found.</Text>
+          </View>
+        }
+      />
 
-      {/* FAB */}
+      {/* Create Quote FAB (bottom-right) */}
       <TouchableOpacity
         onPress={() => router.push(quoteCreateHref())}
         style={styles.fab}
@@ -771,174 +525,34 @@ export default function QuoteList() {
         <Plus size={24} color="#fff" />
       </TouchableOpacity>
 
-      {/* Action Sheet */}
-      <Modal visible={actionOpen} animationType="fade" transparent>
-        <Pressable style={styles.modalBackdrop} onPress={() => setActionOpen(false)} />
-        <View style={styles.centerWrap}>
-          <View style={styles.actionCard}>
-            <View style={styles.handle} />
-
-            {/* Row: View / Create */}
-            <View style={styles.centerRow}>
-              <TouchableOpacity
-                style={[styles.centerBtn, styles.centerBtnPrimary]}
-                onPress={() => {
-                  setActionOpen(false);
-                  if (selectedQuote) router.push(quotePreviewHref(selectedQuote.id));
-                }}
-                activeOpacity={0.9}
-              >
-                <Eye size={18} color="#fff" />
-                <Text style={[styles.centerBtnText, { color: "#fff" }]}>View</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.centerBtn, styles.centerBtnNeutral]}
-                onPress={() => {
-                  setActionOpen(false);
-                  setScheduleOpen(true);
-                }}
-                activeOpacity={0.9}
-              >
-                <CalendarPlus size={18} color={TEXT} />
-                <Text style={styles.centerBtnText}>Create job</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Deposit toggle + panel */}
-            <View
-              style={{
-                marginTop: 14,
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <Text style={styles.depositHeader}>Create upfront (deposit) invoice</Text>
-              <Switch value={depEnabled} onValueChange={(v) => { setDepEnabled(v); buzz(); }} />
-            </View>
-
-            {depEnabled && (
-              <View style={styles.depositCard}>
-                <Text style={styles.depositTitle}>Deposit details</Text>
-
-                {/* Materials chooser */}
-                <View style={styles.sectionRow}>
-                  <Text style={styles.sectionLabel}>Materials to include</Text>
-                  <View style={{ flexDirection: "row", gap: 14 }}>
-                    <Text onPress={() => setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: true })))}
-                          style={styles.linkSm}>
-                      Select all
-                    </Text>
-                    <Text onPress={() => setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: false })))}
-                          style={styles.linkSm}>
-                      Clear
-                    </Text>
-                  </View>
-                </View>
-
-                {depMaterials.length ? (
-                  <View style={styles.materialListWrap}>
-                    <ScrollView style={{ maxHeight: 160 }}>
-                      {depMaterials.map((m) => {
-                        const Icon = m.selected ? CheckSquare : Square;
-                        return (
-                          <Pressable
-                            key={m.ref}
-                            onPress={() =>
-                              setDepMaterials((prev) =>
-                                prev.map((x) => (x.ref === m.ref ? { ...x, selected: !x.selected } : x))
-                              )
-                            }
-                            style={styles.materialRow}
-                          >
-                            <Icon size={18} color={m.selected ? BRAND : MUTED} />
-                            <View style={{ flex: 1, marginLeft: 8 }}>
-                              <Text style={styles.materialTitle} numberOfLines={1}>
-                                {m.title}
-                              </Text>
-                              <Text style={styles.materialSub} numberOfLines={1}>
-                                {m.qty} × {money(m.unit)}
-                              </Text>
-                            </View>
-                            <Text style={styles.materialAmt}>{money(m.total)}</Text>
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  </View>
-                ) : (
-                  <Text style={styles.emptyHint}>No materials on this quote.</Text>
-                )}
-
-                {/* Labour percent */}
-                <View style={[styles.sectionRow, { marginTop: 12 }]}>
-                  <Text style={styles.sectionLabel}>Labour deposit (%)</Text>
-                  <View style={styles.counterWrap}>
-                    <TouchableOpacity
-                      style={styles.counterBtn}
-                      onPress={() =>
-                        setDepLabourPct((p) => Math.max(0, Math.floor((p || 0) - 1)))
-                      }
-                    >
-                      <Minus size={16} color={TEXT} />
-                    </TouchableOpacity>
-                    <Text style={styles.counterValue}>
-                      {Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)))}%
-                    </Text>
-                    <TouchableOpacity
-                      style={styles.counterBtn}
-                      onPress={() =>
-                        setDepLabourPct((p) => Math.min(100, Math.floor((p || 0) + 1)))
-                      }
-                    >
-                      <PlusIcon size={16} color={TEXT} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                <Text style={styles.helpText}>Applies to labour subtotal only.</Text>
-
-                {/* Totals (visual only) */}
-                <View style={styles.totalsBlock}>
-                  <View style={styles.totalRow}>
-                    <Text style={styles.totalLabel}>Materials selected</Text>
-                    <Text style={styles.totalVal}>
-                      £{depMaterials.filter((m) => m.selected).reduce((s, x) => s + (x.total || 0), 0).toFixed(2)}
-                    </Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.totalRow,
-                      { borderTopWidth: 1, borderTopColor: BORDER, paddingTop: 6, marginTop: 6 }
-                    ]}
-                  >
-                    <Text style={[styles.totalLabel, { fontWeight: "900" }]}>
-                      Labour deposit (%)
-                    </Text>
-                    <Text style={[styles.totalVal, { fontWeight: "900" }]}>
-                      {Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)))}%
-                    </Text>
-                  </View>
-                </View>
-
-                <Text style={styles.microNote}>
-                  If enabled, a deposit PDF will be generated on Create and saved
-                  under the job’s documents.
-                </Text>
-              </View>
-            )}
-          </View>
-        </View>
-      </Modal>
+      {/* Assistant FAB (bottom-left) + Sheet */}
+      <AssistantFab onPress={openAssistant} />
+      <AssistantSheet
+        visible={assistantOpen}
+        onClose={closeAssistant}
+        context="quotes"
+      />
 
       {/* Schedule Modal */}
       <Modal visible={scheduleOpen} animationType="fade" transparent>
-        <Pressable style={styles.modalBackdrop} onPress={() => setScheduleOpen(false)} />
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setScheduleOpen(false)}
+        />
         <View style={styles.sheet}>
           <Text style={styles.sheetTitle}>Create job</Text>
 
           {/* Calendar */}
-          <View style={{ marginTop: 6, borderWidth: 1, borderColor: BORDER, borderRadius: 12, padding: 10, backgroundColor: "#fff" }}>
+          <View
+            style={{
+              marginTop: 6,
+              borderWidth: 1,
+              borderColor: BORDER,
+              borderRadius: 12,
+              padding: 10,
+              backgroundColor: "#fff",
+            }}
+          >
             <SharedCalendar
               month={calMonth}
               onChangeMonth={setCalMonth}
@@ -946,7 +560,7 @@ export default function QuoteList() {
               onSelectDate={(d) => setCjStart(atMidnight(d))}
               jobs={jobs}
               span={{ start: cjStart, days: cjDays, includeWeekends: cjIncludeWeekends }}
-              blockStarts={true}
+              blockStarts
               onDayLongPress={() => {}}
             />
           </View>
@@ -1002,7 +616,11 @@ export default function QuoteList() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.sheetBtn, styles.sheetBtnPrimary, cjBusy && { opacity: 0.55 }]}
+              style={[
+                styles.sheetBtn,
+                styles.sheetBtnPrimary,
+                cjBusy && { opacity: 0.55 },
+              ]}
               activeOpacity={0.9}
               disabled={cjBusy}
               onPress={createJobInternal}
@@ -1021,17 +639,22 @@ export default function QuoteList() {
 
 /* ---------- styles ---------- */
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "android" ? 8 : 0 },
+  screen: { flex: 1, backgroundColor: BG },
 
-  topbar: {
+  headerSafe: { backgroundColor: CARD },
+
+  header: {
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
     paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 8,
+    paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  h1: { color: TEXT, fontSize: 24, fontWeight: "800" },
+  headerTitle: { color: TEXT, fontSize: 24, fontWeight: "900" },
+  headerRight: { flexDirection: "row", gap: 8 },
 
   iconBtn: {
     height: 38,
@@ -1045,7 +668,7 @@ const styles = StyleSheet.create({
   },
 
   searchRow: {
-    marginTop: 14,
+    marginTop: 10,
     marginHorizontal: 16,
     backgroundColor: CARD,
     borderRadius: 12,
@@ -1058,89 +681,85 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, color: TEXT },
 
+  cardContainer: { marginBottom: 10 },
   card: {
     backgroundColor: CARD,
     padding: 14,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: BORDER,
-    shadowColor: "#0b1220",
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0b1220",
+        shadowOpacity: 0.12,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 10 },
+      },
+      android: { elevation: 6 },
+    }),
     minHeight: 78,
-    marginBottom: 10,
   },
-  quoteTiny: { position: "absolute", right: 72, top: 14, color: MUTED, fontSize: 12, maxWidth: 200, textAlign: "right", fontWeight: "800" },
+  cardExpanded: {
+    borderBottomLeftRadius: 4,
+    borderBottomRightRadius: 4,
+  },
+
+  quoteTiny: {
+    position: "absolute",
+    right: 72,
+    top: 14,
+    color: MUTED,
+    fontSize: 12,
+    maxWidth: 200,
+    textAlign: "right",
+    fontWeight: "800",
+  },
   clientName: { color: TEXT, fontWeight: "900", fontSize: 16 },
   rowMini: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   rowMiniText: { color: MUTED },
-  totalBottom: { position: "absolute", right: 16, bottom: 12, fontSize: 16, fontWeight: "900", color: TEXT },
+  totalBottom: {
+    position: "absolute",
+    right: 16,
+    bottom: 12,
+    fontSize: 16,
+    fontWeight: "900",
+    color: TEXT,
+  },
 
   binBtn: {
-    position: "absolute", right: 12, top: 10, height: 30, width: 30, borderRadius: 8, alignItems: "center", justifyContent: "center",
-    backgroundColor: "#fee2e2", borderWidth: 1, borderColor: "#fecaca", zIndex: 5,
+    position: "absolute",
+    right: 12,
+    top: 10,
+    height: 30,
+    width: 30,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fee2e2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    zIndex: 5,
   },
 
   fab: {
-    position: "absolute", right: 18, bottom: 18, width: 56, height: 56, borderRadius: 28, backgroundColor: BRAND,
-    alignItems: "center", justifyContent: "center", shadowColor: BRAND, shadowOpacity: 0.35, shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 }, elevation: 6,
+    position: "absolute",
+    right: 18,
+    bottom: 18,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: BRAND,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: BRAND,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
 
-  /* Overlay */
   modalBackdrop: { flex: 1, backgroundColor: "#0009" },
 
-  /* Centered action sheet */
-  centerWrap: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center", paddingHorizontal: 24 },
-  actionCard: {
-    width: "100%", backgroundColor: CARD, borderRadius: 20, borderWidth: 1, borderColor: BORDER, padding: 16, paddingTop: 12,
-    shadowColor: "#0b1220", shadowOpacity: 0.22, shadowRadius: 24, shadowOffset: { width: 0, height: 14 }, elevation: 12,
-  },
-  handle: { alignSelf: "center", width: 36, height: 4, borderRadius: 2, backgroundColor: "#e5e7eb", marginBottom: 10 },
-
-  centerRow: { flexDirection: "row", gap: 10 },
-  centerBtn: {
-    paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center",
-    flexDirection: "row", gap: 8, backgroundColor: "#f8fafc", elevation: 2, flex: 1,
-  },
-  centerBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
-  centerBtnNeutral: { backgroundColor: "#f7f8fb" },
-  centerBtnText: { fontSize: 15, fontWeight: "900", color: TEXT },
-
-  depositHeader: { color: TEXT, fontWeight: "900", fontSize: 16 },
-
-  depositCard: { marginTop: 10, borderWidth: 1, borderColor: BORDER, backgroundColor: "#f9fafb", borderRadius: 14, padding: 12 },
-  depositTitle: { fontWeight: "900", color: TEXT, marginBottom: 8 },
-  sectionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  sectionLabel: { fontWeight: "900", color: TEXT },
-  linkSm: { color: BRAND, fontWeight: "900" },
-
-  materialListWrap: { marginTop: 8 },
-  materialRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#eef2f7" },
-  materialTitle: { color: TEXT, fontWeight: "800" },
-  materialSub: { color: MUTED, fontSize: 12 },
-  materialAmt: { color: TEXT, fontWeight: "900", marginLeft: 8 },
-  emptyHint: { color: MUTED, marginTop: 6 },
-
-  /* Compact counter */
-  counterWrap: {
-    flexDirection: "row", alignItems: "center", backgroundColor: "#fff", borderWidth: 1, borderColor: BORDER,
-    borderRadius: 12, overflow: "hidden",
-  },
-  counterBtn: { height: 36, width: 36, alignItems: "center", justifyContent: "center" },
-  counterValue: { minWidth: 64, textAlign: "center", fontWeight: "900", color: TEXT },
-
-  helpText: { color: MUTED, fontSize: 12, marginTop: 6 },
-
-  totalsBlock: { marginTop: 10 },
-  totalRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 2 },
-  totalLabel: { color: TEXT },
-  totalVal: { color: TEXT, fontWeight: "800" },
-  microNote: { color: MUTED, fontSize: 11, marginTop: 8 },
-
-  /* Schedule sheet */
   sheet: {
     position: "absolute",
     left: 16,
@@ -1152,15 +771,29 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
     padding: 14,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0b1220",
+        shadowOpacity: 0.14,
+        shadowRadius: 20,
+        shadowOffset: { width: 0, height: 12 },
+      },
+      android: { elevation: 8 },
+    }),
   },
   sheetTitle: { fontSize: 18, fontWeight: "900", color: TEXT, marginBottom: 6 },
 
   durationBlock: { marginTop: 10 },
   controlHeader: { fontWeight: "900", color: TEXT, marginBottom: 6 },
   spinRow: {
-    flexDirection: "row", alignItems: "center",
-    backgroundColor: "#fff", borderWidth: 1, borderColor: BORDER,
-    borderRadius: 12, overflow: "hidden", alignSelf: "flex-start"
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    overflow: "hidden",
+    alignSelf: "flex-start",
   },
   spinBtn: { height: 36, width: 36, alignItems: "center", justifyContent: "center" },
   spinValue: { minWidth: 96, textAlign: "center", fontWeight: "900", color: TEXT },
@@ -1173,10 +806,52 @@ const styles = StyleSheet.create({
 
   sheetBtns: { flexDirection: "row", gap: 10, marginTop: 12 },
   sheetBtn: {
-    flex: 1, paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: BORDER,
-    alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8,
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
   },
   sheetBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
   sheetBtnGhost: { backgroundColor: "#f7f8fb" },
   sheetBtnText: { fontSize: 15, fontWeight: "900" },
+
+  expandedActions: {
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderTopWidth: 0,
+    borderColor: BORDER,
+    borderBottomLeftRadius: 16,
+    borderBottomRightRadius: 16,
+    padding: 12,
+    paddingTop: 8,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0b1220",
+        shadowOpacity: 0.12,
+        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 10 },
+      },
+      android: { elevation: 6 },
+    }),
+  },
+  actionRow: { flexDirection: "row", gap: 10 },
+  actionBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  actionBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
+  actionBtnSecondary: { backgroundColor: "#f8fafc", borderColor: BORDER },
+  actionBtnText: { fontSize: 15, fontWeight: "900", color: TEXT },
 });

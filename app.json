@@ -1,0 +1,79 @@
+{
+  "expo": {
+    "name": "trademate-quotes",
+    "slug": "trademate-quotes",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.trademate.quotes",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app uses the camera to scan QR codes.",
+        "NSPhotoLibraryUsageDescription": "This app requires access to the photo library to upload images.",
+        "NSLocationWhenInUseUsageDescription": "This app requires access to your location to provide location-based services.",
+        "UIBackgroundModes": [
+          "fetch",
+          "remote-notification"
+        ]
+      },
+      "buildNumber": "1.0.0",
+      "statusBar": {
+        "barStyle": "dark-content"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      },
+      "package": "com.trademate.quotes",
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "INTERNET",
+        "VIBRATE",
+        "WAKE_LOCK",
+        "FOREGROUND_SERVICE"
+      ],
+      "statusBar": {
+        "barStyle": "dark-content",
+        "backgroundColor": "#ffffff",
+        "translucent": false
+      },
+      "navigationBar": {
+        "backgroundColor": "#ffffff",
+        "borderColor": "#ffffff"
+      },
+      "build": {
+        "android": {
+          "release": {
+            "keystore": "./keystore.jks",
+            "alias": "trademate",
+            "keystorePassword": "your_keystore_password",
+            "keyAliasPassword": "your_key_alias_password"
+          }
+        }
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#ffffff"
+  }
+}

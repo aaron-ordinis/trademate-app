@@ -1,35 +1,32 @@
 // app/(app)/quotes/create.js
-// 2-step wizard (full-screen). Step 1: Client + Location. Step 2: Title + Description.
+// 2-step wizard matching onboarding design
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, ActivityIndicator,
-  Platform, StatusBar, Pressable, Dimensions, PlatformColor, Alert, StyleSheet, Modal, Animated, Easing, Keyboard
+  Platform, StatusBar, Pressable, Dimensions, Alert, StyleSheet, Modal, Animated, Easing, Keyboard
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from "../../../lib/supabase";
 import * as Haptics from "expo-haptics";
-import { BlurView } from "expo-blur";
 import { Feather } from "@expo/vector-icons";
 import { loginHref, quotesListHref } from "../../../lib/nav";
 import { getPremiumStatus } from "../../../lib/premium";
+import * as NavigationBar from 'expo-navigation-bar';
+import * as SystemUI from 'expo-system-ui';
 
 /* -------------------------- THEME -------------------------- */
-const sysBG =
-  Platform.OS === "ios"
-    ? PlatformColor?.("systemGray6") ?? "#EEF2F6"
-    : PlatformColor?.("@android:color/system_neutral2_100") ?? "#EEF2F6";
-
-const BG = sysBG;
-const CARD = "#ffffff";
-const TEXT = "#0b1220";
-const MUTED = "#6b7280";
-const BRAND = "#2a86ff";
-const OK = "#16a34a";
-const DISABLED = "#9ca3af";
-const BORDER = "#e5e7eb";
-const WARN = "#b91c1c";
-const AMBER = "#b45309";
+const BRAND = '#2a86ff';
+const TEXT = '#0b1220';
+const MUTED = '#6b7280';
+const CARD = '#ffffff';
+const BG = '#ffffff';
+const BORDER = '#e6e9ee';
+const OK = '#16a34a';
+const DISABLED = '#9ca3af';
+const WARN = '#dc2626';
+const AMBER = '#b45309';
 
 /* -------------------------- LIMITS -------------------------- */
 const MAX_JOB_DETAILS = 250;
@@ -118,13 +115,60 @@ const STEP_TITLES = ["Client & Location", "Job Details"];
 
 export default function CreateQuote() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams();
   const paramsQuoteId = params?.quoteId ? String(params.quoteId) : null;
 
+  // Force white colors like onboarding
+  useEffect(() => {
+    const forceWhiteColors = () => {
+      StatusBar.setBarStyle('dark-content', false);
+      if (Platform.OS === 'android') {
+        StatusBar.setBackgroundColor('#ffffff', false);
+      }
+    };
+
+    const forceWhiteAsync = async () => {
+      try {
+        if (Platform.OS === 'android') {
+          await NavigationBar.setBackgroundColorAsync('#ffffff');
+          await NavigationBar.setButtonStyleAsync('dark');
+          if (NavigationBar.setBorderColorAsync) {
+            await NavigationBar.setBorderColorAsync('#ffffff');
+          }
+        }
+        await SystemUI.setBackgroundColorAsync('#ffffff');
+      } catch (error) {
+        console.log('Force white error:', error);
+      }
+    };
+
+    forceWhiteColors();
+    forceWhiteAsync();
+
+    const intervals = [];
+    for (let i = 0; i < 20; i++) {
+      intervals.push(setTimeout(() => {
+        forceWhiteColors();
+        if (i === 0) forceWhiteAsync();
+      }, i * 100));
+    }
+
+    return () => intervals.forEach(clearTimeout);
+  }, []);
+
   // Steps
   const [step, setStep] = useState(1);
-  const next = () => setStep((s) => { const n = Math.min(s + 1, TOTAL_STEPS); if (n !== s) Haptics.selectionAsync(); return n; });
-  const back = () => setStep((s) => { const n = Math.max(s - 1, 1); if (n !== s) Haptics.selectionAsync(); return n; });
+  const next = () => setStep((s) => { 
+    const n = Math.min(s + 1, TOTAL_STEPS); 
+    if (n !== s) Haptics.selectionAsync(); 
+    return n; 
+  });
+  const back = () => setStep((s) => { 
+    const n = Math.max(s - 1, 1); 
+    if (n !== s) Haptics.selectionAsync(); 
+    return n; 
+  });
 
   // Form state
   const [clientName, setClientName] = useState("");
@@ -140,11 +184,13 @@ export default function CreateQuote() {
   const remaining = Math.max(0, MAX_JOB_DETAILS - jobLen);
   const setJobDetails = (t) => _setJobDetails((t || "").slice(0, MAX_JOB_DETAILS));
 
+  // Validation state like onboarding
+  const [fieldErrors, setFieldErrors] = useState({});
+
   // Address modals
   const [billingOpen, setBillingOpen] = useState(false);
   const [siteOpen, setSiteOpen] = useState(false);
 
-  // Profile, travel
   useEffect(() => { if (sameAsBilling) setSiteAddress(clientAddress); }, [sameAsBilling, clientAddress]);
 
   const [profile, setProfile] = useState(null);
@@ -158,11 +204,9 @@ export default function CreateQuote() {
   const [autoDistLoading, setAutoDistLoading] = useState(false);
 
   const [existing, setExisting] = useState(null);
-
   const [saving, setSaving] = useState(false);
   const [genLoading, setGenLoading] = useState(false);
 
-  // Loader text + progress
   const [loaderMsg, setLoaderMsg] = useState("Preparing data…");
   const [loaderPct, setLoaderPct] = useState(0.1);
 
@@ -631,148 +675,168 @@ export default function CreateQuote() {
     }
   };
 
+  // Step validations like onboarding
+  const validateStep1 = () => {
+    const errors = {};
+    if (!clientName.trim()) errors.clientName = 'Client name is required';
+    if (!clientAddress.trim()) errors.clientAddress = 'Billing address is required';
+    if (!sameAsBilling && !siteAddress.trim()) errors.siteAddress = 'Site address is required';
+    return errors;
+  };
+
+  const validateStep2 = () => {
+    const errors = {};
+    if (!jobSummary.trim()) errors.jobSummary = 'Job title is required';
+    if (!jobDetails.trim()) errors.jobDetails = 'Job description is required';
+    return errors;
+  };
+
+  const getCurrentStepErrors = () => {
+    switch (step) {
+      case 1: return validateStep1();
+      case 2: return validateStep2();
+      default: return {};
+    }
+  };
+
+  const canProceed = () => {
+    const errors = getCurrentStepErrors();
+    return Object.keys(errors).length === 0;
+  };
+
+  const goNext = () => {
+    const errors = getCurrentStepErrors();
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+    setFieldErrors({});
+    next();
+  };
+
+  const goBack = () => {
+    setFieldErrors({});
+    back();
+  };
+
   // ---------- Derived: disable actions ----------
   const actionsDisabled = saving || genLoading || profileLoading;
 
-  // ---------- UI sizing ----------
-  const { width } = Dimensions.get("window");
+  // ---------- UI sizing like onboarding ----------
+  const { width, height } = Dimensions.get("window");
+  const maxCardW = Math.min(width - 24, 640);
+  const chromePad = 12 * 2 + 48 + 68 + 24;
+  const scrollMax = Math.max(240, Math.min(height - chromePad, 560));
 
   return (
-    <View style={{ flex: 1, backgroundColor: "#FFFFFF" }}>
-      <StatusBar backgroundColor="#FFFFFF" barStyle="dark-content" />
+    <View style={{ flex: 1, backgroundColor: BG }}>
+      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
+      
+      {/* Safe area top */}
+      <View style={{ height: insets.top, backgroundColor: CARD }} />
       
       {/* Header */}
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          paddingHorizontal: 16,
-          paddingVertical: 12,
-          backgroundColor: "#FFFFFF",
-          borderBottomWidth: 1,
-          borderBottomColor: BORDER,
-        }}
-      >
-        <Text style={{ color: TEXT, fontSize: 20, fontWeight: "900" }}>
-          {existing
-            ? (isFinalized
-                ? (existing.reference ||
-                   quoteRef(existing.quote_number, existing.created_at))
-                : "Create Quote")
-            : "Create Quote"}
-        </Text>
-        <SmallBtn
-          variant="light"
-          onPress={() => {
-            Haptics.selectionAsync();
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => {
+          if (step > 1) {
+            goBack();
+          } else {
             router.back();
-          }}
-        >
-          Close
-        </SmallBtn>
-      </View>
-
-      {/* Step header */}
-      <View style={{ paddingHorizontal: 16, paddingVertical: 10, backgroundColor: "#FFFFFF" }}>
-        <StepHeader step={step} total={TOTAL_STEPS} title={STEP_TITLES[step - 1]} />
+          }
+        }}>
+          <Feather name="arrow-left" size={20} color={TEXT} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>
+          {existing ? (isFinalized ? "View Quote" : "Edit Quote") : "Create Quote"}
+        </Text>
+        <View style={{ width: 40 }} />
       </View>
 
       {/* Content */}
-      <ScrollView
-        style={{ flex: 1, backgroundColor: "#FFFFFF" }}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 110 }}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator={false}
-      >
-        {!HAS_PLACES_KEY && (
-          <Card tight>
-            <Text style={{ color: AMBER, fontWeight: "800" }}>
-              Address search requires a Google Maps key.
-            </Text>
-            <Hint>Set EXPO_PUBLIC_GOOGLE_MAPS_KEY in your app config.</Hint>
-          </Card>
-        )}
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
+        {/* Step progress */}
+        <View style={styles.stepProgress}>
+          <View style={styles.stepRow}>
+            <Text style={styles.stepTitle}>{STEP_TITLES[step - 1]}</Text>
+            <Text style={styles.stepCounter}>Step {step} of {TOTAL_STEPS}</Text>
+          </View>
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${(step / TOTAL_STEPS) * 100}%` }]} />
+          </View>
+        </View>
 
+        {/* Warning cards */}
         {isFinalized && (
-          <Card tight>
+          <View style={styles.card}>
             <Text style={{ color: BRAND, fontWeight: "800" }}>
               This quote has been generated.
             </Text>
-            <Hint>You can't generate it again.</Hint>
-          </Card>
+            <Text style={styles.hint}>You can't generate it again.</Text>
+          </View>
         )}
 
-        {profileLoading && (
-          <Card tight>
-            <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
-              <ActivityIndicator />
-              <Text style={{ color: MUTED }}>Loading your profile…</Text>
-            </View>
-          </Card>
-        )}
-
-        {!!profileError && !profileLoading && (
-          <Pressable onPress={loadProfile}>
-            <Card tight>
-              <Text style={{ color: WARN, fontWeight: "800" }}>{profileError}</Text>
-              <Hint>(Tap to retry)</Hint>
-            </Card>
-          </Pressable>
-        )}
-
-        {/* STEP 1 — Client + Location */}
+        {/* Step 1: Client & Job Meta */}
         {step === 1 && (
-          <View style={{ gap: 8 }}>
-            <Card tight>
-              <Label>Client</Label>
+          <>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Client Details</Text>
+              
+              <Label required>Client Name</Label>
               <Input
                 placeholder="Client name"
                 value={clientName}
-                onChangeText={setClientName}
+                onChangeText={(text) => {
+                  setClientName(text);
+                  if (fieldErrors.clientName) {
+                    setFieldErrors(prev => ({ ...prev, clientName: null }));
+                  }
+                }}
+                style={fieldErrors.clientName ? styles.inputError : {}}
               />
+              {fieldErrors.clientName && <ErrorText>{fieldErrors.clientName}</ErrorText>}
+
               <View style={{ flexDirection: "row", gap: 8 }}>
-                <Input
-                  style={{ flex: 1 }}
-                  placeholder="Email (optional)"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  value={clientEmail}
-                  onChangeText={setClientEmail}
-                />
-                <Input
-                  style={{ flex: 1 }}
-                  placeholder="Phone (optional)"
-                  keyboardType="phone-pad"
-                  value={clientPhone}
-                  onChangeText={setClientPhone}
-                />
+                <View style={{ flex: 1 }}>
+                  <Label>Email (optional)</Label>
+                  <Input
+                    placeholder="Email"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={clientEmail}
+                    onChangeText={setClientEmail}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Label>Phone (optional)</Label>
+                  <Input
+                    placeholder="Phone"
+                    keyboardType="phone-pad"
+                    value={clientPhone}
+                    onChangeText={setClientPhone}
+                  />
+                </View>
               </View>
-              <Pressable onPress={() => setBillingOpen(true)} style={{ marginTop: 2 }}>
+
+              <Label required>Billing Address</Label>
+              <TouchableOpacity onPress={() => setBillingOpen(true)}>
                 <Input
                   value={clientAddress}
                   editable={false}
-                  placeholder="Billing address (tap to search or edit)"
-                  style={{ color: clientAddress ? TEXT : MUTED }}
+                  placeholder="Tap to search or enter billing address"
+                  style={[
+                    { color: clientAddress ? TEXT : MUTED },
+                    fieldErrors.clientAddress ? styles.inputError : {}
+                  ]}
                 />
-              </Pressable>
-            </Card>
+              </TouchableOpacity>
+              {fieldErrors.clientAddress && <ErrorText>{fieldErrors.clientAddress}</ErrorText>}
+            </View>
 
-            <Card tight>
-              <Label>Location</Label>
-              <Pressable
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  setSameAsBilling((v) => !v);
-                }}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 8,
-                  marginBottom: 8,
-                }}
-              >
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Site Location & Travel</Text>
+              
+              <View style={styles.switchRow}>
+                <Text style={styles.label}>Same as billing address</Text>
                 <Checkbox
                   checked={sameAsBilling}
                   onPress={() => {
@@ -780,181 +844,136 @@ export default function CreateQuote() {
                     setSameAsBilling((v) => !v);
                   }}
                 />
-                <Text style={{ color: TEXT }}>
-                  Site address is the same as billing
-                </Text>
-              </Pressable>
+              </View>
 
-              <Pressable onPress={() => !sameAsBilling && setSiteOpen(true)}>
-                <Input
-                  editable={false}
-                  value={sameAsBilling ? clientAddress : siteAddress}
-                  placeholder="Site address (tap to search or edit)"
-                  style={sameAsBilling ? { backgroundColor: BG, color: MUTED } : {}}
-                />
-              </Pressable>
+              {!sameAsBilling && (
+                <>
+                  <Label required>Site Address</Label>
+                  <TouchableOpacity onPress={() => setSiteOpen(true)}>
+                    <Input
+                      editable={false}
+                      value={siteAddress}
+                      placeholder="Tap to search or enter site address"
+                      style={[
+                        { color: siteAddress ? TEXT : MUTED },
+                        fieldErrors.siteAddress ? styles.inputError : {}
+                      ]}
+                    />
+                  </TouchableOpacity>
+                  {fieldErrors.siteAddress && <ErrorText>{fieldErrors.siteAddress}</ErrorText>}
+                </>
+              )}
 
               <View style={{ flexDirection: "row", gap: 8 }}>
-                <Input
-                  style={{ flex: 1 }}
-                  placeholder="Distance (miles)"
-                  keyboardType="decimal-pad"
-                  value={distanceMiles}
-                  onChangeText={setDistanceMiles}
-                />
-                <View
-                  style={{
-                    flex: 1,
-                    borderRadius: 10,
-                    borderWidth: 1,
-                    borderColor: BORDER,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    paddingHorizontal: 8,
-                  }}
-                >
-                  {autoDistLoading ? (
-                    <ActivityIndicator style={{ paddingVertical: 10 }} />
-                  ) : (
-                    <Text
-                      style={{
-                        color: TEXT,
-                        fontWeight: "700",
-                        paddingVertical: 10,
-                        textAlign: "center",
-                      }}
-                      numberOfLines={1}
-                      adjustsFontSizeToFit
-                      minimumFontScale={0.85}
-                    >
-                      Travel (round trip): £{(travelCharge || 0).toFixed(2)}
-                    </Text>
-                  )}
+                <View style={{ flex: 1 }}>
+                  <Label>Distance (miles)</Label>
+                  <Input
+                    placeholder="Distance"
+                    keyboardType="decimal-pad"
+                    value={distanceMiles}
+                    onChangeText={setDistanceMiles}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Label>Travel Charge</Label>
+                  <View style={styles.calcRow}>
+                    {autoDistLoading ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <Text style={styles.calcValue}>
+                        £{(travelCharge || 0).toFixed(2)}
+                      </Text>
+                    )}
+                  </View>
                 </View>
               </View>
-              <Hint>We’ll auto-calc distance if possible.</Hint>
-            </Card>
-          </View>
+            </View>
+          </>
         )}
 
-        {/* STEP 2 — Job Details */}
+        {/* Step 2: Job Details */}
         {step === 2 && (
-          <View style={{ gap: 8 }}>
-            <Card tight>
-              <Label>Job</Label>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Job Information</Text>
+            
+            <Label required>Job Title</Label>
+            <Input
+              placeholder="Brief job title"
+              value={jobSummary}
+              onChangeText={(text) => {
+                setJobSummary(text);
+                if (fieldErrors.jobSummary) {
+                  setFieldErrors(prev => ({ ...prev, jobSummary: null }));
+                }
+              }}
+              style={fieldErrors.jobSummary ? styles.inputError : {}}
+            />
+            {fieldErrors.jobSummary && <ErrorText>{fieldErrors.jobSummary}</ErrorText>}
+
+            <Label required>Job Description</Label>
+            <View style={{ position: "relative" }}>
               <Input
-                placeholder="Job title (short)"
-                value={jobSummary}
-                onChangeText={setJobSummary}
+                placeholder="Describe the work to be done in detail..."
+                value={jobDetails}
+                onChangeText={(text) => {
+                  setJobDetails(text);
+                  if (fieldErrors.jobDetails) {
+                    setFieldErrors(prev => ({ ...prev, jobDetails: null }));
+                  }
+                }}
+                multiline
+                numberOfLines={6}
+                style={[
+                  { 
+                    minHeight: 120, 
+                    textAlignVertical: "top", 
+                    paddingRight: 60 
+                  },
+                  fieldErrors.jobDetails ? styles.inputError : {}
+                ]}
               />
-              <View style={{ position: "relative" }}>
-                <Input
-                  placeholder="Describe the work to be done… (max 250)"
-                  value={jobDetails}
-                  onChangeText={setJobDetails}
-                  multiline
-                  numberOfLines={8}
-                  style={{ minHeight: 160, textAlignVertical: "top", paddingRight: 60 }}
-                />
-                <View
+              <View style={styles.counterBadge}>
+                <Text
                   style={{
-                    position: "absolute",
-                    right: 10,
-                    bottom: 10,
-                    backgroundColor: CARD,
-                    borderWidth: 1,
-                    borderColor: BORDER,
-                    borderRadius: 10,
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
+                    color:
+                      jobLen >= MAX_JOB_DETAILS
+                        ? WARN
+                        : jobLen >= COUNTER_AMBER_AT
+                        ? AMBER
+                        : BRAND,
+                    fontWeight: "800",
+                    fontSize: 12,
                   }}
                 >
-                  <Text
-                    style={{
-                      color:
-                        jobLen >= MAX_JOB_DETAILS
-                          ? WARN
-                          : jobLen >= COUNTER_AMBER_AT
-                          ? AMBER
-                          : BRAND,
-                      fontWeight: "800",
-                      fontSize: 12,
-                    }}
-                  >
-                    {remaining} left
-                  </Text>
-                </View>
+                  {remaining} left
+                </Text>
               </View>
-            </Card>
+            </View>
+            {fieldErrors.jobDetails && <ErrorText>{fieldErrors.jobDetails}</ErrorText>}
+            <Text style={styles.hint}>Be specific about materials, sizes, finishes, and any special requirements.</Text>
           </View>
         )}
       </ScrollView>
 
-      {/* FOOTER */}
+      {/* Sticky Bottom Action Bar */}
       {!isFinalized && (
-        <View
-          style={{
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            backgroundColor: "#FFFFFF",
-            borderTopWidth: 1,
-            borderTopColor: BORDER,
-            paddingHorizontal: 16,
-            paddingVertical: 12,
-            paddingBottom: Platform.OS === "ios" ? 30 : 16,
-            ...Platform.select({
-              ios: {
-                shadowColor: "#0b1220",
-                shadowOpacity: 0.08,
-                shadowRadius: 12,
-                shadowOffset: { width: 0, height: -4 },
-              },
-              android: { elevation: 10 },
-            }),
-          }}
-        >
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            {step === 1 ? (
-              <Btn
-                variant="secondary"
-                onPress={() => {
-                  router.back();
-                }}
-                disabled={actionsDisabled}
-              >
-                Close
-              </Btn>
-            ) : (
-              <Btn variant="secondary" onPress={back} disabled={actionsDisabled}>
-                Back
-              </Btn>
-            )}
-            {step < TOTAL_STEPS && (
-              <Btn onPress={next} disabled={actionsDisabled}>
-                Next
-              </Btn>
-            )}
-            {step === TOTAL_STEPS && (
-              <>
-                <Btn
-                  variant="secondary"
-                  onPress={saveDraftOnly}
-                  disabled={actionsDisabled}
-                >
-                  {saving ? "Saving…" : "Save Draft"}
-                </Btn>
-                <Btn onPress={generateAIAndPDF} disabled={actionsDisabled}>
-                  {genLoading ? "Generating…" : "Generate Quote"}
-                </Btn>
-              </>
-            )}
-          </View>
+        <View style={[styles.actionBar, { paddingBottom: insets.bottom }]}>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.primaryActionBtn]}
+            onPress={step < TOTAL_STEPS ? goNext : generateAIAndPDF}
+            disabled={actionsDisabled}
+          >
+            <Text style={[styles.actionBtnText, { color: "#ffffff" }]}>
+              {step < TOTAL_STEPS ? "Next" : (genLoading ? "Creating…" : "Create")}
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
-      {/* Address modals */}
+      {/* White safe area bottom */}
+      <View style={{ height: insets.bottom, backgroundColor: '#ffffff' }} />
+
+      {/* Address modals - use simple backdrop instead of BlurView */}
       <CenteredEditor visible={billingOpen} onClose={() => setBillingOpen(false)}>
         <AddressEditor
           title="Billing address"
@@ -994,7 +1013,7 @@ function CenteredEditor({ visible, onClose, children }) {
       presentationStyle="overFullScreen"
       onRequestClose={onClose}
     >
-      <BlurView intensity={20} tint="systemMaterialLight" style={{ position: "absolute", inset: 0 }} />
+      <View style={{ position: "absolute", inset: 0, backgroundColor: 'rgba(0,0,0,0.5)' }} />
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 12 }}>
         <View style={[editorCard, { width: Math.min(width - 32, 560) }]}>
           <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
@@ -1265,33 +1284,47 @@ const editorCard = {
   }),
 };
 
-function Card({ children, tight }) {
+const footerWrap = {
+  borderTopWidth: 1,
+  borderTopColor: BORDER,
+  backgroundColor: '#ffffff',
+  borderBottomLeftRadius: 18,
+  borderBottomRightRadius: 18,
+  // Shadow applied inline above
+};
+
+function Card({ children }) {
   return (
-    <View
-      style={{
-        backgroundColor: CARD,
-        borderRadius: 12,
-        padding: tight ? 10 : 12,
-        borderWidth: 1,
-        borderColor: BORDER,
-        marginBottom: 8,
-        ...Platform.select({
-          ios: { shadowColor: "#000", shadowOpacity: 0.07, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
-          android: { elevation: 4 },
-        }),
-      }}
-    >
+    <View style={{
+      backgroundColor: '#ffffff',
+      borderRadius: 12,
+      padding: 10,
+      borderWidth: 1,
+      borderColor: BORDER,
+      marginBottom: 8,
+      // Reduced card shadows too
+      ...Platform.select({
+        ios: {
+          shadowColor: '#0b1220',
+          shadowOpacity: 0.06,
+          shadowRadius: 8,
+          shadowOffset: { width: 0, height: 4 },
+        },
+        android: { elevation: 3 },
+      }),
+    }}>
       {children}
     </View>
   );
 }
 
-function Label({ children }) {
-  return <Text style={{ color: TEXT, fontWeight: "800", marginBottom: 6 }}>{children}</Text>;
-}
-
-function Hint({ children }) {
-  return <Text style={{ color: MUTED, fontSize: 12, marginTop: 2 }}>{children}</Text>;
+function Label({ children, required = false }) {
+  return (
+    <Text style={{ color: TEXT, fontWeight: "800", marginBottom: 6 }}>
+      {children}
+      {required && <Text style={{ color: '#dc2626' }}> *</Text>}
+    </Text>
+  );
 }
 
 function Input(props) {
@@ -1300,7 +1333,7 @@ function Input(props) {
       {...props}
       style={[
         {
-          backgroundColor: CARD,
+          backgroundColor: '#ffffff',
           borderColor: BORDER,
           borderWidth: 1,
           borderRadius: 10,
@@ -1319,36 +1352,14 @@ function Input(props) {
 function Btn(props) {
   const disabled = !!props.disabled;
   const variant = props.variant || "primary";
-  const bg =
-    disabled
-      ? DISABLED
-      : variant === "secondary"
-      ? BORDER
-      : variant === "primary"
-      ? OK
-      : BRAND;
+  const bg = disabled ? DISABLED : variant === "secondary" ? BORDER : variant === "primary" ? OK : BRAND;
   const color = variant === "secondary" ? TEXT : "#ffffff";
   return (
     <TouchableOpacity
-      onPress={
-        disabled
-          ? () => {}
-          : () => {
-              Haptics.selectionAsync();
-              props.onPress && props.onPress();
-            }
-      }
-      style={{
-        flex: 1,
-        paddingVertical: 12,
-        borderRadius: 10,
-        alignItems: "center",
-        backgroundColor: bg,
-      }}
+      onPress={disabled ? () => {} : () => { Haptics.selectionAsync(); props.onPress && props.onPress(); }}
+      style={{ flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: "center", backgroundColor: bg }}
     >
-      <Text style={{ color, fontWeight: "800" }}>
-        {typeof props.children === "string" ? props.children : "Button"}
-      </Text>
+      <Text style={{ color, fontWeight: "800" }}>{typeof props.children === "string" ? props.children : "Button"}</Text>
     </TouchableOpacity>
   );
 }
@@ -1357,23 +1368,15 @@ function SmallBtn({ children, onPress, variant = "default" }) {
   const bg = variant === "danger" ? "#ef4444" : variant === "light" ? "#f3f4f6" : BORDER;
   const color = variant === "danger" ? "#fff" : TEXT;
   return (
-    <TouchableOpacity
-      onPress={() => {
-        Haptics.selectionAsync();
-        onPress && onPress();
-      }}
-      style={{ paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: bg }}
-    >
-      <Text style={{ color, fontWeight: "700" }}>
-        {typeof children === "string" ? children : "Action"}
-      </Text>
+    <TouchableOpacity onPress={() => { Haptics.selectionAsync(); onPress && onPress(); }} style={{ paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: bg }}>
+      <Text style={{ color, fontWeight: "700" }}>{typeof children === "string" ? children : "Action"}</Text>
     </TouchableOpacity>
   );
 }
 
 function Checkbox({ checked, onPress }) {
   return (
-    <Pressable
+    <TouchableOpacity
       onPress={() => {
         Haptics.selectionAsync();
         onPress && onPress();
@@ -1390,43 +1393,202 @@ function Checkbox({ checked, onPress }) {
       }}
     >
       {checked ? <Feather name="check" size={14} color="#fff" /> : null}
-    </Pressable>
+    </TouchableOpacity>
   );
 }
 
 function StepHeader({ step, total, title }) {
   const pct = Math.max(0, Math.min(1, step / total));
   return (
-    <View style={{ marginBottom: 4 }}>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 6,
-        }}
-      >
-        <Text style={{ color: TEXT, fontWeight: "900", fontSize: 16 }}>{title}</Text>
-        <Text style={{ color: MUTED, fontWeight: "700", fontSize: 12 }}>
-          Step {step} of {total}
-        </Text>
+    <View style={{ marginBottom: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+        <Text style={{ color: TEXT, fontWeight: "800" }}>{title}</Text>
+        <Text style={{ color: MUTED, fontWeight: "600", fontSize: 12 }}>Step {step} of {total}</Text>
       </View>
       <View style={{ height: 6, backgroundColor: "#dde3ea", borderRadius: 999 }}>
-        <View
-          style={{
-            width: (pct * 100) + "%",
-            height: 6,
-            backgroundColor: BRAND,
-            borderRadius: 999,
-          }}
-        />
+        <View style={{ width: pct * 100 + '%', height: 6, backgroundColor: BRAND, borderRadius: 999 }} />
       </View>
     </View>
   );
 }
 
-/* --- Loader styles --- */
+function ErrorText({ children }) {
+  return <Text style={styles.errorText}>{children}</Text>;
+}
+
 const styles = StyleSheet.create({
+  header: {
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: TEXT,
+  },
+
+  actionBar: {
+    backgroundColor: CARD,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "center",
+    alignItems: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0b1220",
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: -4 },
+      },
+      android: {
+        elevation: 8,
+      },
+    }),
+  },
+  
+  actionBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    flex: 1,
+    marginHorizontal: 24,
+  },
+  
+  primaryActionBtn: {
+    backgroundColor: BRAND,
+    borderColor: BRAND,
+  },
+  
+  secondaryActionBtn: {
+    backgroundColor: "#f8fafc",
+  },
+  
+  actionBtnText: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: TEXT,
+  },
+
+  fullWidthActionBtn: {
+    flex: 1,
+    minWidth: '100%',
+  },
+
+  stepProgress: {
+    marginBottom: 16,
+  },
+  
+  stepRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  
+  stepTitle: {
+    color: TEXT,
+    fontWeight: "800",
+    fontSize: 16,
+  },
+  
+  stepCounter: {
+    color: MUTED,
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  
+  progressTrack: {
+    height: 6,
+    backgroundColor: "#dde3ea",
+    borderRadius: 999,
+  },
+  
+  progressFill: {
+    height: 6,
+    backgroundColor: BRAND,
+    borderRadius: 999,
+  },
+  
+  card: {
+    backgroundColor: CARD,
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    marginBottom: 16,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0b1220',
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      android: { elevation: 3 },
+    }),
+  },
+
+  label: { color: TEXT, fontWeight: '700' },
+  hint: { color: MUTED, fontSize: 12, marginTop: 4 },
+  switchRow: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    marginBottom: 10,
+    paddingVertical: 4 // Add some padding for better touch area
+  },
+  
+  calcRow: {
+    backgroundColor: '#eef2f7',
+    borderWidth: 1, 
+    borderColor: BORDER,
+    paddingVertical: 12, 
+    paddingHorizontal: 14,
+    borderRadius: 10, 
+    marginBottom: 8,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  calcValue: { color: TEXT, fontWeight: '900' },
+  
+  counterBadge: {
+    position: "absolute",
+    right: 10,
+    bottom: 18,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  
+  inputError: { borderColor: '#dc2626', borderWidth: 2, backgroundColor: '#fef2f2' },
+  errorText: { color: '#dc2626', fontSize: 12, fontWeight: '600', marginTop: -4, marginBottom: 8, marginLeft: 4 },
+  
+  /* --- Loader styles --- */
   loaderBackdrop: {
     position: "absolute",
     inset: 0,
@@ -1459,3 +1621,21 @@ const styles = StyleSheet.create({
   dotsContainer: { flexDirection: "row", gap: 8, alignItems: "center" },
   loadingDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: BRAND, opacity: 0.6 },
 });
+
+// UI primitives matching onboarding
+const modalCard = {
+  backgroundColor: '#ffffff',
+  borderRadius: 18,
+  paddingTop: 12,
+  borderWidth: 1,
+  borderColor: BORDER,
+  ...Platform.select({
+    ios: {
+      shadowColor: '#0b1220',
+      shadowOpacity: 0.18,
+      shadowRadius: 24,
+      shadowOffset: { width: 0, height: 12 },
+    },
+    android: { elevation: 18 },
+  }),
+};

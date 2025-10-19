@@ -13,6 +13,8 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import * as Haptics from 'expo-haptics';
 import { Feather } from '@expo/vector-icons';
 import { supabase } from '../../../lib/supabase';
+import ReviewAppModal from '../../../components/ReviewAppModal';
+import { shouldShowReviewPrompt, launchReviewFlow } from '../../../lib/reviewPrompt';
 
 const safeName = (name) => (name || 'quote.pdf').replace(/[^\w.-]/g, '_');
 const withBust = (url) =>
@@ -93,6 +95,8 @@ export default function Preview() {
   const [fatal, setFatal] = useState('');
   const [base64Pdf, setBase64Pdf] = useState('');
   const [viewerWidth, setViewerWidth] = useState(Dimensions.get('window').width - 24);
+  const [showReview, setShowReview] = useState(false);
+  const hasAskedRef = useRef(false);
 
   useEffect(() => {
     const sub = Dimensions.addEventListener('change', ({ window }) => {
@@ -295,9 +299,14 @@ export default function Preview() {
             originWhitelist={['*']}
             javaScriptEnabled
             domStorageEnabled
-            onMessage={(e) => {
+            onMessage={async (e) => {
               const msg = String(e?.nativeEvent?.data || '');
-              if (msg === 'rendered') { /* no-op */ }
+              if (msg === 'rendered' && !hasAskedRef.current) {
+                hasAskedRef.current = true;
+                try {
+                  if (await shouldShowReviewPrompt()) setShowReview(true);
+                } catch {}
+              }
               if (msg.startsWith('error:')) setFatal(msg.slice(6));
             }}
             style={{ flex: 1 }}
@@ -336,6 +345,15 @@ export default function Preview() {
           busy={!isDemo && busy === 'open'}
         />
       </View>
+
+      <ReviewAppModal
+        visible={showReview}
+        onLater={() => setShowReview(false)}
+        onRateNow={async () => {
+          setShowReview(false);
+          await launchReviewFlow();
+        }}
+      />
     </SafeAreaView>
   );
 }
