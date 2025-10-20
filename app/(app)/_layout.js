@@ -1,13 +1,22 @@
 // app/(app)/_layout.tsx
 import React, { useCallback, useEffect, useState } from "react";
-import { Platform, StatusBar, PlatformColor, View, BackHandler } from "react-native";
+import {
+  Platform,
+  StatusBar,
+  PlatformColor,
+  View,
+  BackHandler,
+  Button, // ✅ fix: import Button
+} from "react-native";
 import { Stack, usePathname, useRouter } from "expo-router";
 import * as NavigationBar from "expo-navigation-bar";
+import * as SystemUI from "expo-system-ui";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+
 import { supabase } from "../../lib/supabase";
 import { getPremiumStatus } from "../../lib/premium";
 import PaywallModal from "../../components/PaywallModal";
-import { SafeAreaProvider } from "react-native-safe-area-context";
-import * as SystemUI from "expo-system-ui";
+import { testTableAccess } from "../../lib/supabase";
 
 const sysBG =
   Platform.OS === "ios"
@@ -15,16 +24,13 @@ const sysBG =
     : PlatformColor?.("@android:color/system_neutral2_100") ?? "#EEF2F6";
 
 const BG = sysBG;
-const BG_HEX = "#EEF2F6";
-const TAB_BAR_COLOR = "#FFFFFF";
-const BRAND = "#2a86ff";
 
-// Robust path check (no regex footguns)
+// Only allow these paths to bypass the paywall
 const isSafePath = (p) =>
-  p.startsWith("/(app)/account") ||       // Plan & Billing
-  p.startsWith("/(app)/billing") ||       // Any billing routes
-  p.startsWith("/(app)/trial-expired") || // Dedicated trial-expired screen
-  p.startsWith("/(auth)/");               // Login / Register / Reset
+  p.startsWith("/(app)/account") ||
+  p.startsWith("/(app)/billing") ||
+  p.startsWith("/(app)/trial-expired") ||
+  p.startsWith("/(auth)/");
 
 export default function AppGroupLayout() {
   const router = useRouter();
@@ -36,38 +42,35 @@ export default function AppGroupLayout() {
   const [layoutReady, setLayoutReady] = useState(false);
   const [fullyMounted, setFullyMounted] = useState(false);
 
+  // System UI colors
   useEffect(() => {
     const setAppColors = async () => {
       try {
-        await SystemUI.setBackgroundColorAsync('#ffffff');
-        StatusBar.setBarStyle('dark-content', true);
-        
-        if (Platform.OS === 'android') {
-          StatusBar.setBackgroundColor('#ffffff', true);
-          (async () => {
-            try {
-              await NavigationBar.setBackgroundColorAsync("#FFFFFF"); // ✅ Ensure white
-              await NavigationBar.setButtonStyleAsync("dark");
-              await NavigationBar.setDividerColorAsync("transparent");
-              await NavigationBar.setBehaviorAsync("inset-swipe");
-              await NavigationBar.setVisibilityAsync("visible");
-            } catch {}
-          })();
+        await SystemUI.setBackgroundColorAsync("#ffffff");
+        StatusBar.setBarStyle("dark-content", true);
+        if (Platform.OS === "android") {
+          StatusBar.setBackgroundColor("#ffffff", true);
+          await NavigationBar.setBackgroundColorAsync("#FFFFFF");
+          await NavigationBar.setButtonStyleAsync("dark");
+          await NavigationBar.setBehaviorAsync("inset-swipe");
+          await NavigationBar.setVisibilityAsync("visible");
         }
-      } catch (error) {
-        console.log('App layout color setting error:', error);
+      } catch (err) {
+        console.log("App layout color setting error:", err);
       }
     };
-
     setAppColors();
   }, []);
 
+  // Check paywall gate
   const checkGate = useCallback(async () => {
     try {
       setChecking(true);
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setBlocked(false); return; }
-
+      if (!user) {
+        setBlocked(false);
+        return;
+      }
       const { data: profile } = await supabase
         .from("profiles")
         .select("trial_ends_at, plan_tier, plan_status")
@@ -89,21 +92,19 @@ export default function AppGroupLayout() {
     return () => sub?.data?.subscription?.unsubscribe?.();
   }, [checkGate]);
 
-  // Mark layout as ready when checking is complete
+  // Mark layout as ready → then fully mounted
   useEffect(() => {
     if (!checking) {
-      const timer = setTimeout(() => {
+      const t1 = setTimeout(() => {
         setLayoutReady(true);
-        // Add additional delay to ensure all child components are ready
-        setTimeout(() => {
-          setFullyMounted(true);
-        }, 150);
+        const t2 = setTimeout(() => setFullyMounted(true), 150);
+        return () => clearTimeout(t2);
       }, 50);
-      return () => clearTimeout(timer);
+      return () => clearTimeout(t1);
     }
   }, [checking]);
 
-  // Reset forceHide when on a safe path
+  // Reset forceHide when navigating to safe routes
   useEffect(() => {
     if (isSafePath(pathname) && forceHide) setForceHide(false);
   }, [pathname, forceHide]);
@@ -111,7 +112,7 @@ export default function AppGroupLayout() {
   const suppressPaywall = isSafePath(pathname);
   const paywallVisible = !forceHide && blocked && !suppressPaywall;
 
-  // Block Android back only when paywall visible
+  // Disable Android back while paywall visible
   useEffect(() => {
     if (!paywallVisible) return;
     const onBack = () => true;
@@ -119,25 +120,22 @@ export default function AppGroupLayout() {
     return () => sub.remove();
   }, [paywallVisible]);
 
-  // Don't render anything until fully mounted
+  // Skeleton while mounting
   if (!layoutReady || !fullyMounted) {
-    return (
-      <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
-      </View>
-    );
+    return <View style={{ flex: 1, backgroundColor: "#ffffff" }} />;
   }
 
   return (
     <>
       <StatusBar translucent={false} backgroundColor="#ffffff" barStyle="dark-content" />
 
-      <SafeAreaProvider style={{ backgroundColor: '#ffffff' }}>
+      <SafeAreaProvider style={{ backgroundColor: "#ffffff" }}>
         <Stack
           screenOptions={{
             headerShown: false,
-            contentStyle: { backgroundColor: '#ffffff' },
-            presentation: 'card',
-            animation: 'none',
+            contentStyle: { backgroundColor: "#ffffff" },
+            presentation: "card",
+            animation: "none",
           }}
         >
           <Stack.Screen name="onboarding" options={{ headerShown: false }} />
@@ -161,6 +159,40 @@ export default function AppGroupLayout() {
           router.push("/(app)/account");
         }}
       />
+
+      {/* Dev-only helper to test DB access safely */}
+      {__DEV__ && (
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: "absolute",
+            bottom: 20,
+            right: 20,
+            zIndex: 9999,
+            backgroundColor: "#ffffff",
+            borderRadius: 12,
+            padding: 8,
+            shadowColor: "#000",
+            shadowOpacity: 0.15,
+            shadowRadius: 8,
+            shadowOffset: { width: 0, height: 4 },
+            elevation: 6,
+          }}
+        >
+          <Button
+            title="Test Table Access"
+            onPress={async () => {
+              try {
+                const result = await testTableAccess();
+                alert(JSON.stringify(result, null, 2));
+              } catch (e) {
+                alert(String(e?.message || e));
+              }
+            }}
+            color="#2a86ff"
+          />
+        </View>
+      )}
     </>
   );
 }

@@ -264,6 +264,7 @@ export default function QuoteList() {
         router.replace(loginHref);
         return;
       }
+      
       const { data: full, error } = await supabase
         .from("quotes")
         .select("*")
@@ -274,24 +275,29 @@ export default function QuoteList() {
       const start = toYMD(cjStart);
       const end = toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends));
 
+      // Create job in the jobs table
       const ins = await supabase
         .from("jobs")
         .insert({
           user_id: user.id,
           title: full.job_summary || "Job",
           client_name: full.client_name || "Client",
+          client_email: full.client_email || null,
+          client_phone: full.client_phone || null,
           client_address: full.client_address || null,
           site_address: full.site_address || full.client_address || null,
           status: "scheduled",
           start_date: start,
           end_date: end,
+          end_date_working: end,
           duration_days: Math.max(1, cjDays),
           include_weekends: !!cjIncludeWeekends,
           total: Number(full.total || 0),
           cost: 0,
+          source_quote_id: full.id,
+          quote_id: full.id,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          source_quote_id: full.id,
         })
         .select("id")
         .single();
@@ -299,7 +305,8 @@ export default function QuoteList() {
       if (ins.error) throw ins.error;
       const jobId = ins.data.id;
 
-      await supabase
+      // Update quote status
+      const { error: updateError } = await supabase
         .from("quotes")
         .update({
           status: "accepted",
@@ -308,15 +315,21 @@ export default function QuoteList() {
         })
         .eq("id", full.id);
 
+      if (updateError) throw updateError;
+
       setScheduleOpen(false);
+      // Remove from quotes list since it's now "accepted"
       setQuotes((prev) => prev.filter((x) => x.id !== full.id));
-      router.push(jobHref(jobId));
+      
+      Alert.alert("Success", `Job created and scheduled!\n\nStart: ${start}\nEnd: ${end}`);
     } catch (e) {
       setCjError(e?.message || "Create job failed");
     } finally {
       setCjBusy(false);
     }
   };
+
+  const jobCreateHref = (quoteId) => `/(app)/jobs/create?id=${quoteId}`;
 
   const renderCard = ({ item }) => {
     const address = item.client_address || "";
@@ -411,8 +424,8 @@ export default function QuoteList() {
                 style={[styles.actionBtn, styles.actionBtnSecondary]}
                 onPress={() => {
                   setExpandedQuoteId(null);
-                  setSelectedQuote(item);
-                  setScheduleOpen(true);
+                  // Navigate to the proper create job screen instead of opening modal
+                  router.push(jobCreateHref(item.id));
                 }}
                 activeOpacity={0.9}
               >

@@ -1,5 +1,5 @@
 // app/(app)/jobs/create.js
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -11,23 +11,18 @@ import {
   ActivityIndicator,
   Platform,
   Alert,
+  StatusBar,
+  Modal,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { supabase } from "../../../lib/supabase";
-import {
-  Eye,
-  CalendarPlus,
-  CheckSquare,
-  Square,
-  Minus,
-  Plus as PlusIcon,
-  ArrowLeft,
-  Info,
-} from "lucide-react-native";
+import { CheckSquare, Square, Minus, Plus as PlusIcon } from "lucide-react-native";
 import { Feather } from "@expo/vector-icons";
-import { quotePreviewHref, jobHref, loginHref } from "../../../lib/nav";
+import { jobHref, loginHref } from "../../../lib/nav";
 import * as Haptics from "expo-haptics";
+import SharedCalendar from "../../../components/SharedCalendar";
+import Constants from "expo-constants";
 
 /* ---------- theme ---------- */
 const BRAND = "#2a86ff";
@@ -92,20 +87,12 @@ function splitQuoteItems(quote) {
     const unit = num(it.unit_price ?? it.price ?? it.rate, 0);
     const total = calcAmount(it);
     const ref =
-      it.id || it.key || it.code || fingerprintOf(`${title}|${qty}|${unit}|${idx}`);
+      it.id || it.key || it.code || fingerprintOf(title + "|" + qty + "|" + unit + "|" + idx);
     const norm = { ref, title, qty, unit, total };
 
-    if (
-      type === "labour" ||
-      type === "labor" ||
-      /labou?r/i.test(type || title)
-    ) {
+    if (type === "labour" || type === "labor" || /labou?r/i.test(type || title)) {
       labourItems.push(norm);
-    } else if (
-      type === "material" ||
-      type === "materials" ||
-      /material/i.test(type || title)
-    ) {
+    } else if (type === "material" || type === "materials" || /material/i.test(type || title)) {
       materialItems.push(norm);
     }
   });
@@ -113,52 +100,6 @@ function splitQuoteItems(quote) {
   const labourSubtotal = labourItems.reduce((s, x) => s + (x.total || 0), 0);
   return { labourSubtotal, materialItems };
 }
-
-const buildExpenseRows = ({ quote, jobId, userId, dateISO }) => {
-  const items = flattenItems(quote?.line_items);
-  const quoteId = quote?.id ?? quote?.source_quote_id ?? null;
-  const rows = [];
-
-  items.forEach((it, idx) => {
-    const type = String(it.type ?? it.kind ?? "").toLowerCase();
-    if (type === "labour" || type === "labor") return;
-
-    const amount = calcAmount(it);
-    if (!(amount > 0)) return;
-
-    const title = it.title ?? it.name ?? it.description ?? "Expense";
-    const base =
-      userId +
-      "|" +
-      jobId +
-      "|" +
-      (quoteId || "noquote") +
-      "|" +
-      title +
-      "|" +
-      amount.toFixed(2) +
-      "|" +
-      idx;
-    const fingerprint = fingerprintOf(base);
-
-    rows.push({
-      job_id: jobId,
-      user_id: userId,
-      title,
-      name: title || "Item",
-      amount: Number(amount),
-      total: Number(amount),
-      date: dateISO,
-      notes: it.description || null,
-      source_quote_id: quoteId,
-      fingerprint,
-      qty: num(it.qty ?? it.quantity, null) || null,
-      unit_cost: num(it.unit_price ?? it.price ?? it.rate, null) || null,
-    });
-  });
-
-  return rows;
-};
 
 const pad = (n) => (n < 10 ? "0" + n : String(n));
 const toYMD = (d) =>
@@ -186,6 +127,43 @@ const addWorkingDays = (startDate, days, includeWeekends) => {
 const TOTAL_STEPS = 2;
 const STEP_TITLES = ["Deposit Options", "Schedule"];
 
+/* ---------- INFO BUTTON COMPONENT ---------- */
+function InfoButton({ title, tips = [] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <TouchableOpacity
+        onPress={() => {
+          Haptics.selectionAsync();
+          setOpen(true);
+        }}
+        style={styles.infoBtn}
+      >
+        <Text style={{ color: MUTED, fontWeight: "900" }}>i</Text>
+      </TouchableOpacity>
+      <Modal visible={open} animationType="fade" transparent onRequestClose={() => setOpen(false)}>
+        <View style={styles.modalBackdrop} />
+        <View style={styles.modalWrap}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHead}>
+              <Text style={{ color: TEXT, fontWeight: "900", fontSize: 16 }}>{title}</Text>
+              <TouchableOpacity onPress={() => setOpen(false)} style={styles.smallBtn}>
+                <Text style={styles.smallBtnText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+            {tips.slice(0, 6).map((t, i) => (
+              <View key={i} style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+                <Text style={{ color: BRAND, fontWeight: "900" }}>•</Text>
+                <Text style={{ color: TEXT, flex: 1 }}>{t}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
 export default function CreateJobScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -194,41 +172,48 @@ export default function CreateJobScreen() {
 
   // Steps
   const [step, setStep] = useState(1);
-  const next = () => setStep((s) => { 
-    const n = Math.min(s + 1, TOTAL_STEPS); 
-    if (n !== s) Haptics.selectionAsync(); 
-    return n; 
-  });
-  const back = () => setStep((s) => { 
-    const n = Math.max(s - 1, 1); 
-    if (n !== s) Haptics.selectionAsync(); 
-    return n; 
-  });
+  const next = () =>
+    setStep((s) => {
+      const n = Math.min(s + 1, TOTAL_STEPS);
+      if (n !== s) Haptics.selectionAsync();
+      return n;
+    });
+  const back = () =>
+    setStep((s) => {
+      const n = Math.max(s - 1, 1);
+      if (n !== s) Haptics.selectionAsync();
+      return n;
+    });
 
   const [quote, setQuote] = useState(null);
   const [userId, setUserId] = useState(null);
-  const [jobs, setJobs] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  /* Deposit UI - same state as modal */
+  /* Deposit UI */
   const [depEnabled, setDepEnabled] = useState(false);
-  const [depMaterials, setDepMaterials] = useState([]); // {ref,title,qty,unit,total,selected}
+  const [depMaterials, setDepMaterials] = useState([]);
   const [depLabourPct, setDepLabourPct] = useState(10);
   const [depLabourSubtotal, setDepLabourSubtotal] = useState(0);
 
-  /* Scheduling - same as modal */
+  /* Scheduling */
   const [cjDays, setCjDays] = useState(1);
   const [cjIncludeWeekends, setCjIncludeWeekends] = useState(false);
   const [cjStart, setCjStart] = useState(atMidnight(new Date()));
+  const [calMonth, setCalMonth] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
+    return d;
+  });
+  const [jobs, setJobs] = useState([]);
   const [cjBusy, setCjBusy] = useState(false);
   const [cjError, setCjError] = useState("");
 
-  /* Tooltip state */
-  const [showTooltip, setShowTooltip] = useState(false);
-
-  /* Load data - same logic as before */
+  /* Load data */
   useEffect(() => {
     const loadData = async () => {
       try {
+        setLoading(true);
+        
         const { data: auth } = await supabase.auth.getUser();
         const user = auth?.user;
         if (!user) {
@@ -237,34 +222,52 @@ export default function CreateJobScreen() {
         }
         setUserId(user.id);
 
-        const { data: full } = await supabase
-          .from("quotes")
-          .select("*")
-          .eq("id", quoteId)
-          .maybeSingle();
-
-        if (full) {
-          setQuote(full);
-          const { labourSubtotal, materialItems } = splitQuoteItems(full);
-          setDepLabourSubtotal(labourSubtotal);
-          setDepMaterials((materialItems || []).map((m) => ({ ...m, selected: false })));
+        if (quoteId) {
+          const { data: full, error } = await supabase
+            .from("quotes")
+            .select("*")
+            .eq("id", quoteId)
+            .maybeSingle();
+          if (error) console.warn("[CREATE_JOB] Quote load error:", error?.message);
+          if (full) {
+            setQuote(full);
+            const { labourSubtotal, materialItems } = splitQuoteItems(full);
+            setDepLabourSubtotal(labourSubtotal);
+            setDepMaterials((materialItems || []).map((m) => ({ ...m, selected: false })));
+          }
+        } else {
+          setQuote({ id: null, client_name: "", job_summary: "" });
         }
 
-        // Load jobs for scheduling
-        const { data: jobsData } = await supabase
-          .from("jobs")
-          .select("id, title, start_date, end_date, status, include_weekends, user_id")
-          .eq("user_id", user.id);
-        setJobs(jobsData || []);
+        // Load jobs for calendar
+        try {
+          const { data: jobsData, error: jobsErr } = await supabase
+            .from("jobs")
+            .select("id, title, start_date, end_date, status, include_weekends, user_id")
+            .eq("user_id", user?.id || "");
+          
+          if (jobsErr) {
+            console.error("[CREATE_JOB] Jobs load error:", jobsErr);
+            setJobs([]);
+          } else {
+            setJobs(jobsData || []);
+            console.log("[CREATE_JOB] Loaded jobs:", jobsData?.length || 0);
+          }
+        } catch (jobsLoadError) {
+          console.error("[CREATE_JOB] Jobs load exception:", jobsLoadError);
+          setJobs([]);
+        }
       } catch (e) {
-        console.warn("Failed to load data:", e);
+        console.warn("[CREATE_JOB] Failed to load data:", e);
+        setQuote({ id: null, client_name: "", job_summary: "" });
+      } finally {
+        setLoading(false);
       }
     };
-
-    if (quoteId) loadData();
+    loadData();
   }, [quoteId, router]);
 
-  /* Create Job flow - same logic as before */
+  /* Create Job */
   const createJobInternal = async () => {
     if (!quote) return;
 
@@ -282,160 +285,211 @@ export default function CreateJobScreen() {
       const start = toYMD(cjStart);
       const end = toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends));
 
-      console.log("[CREATE_JOB] inserting job…", { start, end, cjDays, cjIncludeWeekends });
+      console.log("[CREATE_JOB] Creating job for quote:", quote.id);
 
-      // Create job
-      const ins = await supabase
-        .from("jobs")
-        .insert({
+      // Create job using the proven working approach
+      let jobId = null;
+      let jobCreated = false;
+
+      try {
+        // Step 1: Create basic job record
+        const basicPayload = {
           user_id: user.id,
           title: quote.job_summary || "Job",
-          client_name: quote.client_name || "Client",
-          client_address: quote.client_address || null,
-          site_address: quote.site_address || quote.client_address || null,
           status: "scheduled",
           start_date: start,
           end_date: end,
+          total: Number(quote.total || 0)
+        };
+
+        const { data: basicInsert, error: basicError } = await supabase
+          .from("jobs")
+          .insert(basicPayload)
+          .select("id")
+          .single();
+
+        if (basicError) {
+          throw new Error(`Job creation failed: ${basicError.message}`);
+        }
+
+        jobId = basicInsert.id;
+        console.log("[CREATE_JOB] Job created with ID:", jobId);
+
+        // Step 2: Update with additional fields
+        const updatePayload = {
+          client_name: quote.client_name || "Client",
+          client_email: quote.client_email,
+          client_phone: quote.client_phone,
+          client_address: quote.client_address,
+          site_address: quote.site_address || quote.client_address,
+          end_date_working: end,
           duration_days: Math.max(1, cjDays),
           include_weekends: !!cjIncludeWeekends,
-          total: Number(quote.total || 0),
           cost: 0,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
           source_quote_id: quote.id,
-        })
-        .select("id")
-        .single();
+          quote_id: quote.id,
+        };
 
-      if (ins.error) throw ins.error;
-      const jobId = ins.data.id;
-      console.log("[CREATE_JOB] job inserted:", jobId);
+        const { error: updateError } = await supabase
+          .from("jobs")
+          .update(updatePayload)
+          .eq("id", jobId);
 
-      // Link quote → job
-      const upQ = await supabase
-        .from("quotes")
-        .update({
-          status: "accepted",
-          updated_at: new Date().toISOString(),
-          job_id: jobId,
-        })
-        .eq("id", quote.id);
-      if (upQ.error) console.warn("[CREATE_JOB] link quote->job failed", upQ.error);
-      else console.log("[CREATE_JOB] quote linked to job:", jobId);
+        if (updateError) {
+          console.warn("[CREATE_JOB] Update warning:", updateError.message);
+          // Job creation succeeded, update failure is not critical
+        }
 
-      if (depEnabled) {
-        // ...existing deposit creation logic unchanged...
-        try {
-          const material_item_ids = depMaterials.filter((m) => m.selected).map((m) => m.ref);
-          const labour_percent = Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)));
-          const idempotency_key = `dep|${user.id}|${quote.id}|job:${jobId}|${material_item_ids.slice().sort().join(",")}|${labour_percent}`;
+        jobCreated = true;
+        console.log("[CREATE_JOB] Job creation completed successfully");
+      } catch (jobError) {
+        console.error("[CREATE_JOB] Job creation failed:", jobError);
+        Alert.alert("Database Error", `Could not create the job: ${jobError.message}`);
+        setCjBusy(false);
+        return;
+      }
 
-          const payload = {
-            user_id: user.id,
-            quote_id: quote.id,
+      // Update quote status
+      if (quote.id && jobCreated) {
+        const { error: updateError } = await supabase
+          .from("quotes")
+          .update({
+            status: "accepted",
+            updated_at: new Date().toISOString(),
             job_id: jobId,
-            labour_percent,
-            material_item_ids,
-            idempotency_key,
-          };
-          console.log("[DEPOSIT] invoke payload:", payload);
+          })
+          .eq("id", quote.id);
 
-          const { data: efData, error: efError } = await supabase.functions.invoke(
-            "create_deposit_invoice",
-            { body: payload }
-          );
+        if (updateError) {
+          console.error("[CREATE_JOB] Quote update error:", updateError);
+        } else {
+          console.log("[CREATE_JOB] Quote marked as accepted");
+        }
+      }
 
-          if (efError) {
-            console.warn("[DEPOSIT] EF network error", efError);
+      // Generate deposit invoice if enabled
+      if (depEnabled) {
+        console.log("[CREATE_JOB] Generating deposit invoice...");
+
+        const selectedIds = depMaterials.filter((m) => m.selected).map((m) => m.ref);
+        const labour_percent = Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)));
+
+        const payload = {
+          user_id: user.id,
+          quote_id: quote.id,
+          job_id: jobId,
+          labour_percent,
+          material_item_ids: selectedIds,
+        };
+
+        const extra = Constants.expoConfig?.extra ?? Constants.manifest?.extra ?? {};
+        const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || extra.SUPABASE_URL || "";
+        const FUNCTIONS_URL = (SUPABASE_URL || "").replace(/\/$/, "") + "/functions/v1/create_deposit_invoice";
+
+        try {
+          const { data: sessRes } = await supabase.auth.getSession();
+          const accessToken = sessRes?.session?.access_token;
+          
+          const authHeaders = accessToken 
+            ? { Authorization: "Bearer " + accessToken }
+            : { 
+                Authorization: "Bearer " + (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || extra?.SUPABASE_ANON_KEY || ""),
+                apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || extra?.SUPABASE_ANON_KEY || ""
+              };
+
+          const res = await fetch(FUNCTIONS_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders },
+            body: JSON.stringify(payload),
+          });
+
+          const text = await res.text();
+          let efData = null;
+          try { 
+            efData = text ? JSON.parse(text) : null; 
+          } catch { 
+            efData = null; 
+          }
+
+          if (!res.ok) {
+            console.warn("[CREATE_JOB] Deposit generation failed:", efData?.error || text);
+            Alert.alert("Partial Success", "Job created, but deposit invoice generation failed.");
             router.replace(jobHref(jobId));
             return;
           }
 
-          console.log("[DEPOSIT] EF response:", JSON.stringify(efData, null, 2));
-          
-          if (efData?.ok || efData?.success) {
-            let navigated = false;
+          if (efData && (efData.ok || efData.success)) {
+            const docId = efData.documentId || efData.document_id;
+            const pdfUrl = efData.signedUrl || efData.pdf_url || efData.url;
 
-            if ((efData.document_id || efData.documentId) && (efData.document_id || efData.documentId) !== 'undefined') {
-              const docId = efData.document_id || efData.documentId;
-              console.log("[DEPOSIT] Navigating with document_id:", docId);
-              router.replace(`/(app)/invoices/deposit/preview?docId=${encodeURIComponent(docId)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
-              navigated = true;
-            }
-            else if ((efData.pdf_url || efData.pdfUrl || efData.url) && (efData.pdf_url || efData.pdfUrl || efData.url) !== 'undefined') {
-              const pdfUrl = efData.pdf_url || efData.pdfUrl || efData.url;
-              console.log("[DEPOSIT] Navigating with pdf_url:", pdfUrl);
-              router.replace(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(pdfUrl)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
-              navigated = true;
-            }
-            else if ((efData.signed_url || efData.signedUrl) && (efData.signed_url || efData.signedUrl) !== 'undefined') {
-              const signedUrl = efData.signed_url || efData.signedUrl;
-              console.log("[DEPOSIT] Navigating with signed_url:", signedUrl);
-              router.replace(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(signedUrl)}&jobId=${encodeURIComponent(jobId)}&name=deposit.pdf`);
-              navigated = true;
-            }
-            else {
-              console.log("[DEPOSIT] No direct URL, checking documents table after delay...");
-              setTimeout(async () => {
-                try {
-                  const { data: docCheck, error: docCheckError } = await supabase
-                    .from("documents")
-                    .select("id, url, name")
-                    .eq("job_id", jobId)
-                    .eq("kind", "invoice_pdf")
-                    .order("created_at", { ascending: false })
-                    .limit(1)
-                    .maybeSingle();
-                  
-                  console.log("[DEPOSIT] Documents check result:", { data: docCheck, error: docCheckError });
-                  
-                  if (!docCheckError && docCheck) {
-                    if (docCheck.id) {
-                      console.log("[DEPOSIT] Found document, navigating with ID:", docCheck.id);
-                      router.replace(`/(app)/invoices/deposit/preview?docId=${encodeURIComponent(docCheck.id)}&jobId=${encodeURIComponent(jobId)}&name=${encodeURIComponent(docCheck.name || 'deposit.pdf')}`);
-                      return;
-                    } else if (docCheck.url) {
-                      console.log("[DEPOSIT] Found document, navigating with URL:", docCheck.url);
-                      router.replace(`/(app)/invoices/deposit/preview?url=${encodeURIComponent(docCheck.url)}&jobId=${encodeURIComponent(jobId)}&name=${encodeURIComponent(docCheck.name || 'deposit.pdf')}`);
-                      return;
-                    }
-                  }
-                  
-                  console.warn("[DEPOSIT] No document found after delay, navigating to job");
-                  router.replace(jobHref(jobId));
-                } catch (e) {
-                  console.error("[DEPOSIT] Error checking documents table:", e);
-                  router.replace(jobHref(jobId));
-                }
-              }, 2000);
+            if (docId) {
+              router.replace(
+                "/(app)/invoices/deposit/preview?docId=" + encodeURIComponent(docId) +
+                "&jobId=" + encodeURIComponent(jobId) + "&name=deposit.pdf"
+              );
+              return;
             }
 
-            if (!navigated && !(efData.document_id || efData.documentId || efData.pdf_url || efData.pdfUrl || efData.url || efData.signed_url || efData.signedUrl)) {
-              console.warn("[DEPOSIT] No valid document reference and no fallback, navigating to job");
-              router.replace(jobHref(jobId));
+            if (pdfUrl) {
+              router.replace(
+                "/(app)/invoices/deposit/preview?url=" + encodeURIComponent(pdfUrl) +
+                "&jobId=" + encodeURIComponent(jobId) + "&name=deposit.pdf"
+              );
+              return;
             }
-            
+
+            Alert.alert("Success", "Job created and deposit invoice generated!");
+            router.replace(jobHref(jobId));
             return;
           } else {
-            console.warn("[DEPOSIT] EF returned not ok", efData);
+            Alert.alert("Partial Success", "Job created, but deposit invoice may not have generated.");
+            router.replace(jobHref(jobId));
+            return;
           }
-        } catch (ef) {
-          console.warn("[DEPOSIT] EF exception", ef?.message || ef);
+        } catch (e) {
+          console.warn("[CREATE_JOB] Deposit generation error:", e.message);
+          Alert.alert("Partial Success", "Job created, but deposit invoice generation failed.");
+          router.replace(jobHref(jobId));
+          return;
         }
       }
 
+      // Success - no deposit invoice requested
+      Alert.alert("Success", "Job created and scheduled!\n\nStart: " + start + "\nEnd: " + end);
       router.replace(jobHref(jobId));
     } catch (e) {
-      console.warn("[CREATE_JOB] error", e);
+      console.error("[CREATE_JOB] General error", e);
       setCjError(e?.message || "Create job failed");
+      Alert.alert("Error", e?.message || "Could not create job. Please try again.");
     } finally {
       setCjBusy(false);
     }
   };
 
-  if (!quote) {
+  if (loading) {
     return (
       <View style={styles.screen}>
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
+        <View style={{ height: insets.top, backgroundColor: CARD }} />
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+            <Feather name="arrow-left" size={20} color={TEXT} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Create Job</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+          <ActivityIndicator size="large" color={BRAND} />
+          <Text style={{ color: MUTED, marginTop: 8 }}>Loading...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (!quote && quoteId) {
+    return (
+      <View style={styles.screen}>
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
         <View style={{ height: insets.top, backgroundColor: CARD }} />
         <View style={styles.header}>
           <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
@@ -453,17 +507,18 @@ export default function CreateJobScreen() {
 
   return (
     <View style={styles.screen}>
+      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
       <View style={{ height: insets.top, backgroundColor: CARD }} />
-      
+
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => {
-          if (step > 1) {
-            back();
-          } else {
-            router.back();
-          }
-        }}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => {
+            if (step > 1) back();
+            else router.back();
+          }}
+        >
           <Feather name="arrow-left" size={20} color={TEXT} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Create Job</Text>
@@ -476,83 +531,87 @@ export default function CreateJobScreen() {
         <View style={styles.stepProgress}>
           <View style={styles.stepRow}>
             <Text style={styles.stepTitle}>{STEP_TITLES[step - 1]}</Text>
-            <Text style={styles.stepCounter}>Step {step} of {TOTAL_STEPS}</Text>
+            <Text style={styles.stepCounter}>
+              Step {step} of {TOTAL_STEPS}
+            </Text>
           </View>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${(step / TOTAL_STEPS) * 100}%` }]} />
+          <View className="progressTrack" style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: String((step / TOTAL_STEPS) * 100) + "%" }]} />
           </View>
         </View>
 
         {/* Step 1: Deposit Options */}
         {step === 1 && (
           <>
-            {/* Primary toggle with tooltip */}
             <View style={styles.card}>
-              <View style={styles.toggleRow}>
-                <View style={styles.toggleLabelRow}>
-                  <Text style={styles.toggleLabel}>Generate a deposit invoice</Text>
-                  <TouchableOpacity 
-                    style={styles.infoBtn}
-                    onPress={() => setShowTooltip(!showTooltip)}
-                  >
-                    <Info size={16} color={MUTED} />
-                  </TouchableOpacity>
-                </View>
-                <Switch 
-                  value={depEnabled} 
-                  onValueChange={(v) => { 
-                    setDepEnabled(v); 
-                    Haptics.selectionAsync(); 
-                    if (showTooltip) setShowTooltip(false);
-                  }} 
+              <View style={styles.cardHeader}>
+                <Text style={styles.cardTitle}>Deposit Invoice</Text>
+                <InfoButton
+                  title="Deposit Invoice"
+                  tips={[
+                    "Generate a professional deposit invoice PDF for your client.",
+                    "Select which materials to include in the deposit.",
+                    "Set a percentage of labour costs to include.",
+                    "The deposit PDF will be saved under the job's documents.",
+                  ]}
                 />
               </View>
-              
-              {showTooltip && (
-                <View style={styles.tooltip}>
-                  <Text style={styles.tooltipText}>
-                    When enabled, a deposit PDF will be generated on Create and saved under the job's documents.
-                  </Text>
-                </View>
-              )}
+
+              <View style={styles.toggleRow}>
+                <Text style={styles.toggleLabel}>Generate deposit invoice</Text>
+                <Switch
+                  value={depEnabled}
+                  onValueChange={(v) => {
+                    setDepEnabled(v);
+                    Haptics.selectionAsync();
+                  }}
+                  trackColor={{ false: "#e2e8f0", true: BRAND + "40" }}
+                  thumbColor={depEnabled ? BRAND : "#f1f5f9"}
+                />
+              </View>
             </View>
 
-            {/* Deposit configuration */}
             <View style={[styles.card, !depEnabled && styles.disabledCard]}>
-              <Text style={[styles.cardTitle, !depEnabled && styles.disabledText]}>
-                Deposit details
-              </Text>
+              <View style={styles.cardHeader}>
+                <Text style={[styles.cardTitle, !depEnabled && styles.disabledText]}>Deposit Configuration</Text>
+                <InfoButton
+                  title="Deposit Setup"
+                  tips={[
+                    "Materials: Choose which materials to charge upfront.",
+                    "Labour: Set percentage of labour costs to include (0-100%).",
+                    "Total: Automatically calculated from your selections.",
+                  ]}
+                />
+              </View>
 
-              {/* Materials chooser */}
-              <View style={styles.sectionRow}>
-                <Text style={[styles.sectionLabel, !depEnabled && styles.disabledText]}>
-                  Materials to include
-                </Text>
+              <View style={styles.inputGroup}>
+                <Text style={[styles.inputLabel, !depEnabled && styles.disabledText]}>Materials to include</Text>
                 <View style={styles.linkRow}>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     disabled={!depEnabled}
-                    onPress={() => setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: true })))}
+                    onPress={() =>
+                      setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: true })))
+                    }
                   >
-                    <Text style={[styles.linkSm, !depEnabled && styles.disabledLink]}>
-                      Select all
-                    </Text>
+                    <Text style={[styles.linkSm, !depEnabled && styles.disabledLink]}>Select all</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     disabled={!depEnabled}
-                    onPress={() => setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: false })))}
+                    onPress={() =>
+                      setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: false })))
+                    }
                   >
-                    <Text style={[styles.linkSm, !depEnabled && styles.disabledLink]}>
-                      Clear
-                    </Text>
+                    <Text style={[styles.linkSm, !depEnabled && styles.disabledLink]}>Clear all</Text>
                   </TouchableOpacity>
                 </View>
               </View>
 
               {depMaterials.length ? (
                 <View style={styles.materialListWrap}>
-                  <ScrollView style={{ maxHeight: 200 }}>
-                    {depMaterials.map((m) => {
+                  <ScrollView style={styles.materialScrollView} showsVerticalScrollIndicator={false}>
+                    {depMaterials.map((m, index) => {
                       const Icon = m.selected ? CheckSquare : Square;
+                      const isLast = index === depMaterials.length - 1;
                       return (
                         <Pressable
                           key={m.ref}
@@ -562,15 +621,19 @@ export default function CreateJobScreen() {
                               prev.map((x) => (x.ref === m.ref ? { ...x, selected: !x.selected } : x))
                             )
                           }
-                          style={[styles.materialRow, !depEnabled && styles.disabledRow]}
+                          style={[
+                            styles.materialRow,
+                            !depEnabled && styles.disabledRow,
+                            isLast && { borderBottomWidth: 0 },
+                          ]}
                         >
-                          <Icon size={18} color={m.selected && depEnabled ? BRAND : MUTED} />
-                          <View style={{ flex: 1, marginLeft: 8 }}>
-                            <Text style={[styles.materialTitle, !depEnabled && styles.disabledText]} numberOfLines={1}>
+                          <Icon size={16} color={m.selected && depEnabled ? BRAND : MUTED} />
+                          <View style={styles.materialContent}>
+                            <Text
+                              style={[styles.materialTitle, !depEnabled && styles.disabledText]}
+                              numberOfLines={1}
+                            >
                               {m.title}
-                            </Text>
-                            <Text style={[styles.materialSub, !depEnabled && styles.disabledText]} numberOfLines={1}>
-                              {m.qty} × {money(m.unit)}
                             </Text>
                           </View>
                           <Text style={[styles.materialAmt, !depEnabled && styles.disabledText]}>
@@ -582,23 +645,22 @@ export default function CreateJobScreen() {
                   </ScrollView>
                 </View>
               ) : (
-                <Text style={[styles.emptyHint, !depEnabled && styles.disabledText]}>
-                  No materials on this quote.
-                </Text>
+                <View style={styles.emptyState}>
+                  <Text style={[styles.emptyHint, !depEnabled && styles.disabledText]}>
+                    No materials found on this quote.
+                  </Text>
+                </View>
               )}
 
-              {/* Labour percent */}
-              <View style={[styles.sectionRow, { marginTop: 12 }]}>
-                <Text style={[styles.sectionLabel, !depEnabled && styles.disabledText]}>
-                  Labour deposit (%)
+              <View style={styles.inputGroup}>
+                <Text style={[styles.inputLabel, !depEnabled && styles.disabledText]}>
+                  Labour deposit percentage
                 </Text>
                 <View style={[styles.counterWrap, !depEnabled && styles.disabledCounter]}>
                   <TouchableOpacity
                     style={styles.counterBtn}
                     disabled={!depEnabled}
-                    onPress={() =>
-                      setDepLabourPct((p) => Math.max(0, Math.floor((p || 0) - 1)))
-                    }
+                    onPress={() => setDepLabourPct((p) => Math.max(0, Math.floor((p || 0) - 1)))}
                   >
                     <Minus size={16} color={depEnabled ? TEXT : MUTED} />
                   </TouchableOpacity>
@@ -608,39 +670,46 @@ export default function CreateJobScreen() {
                   <TouchableOpacity
                     style={styles.counterBtn}
                     disabled={!depEnabled}
-                    onPress={() =>
-                      setDepLabourPct((p) => Math.min(100, Math.floor((p || 0) + 1)))
-                    }
+                    onPress={() => setDepLabourPct((p) => Math.min(100, Math.floor((p || 0) + 1)))}
                   >
                     <PlusIcon size={16} color={depEnabled ? TEXT : MUTED} />
                   </TouchableOpacity>
                 </View>
+                <Text style={[styles.helpText, !depEnabled && styles.disabledText]}>
+                  Percentage of labour costs to include in deposit (0-100%)
+                </Text>
               </View>
-              <Text style={[styles.helpText, !depEnabled && styles.disabledText]}>
-                Applies to labour subtotal only.
-              </Text>
 
-              {/* Totals */}
-              <View style={styles.totalsBlock}>
-                <View style={styles.totalRow}>
-                  <Text style={[styles.totalLabel, !depEnabled && styles.disabledText]}>
-                    Materials selected
+              <View style={styles.summaryBlock}>
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, !depEnabled && styles.disabledText]}>
+                    Selected materials
                   </Text>
-                  <Text style={[styles.totalVal, !depEnabled && styles.disabledText]}>
-                    £{depMaterials.filter((m) => m.selected).reduce((s, x) => s + (x.total || 0), 0).toFixed(2)}
+                  <Text style={[styles.summaryValue, !depEnabled && styles.disabledText]}>
+                    {money(depMaterials.filter((m) => m.selected).reduce((s, x) => s + (x.total || 0), 0))}
                   </Text>
                 </View>
-                <View
-                  style={[
-                    styles.totalRow,
-                    { borderTopWidth: 1, borderTopColor: BORDER, paddingTop: 6, marginTop: 6 }
-                  ]}
-                >
-                  <Text style={[styles.totalLabel, { fontWeight: "900" }, !depEnabled && styles.disabledText]}>
-                    Labour deposit (%)
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, !depEnabled && styles.disabledText]}>
+                    Labour deposit ({Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)))}%)
                   </Text>
-                  <Text style={[styles.totalVal, { fontWeight: "900" }, !depEnabled && styles.disabledText]}>
-                    {Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)))}%
+                  <Text style={[styles.summaryValue, !depEnabled && styles.disabledText]}>
+                    {money((depLabourSubtotal * (depLabourPct || 0)) / 100)}
+                  </Text>
+                </View>
+                <View style={[styles.summaryRow, styles.summaryTotal]}>
+                  <Text
+                    style={[styles.summaryLabel, styles.summaryTotalText, !depEnabled && styles.disabledText]}
+                  >
+                    Total deposit
+                  </Text>
+                  <Text
+                    style={[styles.summaryValue, styles.summaryTotalText, !depEnabled && styles.disabledText]}
+                  >
+                    {money(
+                      depMaterials.filter((m) => m.selected).reduce((s, x) => s + (x.total || 0), 0) +
+                        (depLabourSubtotal * (depLabourPct || 0)) / 100
+                    )}
                   </Text>
                 </View>
               </View>
@@ -651,51 +720,103 @@ export default function CreateJobScreen() {
         {/* Step 2: Schedule */}
         {step === 2 && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Job Schedule</Text>
-            
-            {/* Placeholder for scheduling UI - reuse shared calendar components */}
-            <View style={styles.scheduleSection}>
-              <Text style={styles.sectionLabel}>Start Date</Text>
-              <Text style={styles.hint}>Calendar component would go here</Text>
-              
-              <View style={[styles.sectionRow, { marginTop: 16 }]}>
-                <Text style={styles.sectionLabel}>Duration (days)</Text>
-                <View style={styles.counterWrap}>
-                  <TouchableOpacity
-                    style={styles.counterBtn}
-                    onPress={() => setCjDays((d) => Math.max(1, d - 1))}
-                  >
-                    <Minus size={16} color={TEXT} />
-                  </TouchableOpacity>
-                  <Text style={styles.counterValue}>{cjDays}</Text>
-                  <TouchableOpacity
-                    style={styles.counterBtn}
-                    onPress={() => setCjDays((d) => d + 1)}
-                  >
-                    <PlusIcon size={16} color={TEXT} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <View style={styles.toggleRow}>
-                <Text style={styles.toggleLabel}>Include weekends</Text>
-                <Switch 
-                  value={cjIncludeWeekends} 
-                  onValueChange={setCjIncludeWeekends}
-                />
-              </View>
-              
-              {cjError && (
-                <Text style={styles.errorText}>{cjError}</Text>
-              )}
+            <View style={styles.cardHeader}>
+              <Text style={styles.cardTitle}>Job Schedule</Text>
+              <InfoButton
+                title="Job Scheduling"
+                tips={[
+                  "Select your preferred start date on the calendar.",
+                  "Choose duration in working days.",
+                  "Include weekends if you work on weekends.",
+                  "End date is automatically calculated.",
+                  "Existing jobs are shown to help avoid conflicts.",
+                ]}
+              />
             </View>
+
+            {/* Calendar */}
+            <View style={styles.calendarContainer}>
+              <SharedCalendar
+                month={calMonth}
+                onChangeMonth={setCalMonth}
+                selectedDate={cjStart}
+                onSelectDate={(d) => setCjStart(atMidnight(d))}
+                jobs={jobs}
+                span={{
+                  start: cjStart,
+                  days: cjDays,
+                  includeWeekends: cjIncludeWeekends,
+                }}
+                blockStarts
+                onDayLongPress={() => {}}
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Duration</Text>
+              <View style={styles.counterWrap}>
+                <TouchableOpacity
+                  style={styles.counterBtn}
+                  onPress={() => setCjDays((d) => Math.max(1, d - 1))}
+                >
+                  <Minus size={16} color={TEXT} />
+                </TouchableOpacity>
+                <Text style={styles.counterValue}>
+                  {cjDays} {cjDays === 1 ? "day" : "days"}
+                </Text>
+                <TouchableOpacity
+                  style={styles.counterBtn}
+                  onPress={() => setCjDays((d) => d + 1)}
+                >
+                  <PlusIcon size={16} color={TEXT} />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.helpText}>
+                Duration in working days. End date will be calculated automatically.
+              </Text>
+            </View>
+
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleLabel}>Include weekends</Text>
+              <Switch
+                value={cjIncludeWeekends}
+                onValueChange={(v) => {
+                  setCjIncludeWeekends(v);
+                  Haptics.selectionAsync();
+                }}
+                trackColor={{ false: "#e2e8f0", true: BRAND + "40" }}
+                thumbColor={cjIncludeWeekends ? BRAND : "#f1f5f9"}
+              />
+            </View>
+
+            <View style={styles.schedulePreview}>
+              <Text style={styles.previewLabel}>Schedule Summary</Text>
+              <Text style={styles.previewText}>
+                <Text style={styles.previewBold}>Start:</Text> {toYMD(cjStart)}
+              </Text>
+              <Text style={styles.previewText}>
+                <Text style={styles.previewBold}>End:</Text>{" "}
+                {toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends))}
+              </Text>
+              <Text style={styles.previewText}>
+                <Text style={styles.previewBold}>Duration:</Text> {cjDays}{" "}
+                {cjDays === 1 ? "day" : "days"}{" "}
+                {cjIncludeWeekends ? "(including weekends)" : "(working days only)"}
+              </Text>
+            </View>
+
+            {cjError && (
+              <View style={styles.errorContainer}>
+                <Text style={styles.errorText}>{cjError}</Text>
+              </View>
+            )}
           </View>
         )}
 
         <View style={{ height: 80 }} />
       </ScrollView>
 
-      {/* Sticky bottom action bar */}
+      {/* Sticky Bottom Action Bar */}
       <View style={[styles.actionBar, { paddingBottom: insets.bottom }]}>
         <TouchableOpacity
           style={[styles.actionBtn, styles.primaryActionBtn, cjBusy && { opacity: 0.55 }]}
@@ -703,21 +824,20 @@ export default function CreateJobScreen() {
           disabled={cjBusy}
           onPress={step < TOTAL_STEPS ? next : createJobInternal}
         >
-          <Text style={[styles.actionBtnText, { color: "#fff" }]} numberOfLines={1}>
-            {step < TOTAL_STEPS ? "Continue" : (cjBusy ? "Creating..." : "Create Job")}
+          <Text style={[styles.actionBtnText, { color: "#ffffff" }]} numberOfLines={1}>
+            {step < TOTAL_STEPS ? "Continue" : cjBusy ? "Creating..." : "Create Job"}
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* White safe area bottom */}
+      <View style={{ height: insets.bottom, backgroundColor: "#ffffff" }} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { 
-    flex: 1, 
-    backgroundColor: BG 
-  },
-  
+  screen: { flex: 1, backgroundColor: BG },
   header: {
     backgroundColor: CARD,
     borderBottomWidth: 1,
@@ -728,7 +848,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  
   backBtn: {
     width: 40,
     height: 40,
@@ -736,56 +855,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "900",
-    color: TEXT,
-  },
-  
-  content: {
-    flex: 1,
-  },
-  
-  contentContainer: {
-    padding: 16,
-  },
-
-  stepProgress: {
-    marginBottom: 16,
-  },
-  
+  headerTitle: { fontSize: 18, fontWeight: "900", color: TEXT },
+  content: { flex: 1 },
+  contentContainer: { padding: 16, paddingBottom: 100 },
+  stepProgress: { marginBottom: 16 },
   stepRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 8,
   },
-  
-  stepTitle: {
-    color: TEXT,
-    fontWeight: "800",
-    fontSize: 16,
-  },
-  
-  stepCounter: {
-    color: MUTED,
-    fontWeight: "600",
-    fontSize: 12,
-  },
-  
-  progressTrack: {
-    height: 6,
-    backgroundColor: "#dde3ea",
-    borderRadius: 999,
-  },
-  
-  progressFill: {
-    height: 6,
-    backgroundColor: BRAND,
-    borderRadius: 999,
-  },
-  
+  stepTitle: { color: TEXT, fontWeight: "800", fontSize: 16 },
+  stepCounter: { color: MUTED, fontWeight: "600", fontSize: 12 },
+  progressTrack: { height: 6, backgroundColor: "#dde3ea", borderRadius: 999 },
+  progressFill: { height: 6, backgroundColor: BRAND, borderRadius: 999 },
   card: {
     backgroundColor: CARD,
     borderRadius: 12,
@@ -795,7 +878,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     ...Platform.select({
       ios: {
-        shadowColor: '#0b1220',
+        shadowColor: "#0b1220",
         shadowOpacity: 0.06,
         shadowRadius: 8,
         shadowOffset: { width: 0, height: 4 },
@@ -803,129 +886,49 @@ const styles = StyleSheet.create({
       android: { elevation: 3 },
     }),
   },
-
-  cardTitle: {
-    fontWeight: "900",
-    color: TEXT,
-    marginBottom: 16,
-    fontSize: 16,
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
   },
-  
+  cardTitle: { fontWeight: "900", color: TEXT, fontSize: 16 },
   toggleRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 12,
   },
-  
-  toggleLabelRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    flex: 1,
-  },
-  
-  toggleLabel: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: TEXT,
-  },
-  
-  infoBtn: {
-    marginLeft: 8,
-    padding: 4,
-  },
-  
-  tooltip: {
-    marginTop: 12,
-    padding: 12,
-    backgroundColor: "#f8fafc",
-    borderRadius: 12,
+  toggleLabel: { fontSize: 14, fontWeight: "700", color: TEXT, flex: 1 },
+  disabledCard: { opacity: 0.6 },
+  inputGroup: { marginBottom: 16 },
+  inputLabel: { color: TEXT, fontWeight: "700", marginBottom: 6, fontSize: 14 },
+  linkRow: { flexDirection: "row", gap: 14, marginBottom: 8 },
+  linkSm: { color: BRAND, fontWeight: "900", fontSize: 14 },
+  disabledLink: { color: MUTED },
+  disabledText: { color: MUTED },
+  materialListWrap: {
     borderWidth: 1,
     borderColor: BORDER,
+    borderRadius: 12,
+    backgroundColor: "#fff",
+    overflow: "hidden",
   },
-  
-  tooltipText: {
-    fontSize: 14,
-    color: MUTED,
-    lineHeight: 18,
-  },
-  
-  disabledCard: {
-    opacity: 0.6,
-  },
-  
-  sectionRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 8,
-  },
-  
-  sectionLabel: {
-    fontWeight: "800",
-    color: TEXT,
-  },
-  
-  linkRow: {
-    flexDirection: "row",
-    gap: 14,
-  },
-  
-  linkSm: {
-    color: BRAND,
-    fontWeight: "900",
-    fontSize: 14,
-  },
-  
-  disabledLink: {
-    color: MUTED,
-  },
-  
-  disabledText: {
-    color: MUTED,
-  },
-  
-  materialListWrap: {
-    marginTop: 8,
-    marginBottom: 8,
-  },
-  
+  materialScrollView: { maxHeight: 200 },
   materialRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f1f5f9",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
   },
-  
-  disabledRow: {
-    opacity: 0.6,
-  },
-  
-  materialTitle: {
-    color: TEXT,
-    fontWeight: "800",
-    fontSize: 14,
-  },
-  
-  materialSub: {
-    color: MUTED,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  
-  materialAmt: {
-    color: TEXT,
-    fontWeight: "900",
-    marginLeft: 8,
-  },
-  
-  emptyHint: {
-    color: MUTED,
-    marginTop: 6,
-    fontStyle: "italic",
-  },
-  
+  disabledRow: { opacity: 0.6 },
+  materialContent: { flex: 1, marginLeft: 12, marginRight: 12 },
+  materialTitle: { color: TEXT, fontWeight: "700", fontSize: 15, marginBottom: 2 },
+  materialAmt: { color: TEXT, fontWeight: "900", fontSize: 15, minWidth: 80, textAlign: "right" },
+  emptyState: { paddingVertical: 20, alignItems: "center" },
+  emptyHint: { color: MUTED, fontSize: 12, fontStyle: "italic" },
   counterWrap: {
     flexDirection: "row",
     alignItems: "center",
@@ -934,70 +937,38 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     borderRadius: 12,
     overflow: "hidden",
+    alignSelf: "flex-start",
   },
-  
-  disabledCounter: {
-    opacity: 0.6,
+  disabledCounter: { opacity: 0.6 },
+  counterBtn: { height: 36, width: 36, alignItems: "center", justifyContent: "center" },
+  counterValue: { minWidth: 80, textAlign: "center", fontWeight: "900", color: TEXT, fontSize: 14 },
+  helpText: { color: MUTED, fontSize: 12, marginTop: 6, lineHeight: 16 },
+  summaryBlock: { marginTop: 20, paddingTop: 16, borderTopWidth: 1, borderTopColor: BORDER },
+  summaryRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 8 },
+  summaryTotal: { paddingTop: 8, marginTop: 8, borderTopWidth: 1, borderTopColor: BORDER },
+  summaryLabel: { color: TEXT, fontSize: 14 },
+  summaryValue: { color: TEXT, fontWeight: "700", fontSize: 14 },
+  summaryTotalText: { fontWeight: "900", fontSize: 16 },
+  schedulePreview: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: "#f8fafc",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  
-  counterBtn: {
-    height: 36,
-    width: 36,
-    alignItems: "center",
-    justifyContent: "center",
+  previewLabel: { color: TEXT, fontWeight: "900", fontSize: 14, marginBottom: 8 },
+  previewText: { color: MUTED, fontSize: 13, lineHeight: 18 },
+  previewBold: { fontWeight: "700", color: TEXT },
+  errorContainer: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: "#fef2f2",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#fecaca",
   },
-  
-  counterValue: {
-    minWidth: 64,
-    textAlign: "center",
-    fontWeight: "900",
-    color: TEXT,
-  },
-  
-  helpText: {
-    color: MUTED,
-    fontSize: 12,
-    marginTop: 8,
-  },
-  
-  totalsBlock: {
-    marginTop: 16,
-  },
-  
-  totalRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 4,
-  },
-  
-  totalLabel: {
-    color: TEXT,
-    fontSize: 14,
-  },
-  
-  totalVal: {
-    color: TEXT,
-    fontWeight: "800",
-    fontSize: 14,
-  },
-
-  scheduleSection: {
-    gap: 12,
-  },
-
-  hint: {
-    color: MUTED,
-    fontSize: 12,
-    fontStyle: "italic",
-  },
-
-  errorText: {
-    color: "#dc2626",
-    fontSize: 12,
-    fontWeight: "600",
-    marginTop: 8,
-  },
-  
+  errorText: { color: "#dc2626", fontSize: 12, fontWeight: "600" },
   actionBar: {
     backgroundColor: CARD,
     borderTopWidth: 1,
@@ -1015,12 +986,9 @@ const styles = StyleSheet.create({
         shadowRadius: 12,
         shadowOffset: { width: 0, height: -4 },
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
-  
   actionBtn: {
     flex: 1,
     paddingVertical: 14,
@@ -1032,15 +1000,48 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginHorizontal: 24,
   },
-  
-  primaryActionBtn: {
-    backgroundColor: BRAND,
-    borderColor: BRAND,
+  primaryActionBtn: { backgroundColor: BRAND, borderColor: BRAND },
+  actionBtnText: { fontSize: 15, fontWeight: "900", color: TEXT },
+  calendarContainer: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    padding: 10,
+    backgroundColor: "#fff",
+    marginBottom: 16,
   },
-  
-  actionBtnText: {
-    fontSize: 15,
-    fontWeight: "900",
-    color: TEXT,
+  infoBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f8fafc",
   },
+  modalBackdrop: { position: "absolute", inset: 0, backgroundColor: "rgba(0,0,0,0.4)" },
+  modalWrap: { flex: 1, justifyContent: "center", alignItems: "center", padding: 16 },
+  modalCard: {
+    backgroundColor: CARD,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    width: "92%",
+    maxWidth: 480,
+    ...Platform.select({
+      ios: { shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 16, shadowOffset: { width: 0, height: 6 } },
+      android: { elevation: 10 },
+    }),
+  },
+  modalHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  smallBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: "#f3f4f6" },
+  smallBtnText: { color: TEXT, fontWeight: "700", fontSize: 12 },
 });
