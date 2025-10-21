@@ -126,7 +126,7 @@ export default function RootLayout() {
         }
 
         if (session && inAuth) {
-          router.replace('/(app)/quotes');
+          router.replace('/(app)/(tabs)/quotes'); // was '/(app)/quotes'
         } else if (!session && !inAuth) {
           router.replace('/(auth)/login');
         }
@@ -148,7 +148,7 @@ export default function RootLayout() {
         return;
       }
 
-      if (inAuth) router.replace('/(app)/quotes');
+      if (inAuth) router.replace('/(app)/(tabs)/quotes'); // was '/(app)/quotes'
     });
 
     return () => {

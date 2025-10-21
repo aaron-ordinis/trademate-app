@@ -108,7 +108,8 @@ export default function Index() {
       // Delay redirect slightly so you can long-press the logo if you want Admin.
       redirectTimerRef.current = setTimeout(() => {
         if (!didJumpRef.current) {
-          router.replace(session ? quotesListHref : loginHref);
+          const to = session ? `${quotesListHref}?t=${Date.now()}` : `${loginHref}?t=${Date.now()}`;
+          router.replace(to); // add cache-busting ts
           setBooting(false);
         }
       }, 900); // ~1s window to long-press
@@ -117,10 +118,10 @@ export default function Index() {
       const sub = supabase.auth.onAuthStateChange((event, sess) => {
         if (didJumpRef.current) return; // don't fight a manual admin jump
         if (!sess || event === 'SIGNED_OUT') {
-          router.replace(loginHref);
+          router.replace(`${loginHref}?t=${Date.now()}`); // add ts
           return;
         }
-        router.replace(quotesListHref);
+        router.replace(`${quotesListHref}?t=${Date.now()}`); // add ts
       });
       unsub = sub?.data?.subscription;
     })();

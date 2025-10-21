@@ -6,7 +6,6 @@ import {
   PlatformColor,
   View,
   BackHandler,
-  Button, // ✅ fix: import Button
 } from "react-native";
 import { Stack, usePathname, useRouter } from "expo-router";
 import * as NavigationBar from "expo-navigation-bar";
@@ -16,7 +15,6 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { supabase } from "../../lib/supabase";
 import { getPremiumStatus } from "../../lib/premium";
 import PaywallModal from "../../components/PaywallModal";
-import { testTableAccess } from "../../lib/supabase";
 
 const sysBG =
   Platform.OS === "ios"
@@ -159,40 +157,6 @@ export default function AppGroupLayout() {
           router.push("/(app)/account");
         }}
       />
-
-      {/* Dev-only helper to test DB access safely */}
-      {__DEV__ && (
-        <View
-          pointerEvents="box-none"
-          style={{
-            position: "absolute",
-            bottom: 20,
-            right: 20,
-            zIndex: 9999,
-            backgroundColor: "#ffffff",
-            borderRadius: 12,
-            padding: 8,
-            shadowColor: "#000",
-            shadowOpacity: 0.15,
-            shadowRadius: 8,
-            shadowOffset: { width: 0, height: 4 },
-            elevation: 6,
-          }}
-        >
-          <Button
-            title="Test Table Access"
-            onPress={async () => {
-              try {
-                const result = await testTableAccess();
-                alert(JSON.stringify(result, null, 2));
-              } catch (e) {
-                alert(String(e?.message || e));
-              }
-            }}
-            color="#2a86ff"
-          />
-        </View>
-      )}
     </>
   );
 }

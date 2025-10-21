@@ -5,9 +5,8 @@ import { useRouter } from "expo-router";
 export default function QuotesIndex() {
   const router = useRouter();
 
-  // Redirect to quotes list or handle as needed
   React.useEffect(() => {
-    router.replace("/quotes/list");
+    router.replace("/(app)/(tabs)/quotes"); // ensure we stay under the tabs layout
   }, []);
 
   return (

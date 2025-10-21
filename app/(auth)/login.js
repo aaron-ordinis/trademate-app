@@ -79,6 +79,20 @@ export default function Login() {
     setShowPwPanel(password.length > 0 || showPwPanel);
   }, [password]);
 
+  // Auto-leave login if a valid session already exists
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (mounted && session) {
+          router.replace(`/(app)/(tabs)/quotes?t=${Date.now()}`);
+        }
+      } catch {}
+    })();
+    return () => { mounted = false; };
+  }, [router]);
+
   const mapSupabaseError = (err) => {
     const msg = String(err?.message || "").toLowerCase();
     const code = String(err?.code || "").toLowerCase();
@@ -126,11 +140,8 @@ export default function Login() {
       const { data, error } = await supabase.auth.signInWithPassword({ email: e, password });
       if (error) throw error;
 
-      // Remove navigation animation
-      router.replace({
-        pathname: "/(app)/onboarding",
-        params: { animation: 'none' }
-      });
+      // Go straight to tabs with cache-busting ts
+      router.replace(`/(app)/(tabs)/quotes?t=${Date.now()}`);
     } catch (e) {
       setInlineKind("error");
       setInlineMsg(mapSupabaseError(e));
