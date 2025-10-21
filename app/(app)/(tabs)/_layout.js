@@ -36,10 +36,6 @@ export default function TabsLayout() {
 
         // Check if user is blocked due to expired trial
         const premiumStatus = getPremiumStatus(profile);
-        if (premiumStatus.isBlocked) {
-          router.replace("/(app)/trial-expired");
-          return;
-        }
 
         const needsOnboarding =
           !profile ||

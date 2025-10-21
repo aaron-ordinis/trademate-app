@@ -74,11 +74,6 @@ export default function Login() {
     })();
   }, []);
 
-  useEffect(() => {
-    // Show the pw panel whenever user starts typing a password
-    setShowPwPanel(password.length > 0 || showPwPanel);
-  }, [password]);
-
   // Auto-leave login if a valid session already exists
   useEffect(() => {
     let mounted = true;
@@ -143,6 +138,7 @@ export default function Login() {
       // Go straight to tabs with cache-busting ts
       router.replace(`/(app)/(tabs)/quotes?t=${Date.now()}`);
     } catch (e) {
+      setShowPwPanel(true); // show requirements only on login fail
       setInlineKind("error");
       setInlineMsg(mapSupabaseError(e));
     } finally {
@@ -155,9 +151,9 @@ export default function Login() {
     if (loading) return;
     if (!validateEmailPw()) return;
 
-    // Enforce strong password; keep panel visible
-    setShowPwPanel(true);
+    // Enforce strong password; show panel only on failure
     if (!allRulesOk) {
+      setShowPwPanel(true);
       setInlineKind("error");
       setInlineMsg("Password does not meet requirements.");
       return;
@@ -196,6 +192,7 @@ export default function Login() {
         });
       }
     } catch (e) {
+      setShowPwPanel(true); // show requirements only on register fail
       let nice = e?.message ?? "Please try again.";
       if (e?.message?.includes("User already registered")) {
         nice = "This email is already registered. Try logging in instead.";

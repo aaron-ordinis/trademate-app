@@ -1,10 +1,19 @@
 import { loginHref } from "../../lib/nav";
 // app/(auth)/reset.js
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Image, StatusBar } from 'react-native';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../lib/supabase';
+
+// --- Brand tokens (copied from login.js) ---
+const BRAND = "#2a86ff";
+const TEXT = "#0b1220";
+const SUBTLE = "#6b7280";
+const SURFACE = "#f6f7f9";
+const BORDER = "#e6e9ee";
+const OK = "#16a34a";
+const DANGER = "#b3261e";
 
 export default function ResetPassword() {
   const router = useRouter();
@@ -93,61 +102,102 @@ export default function ResetPassword() {
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Reset your password</Text>
-      <Text style={styles.subtitle}>
-        {ready ? 'Enter a new password.' : 'Open this screen using the link we emailed to you.'}
-      </Text>
-
-      {!ready && (
-        <Text style={{ color: '#ffa94d', marginTop: 6, marginBottom: 10 }}>
-          Waiting for a valid reset link…
+    <View style={styles.screen}>
+      <StatusBar barStyle="dark-content" />
+      <View style={styles.card}>
+        <Image
+          source={require("../../assets/images/trademate-login-logo.png")}
+          style={styles.logo}
+          resizeMode="contain"
+        />
+        <Text style={styles.title}>Reset your password</Text>
+        <Text style={styles.subtitle}>
+          {ready ? 'Enter a new password.' : 'Open this screen using the link we emailed to you.'}
         </Text>
-      )}
 
-      <TextInput
-        placeholder="New password"
-        placeholderTextColor="#8d8f95"
-        secureTextEntry
-        value={pw1}
-        onChangeText={setPw1}
-        style={styles.input}
-        editable={ready && !processing}
-      />
-      <TextInput
-        placeholder="Confirm new password"
-        placeholderTextColor="#8d8f95"
-        secureTextEntry
-        value={pw2}
-        onChangeText={setPw2}
-        style={styles.input}
-        editable={ready && !processing}
-      />
+        {!ready && (
+          <>
+            <Text style={styles.waitingText}>
+              Waiting for a valid reset link…
+            </Text>
+            <TouchableOpacity
+              style={styles.testBtn}
+              onPress={() => setReady(true)}
+            >
+              <Text style={styles.testBtnText}>Test reset (dev only)</Text>
+            </TouchableOpacity>
+          </>
+        )}
 
-      <TouchableOpacity
-        style={[styles.button, { opacity: !ready || processing ? 0.7 : 1 }]}
-        onPress={doUpdate}
-        disabled={!ready || processing}
-      >
-        {processing ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Update password</Text>}
-      </TouchableOpacity>
+        <TextInput
+          placeholder="New password"
+          placeholderTextColor={SUBTLE}
+          secureTextEntry
+          value={pw1}
+          onChangeText={setPw1}
+          style={styles.input}
+          editable={ready && !processing}
+        />
+        <TextInput
+          placeholder="Confirm new password"
+          placeholderTextColor={SUBTLE}
+          secureTextEntry
+          value={pw2}
+          onChangeText={setPw2}
+          style={styles.input}
+          editable={ready && !processing}
+        />
 
-  <TouchableOpacity style={{ marginTop: 16 }} onPress={() => router.replace(loginHref)}>
-        <Text style={styles.linkText}>Back to Sign In</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.primaryBtn, (!ready || processing) && { opacity: 0.7 }]}
+          onPress={doUpdate}
+          disabled={!ready || processing}
+        >
+          {processing ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>Update password</Text>}
+        </TouchableOpacity>
+
+        <TouchableOpacity style={{ marginTop: 16 }} onPress={() => router.replace(loginHref)}>
+          <Text style={styles.linkText}>Back to Sign In</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0b0b0c', padding: 20, justifyContent: 'center' },
-  title: { color: 'white', fontSize: 28, fontWeight: '800', marginBottom: 8, textAlign: 'center' },
-  subtitle: { color: '#c7c7c7', fontSize: 14, marginBottom: 16, textAlign: 'center' },
+  // Match login.js layout
+  screen: { flex: 1, backgroundColor: "#ffffff", paddingHorizontal: 20, justifyContent: "center" },
+  card: { backgroundColor: "#ffffff", borderRadius: 18, padding: 22, alignItems: "center", elevation: 4 },
+  logo: { width: 156, height: 156, marginBottom: 14 },
+  title: { color: TEXT, fontSize: 26, fontWeight: "800", marginBottom: 6, textAlign: "center" },
+  subtitle: { color: SUBTLE, fontSize: 14, marginBottom: 12, textAlign: "center" },
+  waitingText: { color: "#ffa94d", marginTop: 6, marginBottom: 10, textAlign: "center" },
+
   input: {
-    backgroundColor: '#1a1a1b', color: 'white', borderRadius: 12,
-    padding: 14, marginBottom: 12, borderWidth: 1, borderColor: '#2b2c2f'
+    width: "100%",
+    backgroundColor: SURFACE,
+    color: TEXT,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    fontSize: 16,
+    marginBottom: 12,
   },
-  button: { backgroundColor: '#2a86ff', borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 4 },
-  buttonText: { color: 'white', fontWeight: '700' },
-  linkText: { color: '#9db9ff', fontWeight: '700', textAlign: 'center' },
+  primaryBtn: { width: "100%", backgroundColor: BRAND, borderRadius: 12, padding: 14, alignItems: "center", marginTop: 4 },
+  primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
+  linkText: { color: BRAND, fontWeight: "700", textAlign: "center" },
+  testBtn: {
+    marginTop: 8,
+    backgroundColor: "#e0e7ff",
+    borderRadius: 8,
+    padding: 8,
+    alignItems: "center",
+  },
+  testBtnText: {
+    color: BRAND,
+    fontWeight: "700",
+    fontSize: 14,
+  },
 });

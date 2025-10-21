@@ -27,7 +27,6 @@ const BG = sysBG;
 const isSafePath = (p) =>
   p.startsWith("/(app)/account") ||
   p.startsWith("/(app)/billing") ||
-  p.startsWith("/(app)/trial-expired") ||
   p.startsWith("/(auth)/");
 
 export default function AppGroupLayout() {
@@ -150,7 +149,7 @@ export default function AppGroupLayout() {
         blocking
         title="Trial Ended"
         message={
-          "Your free trial has ended.\nTo continue using TradeMate, you need an active subscription.\nChoose a monthly or yearly plan to unlock the app."
+          "Your free trial has ended.\nTo continue using TradeMate, you need an active subscription.\nChoose a weekly or monthly plan to unlock the app."
         }
         onSubscribe={() => {
           setForceHide(true);

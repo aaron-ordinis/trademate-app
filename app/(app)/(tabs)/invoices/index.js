@@ -100,10 +100,7 @@ export default function InvoicesHome() {
       if (!profResult.error && profResult.data) {
         const status = getPremiumStatus(profResult.data);
         setPremiumStatus(status);
-        if (status.isBlocked) {
-          router.replace("/(app)/trial-expired");
-          return;
-        }
+        // Paywall shown globally; no redirect here
       }
 
       if (!invoicesResult.error) {

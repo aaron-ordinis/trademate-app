@@ -4,11 +4,10 @@ import {
   View,
   Text,
   Modal,
-  ScrollView,
   TouchableOpacity,
+  ScrollView,
   StyleSheet,
   Platform,
-  Dimensions,
   StatusBar,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -27,41 +26,13 @@ const BORDER = "#e6e9ee";
 export default function PolicyModal({
   visible,
   title = "Policy",
-  content = "",          // <-- pass plain markdown here
-  websiteUrl,           // optional external link
-  showAccept = false,   // optional: force scroll to enable Accept
-  dimmed = false,       // keep false for no background dim
-  onAccept,
+  content = "",
   onClose,
 }) {
   const [scrolledToBottom, setScrolledToBottom] = useState(false);
-  const [acceptEnabled, setAcceptEnabled] = useState(!showAccept);
+  const [acceptEnabled, setAcceptEnabled] = useState(true);
   const [containerHeight, setContainerHeight] = useState(0);
   const [contentHeight, setContentHeight] = useState(0);
-
-  const { height } = Dimensions.get("window");
-  const maxHeight = Math.min(height * 0.82, 620);
-
-  const reevaluateFit = (cH, contH) => {
-    if (!showAccept) return;
-    if (!cH || !contH) return;
-    if (cH <= contH + 1) {
-      if (!acceptEnabled) Haptics.selectionAsync();
-      setScrolledToBottom(true);
-      setAcceptEnabled(true);
-    }
-  };
-
-  const handleScroll = (e) => {
-    if (!showAccept) return;
-    const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
-    const atEnd = contentOffset.y + layoutMeasurement.height >= contentSize.height - 16;
-    if (atEnd && !scrolledToBottom) {
-      setScrolledToBottom(true);
-      setAcceptEnabled(true);
-      Haptics.selectionAsync();
-    }
-  };
 
   const openWebsite = async () => {
     if (!websiteUrl) return;
@@ -86,181 +57,69 @@ export default function PolicyModal({
       visible={visible}
       transparent
       animationType="fade"
-      statusBarTranslucent={Platform.OS === "android"}
-      onRequestClose={handleClose}
-      hardwareAccelerated
+      onRequestClose={onClose}
     >
-      {/* No blur/dim unless dimmed=true */}
-      <StatusBar backgroundColor={dimmed ? "rgba(0,0,0,0.5)" : "transparent"} barStyle="light-content" />
-      <View style={[styles.backdrop, dimmed ? styles.backdropDim : styles.backdropClear]}>
-        <SafeAreaView style={styles.safeArea}>
-          <View style={[styles.container, { maxHeight }]}>
-            {/* Header */}
-            <View style={styles.header}>
-              <View style={styles.headerContent}>
-                <Text style={styles.title}>{title}</Text>
-                <TouchableOpacity style={styles.closeButton} onPress={handleClose} activeOpacity={0.7}>
-                  <Feather name="x" size={18} color={TEXT} />
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Content */}
-            <View
-              style={styles.scrollWrap}
-              onLayout={(e) => {
-                const h = e.nativeEvent.layout.height;
-                setContainerHeight(h);
-                reevaluateFit(contentHeight, h);
-              }}
-            >
-              <ScrollView
-                style={styles.content}
-                contentContainerStyle={styles.contentContainer}
-                onScroll={handleScroll}
-                scrollEventThrottle={16}
-                showsVerticalScrollIndicator
-                onContentSizeChange={(_, h) => {
-                  setContentHeight(h);
-                  reevaluateFit(h, containerHeight);
-                }}
-              >
-                {content ? (
-                  <Markdown style={markdownStyles}>{content}</Markdown>
-                ) : (
-                  <View style={styles.loadingContainer}>
-                    <Feather name="alert-circle" size={32} color={MUTED} />
-                    <Text style={styles.errorText}>Policy content not available</Text>
-                    <Text style={styles.errorSubText}>
-                      The policy content could not be loaded. Please try again or contact support.
-                    </Text>
-                  </View>
-                )}
-                <View style={{ height: 32 }} />
-              </ScrollView>
-            </View>
-
-            {/* Scroll hint for accept flow */}
-            {showAccept && !scrolledToBottom && content && (
-              <View style={styles.progressContainer}>
-                <View style={styles.progressContent}>
-                  <Feather name="file-text" size={16} color={BRAND} />
-                  <Text style={styles.progressText}>Scroll to read the full policy</Text>
-                </View>
-                <Feather name="chevron-down" size={18} color={BRAND} />
-              </View>
-            )}
-
-            {/* Actions */}
-            <View style={styles.actions}>
-              {!!websiteUrl && (
-                <TouchableOpacity style={styles.secondaryButton} onPress={openWebsite} activeOpacity={0.8}>
-                  <Feather name="external-link" size={16} color={TEXT} />
-                  <Text style={styles.secondaryButtonText}>View Online</Text>
-                </TouchableOpacity>
-              )}
-
-              {showAccept ? (
-                <TouchableOpacity
-                  style={[styles.primaryButton, !acceptEnabled && styles.disabledButton]}
-                  onPress={handleAccept}
-                  disabled={!acceptEnabled}
-                  activeOpacity={acceptEnabled ? 0.85 : 1}
-                >
-                  {acceptEnabled ? (
-                    <>
-                      <Feather name="check" size={16} color="#fff" />
-                      <Text style={styles.primaryButtonText}>Accept & Continue</Text>
-                    </>
-                  ) : (
-                    <Text style={styles.disabledButtonText}>Scroll to Accept</Text>
-                  )}
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity style={styles.primaryButton} onPress={handleClose} activeOpacity={0.85}>
-                  <Text style={styles.primaryButtonText}>Done</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+      <View style={styles.backdrop}>
+        <View style={styles.container}>
+          <View style={styles.header}>
+            <Text style={styles.title}>{title}</Text>
+            <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+              <Text style={{ fontWeight: "bold", color: TEXT }}>Close</Text>
+            </TouchableOpacity>
           </View>
-        </SafeAreaView>
+          <ScrollView style={styles.contentBox}>
+            <Markdown style={markdownStyles}>{content}</Markdown>
+          </ScrollView>
+        </View>
       </View>
     </Modal>
   );
 }
 
-/* STYLES */
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: "center", alignItems: "center", padding: 16 },
-  backdropDim: { backgroundColor: "rgba(12,18,32,0.6)" },
-  backdropClear: { backgroundColor: "transparent" },
-
-  safeArea: { flex: 1, width: "100%", justifyContent: "center" },
+  backdrop: {
+    flex: 1,
+    backgroundColor: "transparent", // fully transparent, no dim
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 16,
+  },
   container: {
     backgroundColor: CARD,
     borderRadius: 16,
-    width: "100%",
-    maxWidth: 540,
-    alignSelf: "center",
-    overflow: "hidden",
+    width: "95%",
+    maxWidth: 500,
+    padding: 16,
     borderWidth: 1,
     borderColor: BORDER,
     ...Platform.select({
-      ios: { shadowColor: "#0b1220", shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.12, shadowRadius: 20 },
-      android: { elevation: 10 },
+      ios: { shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 16, shadowOffset: { width: 0, height: 6 } },
+      android: { elevation: 8 },
     }),
   },
-
-  header: { borderBottomWidth: 1, borderBottomColor: BORDER, backgroundColor: "#fafbfc" },
-  headerContent: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 16 },
-  title: { fontSize: 18, fontWeight: "900", color: TEXT, flex: 1, marginRight: 16 },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  title: { fontSize: 18, fontWeight: "bold", color: TEXT, flex: 1 },
   closeButton: {
-    width: 32, height: 32, borderRadius: 16,
-    backgroundColor: "#f1f5f9", alignItems: "center", justifyContent: "center",
-    borderWidth: 1, borderColor: BORDER,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "#f3f4f6",
   },
-
-  scrollWrap: { maxHeight: 450, flex: 1 },
-  content: { flexGrow: 0 },
-  contentContainer: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 0 },
-
-  loadingContainer: { alignItems: "center", justifyContent: "center", paddingVertical: 40 },
-  errorText: { fontSize: 16, color: TEXT, fontWeight: "600", marginTop: 12, textAlign: "center" },
-  errorSubText: { fontSize: 14, color: MUTED, marginTop: 8, textAlign: "center", lineHeight: 20 },
-
-  progressContainer: {
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    paddingHorizontal: 20, paddingVertical: 12,
-    backgroundColor: "#f8fafc", borderTopWidth: 1, borderTopColor: BORDER,
+  contentBox: {
+    maxHeight: 400,
   },
-  progressContent: { flexDirection: "row", alignItems: "center", gap: 8 },
-  progressText: { fontSize: 13, color: MUTED, fontWeight: "600" },
-
-  actions: {
-    flexDirection: "row", paddingHorizontal: 16, paddingVertical: 16, gap: 12,
-    borderTopWidth: 1, borderTopColor: BORDER, backgroundColor: CARD,
+  contentText: {
+    color: TEXT,
+    fontSize: 15,
+    lineHeight: 22,
   },
-  primaryButton: {
-    flex: 2, backgroundColor: BRAND, paddingVertical: 12, paddingHorizontal: 16,
-    borderRadius: 12, alignItems: "center", justifyContent: "center",
-    flexDirection: "row", gap: 8,
-    ...Platform.select({
-      ios: { shadowColor: BRAND, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
-      android: { elevation: 2 },
-    }),
-  },
-  secondaryButton: {
-    flex: 1, backgroundColor: CARD, borderWidth: 1, borderColor: BORDER,
-    paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12,
-    alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8,
-  },
-  disabledButton: { backgroundColor: "#e5e7eb", borderColor: "#e5e7eb", ...(Platform.OS === "android" ? { elevation: 0 } : { shadowOpacity: 0 }) },
-  primaryButtonText: { color: "#ffffff", fontSize: 14, fontWeight: "700" },
-  secondaryButtonText: { color: TEXT, fontSize: 14, fontWeight: "700" },
-  disabledButtonText: { color: "#9ca3af", fontSize: 14, fontWeight: "700" },
 });
 
-/* MARKDOWN STYLES */
 const markdownStyles = {
   body: { color: TEXT, fontSize: 15, lineHeight: 22, fontFamily: Platform.OS === "ios" ? "System" : "Roboto" },
   heading1: { color: TEXT, fontSize: 22, fontWeight: "900", marginTop: 16, marginBottom: 12, lineHeight: 28 },

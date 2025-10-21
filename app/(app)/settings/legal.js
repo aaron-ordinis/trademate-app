@@ -1,5 +1,5 @@
 // app/(app)/settings/legal.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -18,9 +18,9 @@ import { Feather } from "@expo/vector-icons";
 import PolicyModal from "../../../components/PolicyModal";
 
 /* Policy modules */
-import * as Terms from "../../../lib/policies/terms";
-import * as Privacy from "../../../lib/policies/privacy";
-import * as Registry from "../../../lib/policies/registry";
+import { TERMS_MD, TERMS_VERSION } from "../../../lib/policies/terms";
+import { PRIVACY_POLICY_MD, PRIVACY_POLICY_VERSION } from "../../../lib/policies/privacy";
+import { POLICIES } from "../../../lib/policies/registry";
 
 /* THEME */
 const CARD = "#ffffff";
@@ -29,79 +29,6 @@ const MUTED = "#6b7280";
 const BORDER = "#e6e9ee";
 const BRAND = "#2a86ff";
 const BG = "#ffffff";
-
-/* ---- Helpers to resolve module content/metadata up front ---- */
-function pickPolicyContent(mod, fallbackTitle) {
-  // Try common keys; if none, default to empty string.
-  let content = "";
-  if (typeof mod === "string") content = mod;
-  if (!content && typeof mod?.default === "string") content = mod.default;
-
-  const textKeys = [
-    "content",
-    "text",
-    "markdown",
-    "md",
-    "PRIVACY_POLICY_MD",
-    "TERMS_MD",
-    "REGISTRY_MD",
-  ];
-  for (let i = 0; i < textKeys.length && !content; i++) {
-    const k = textKeys[i];
-    if (typeof mod?.[k] === "string") content = mod[k];
-  }
-
-  let title = fallbackTitle;
-  const titleKeys = ["title", "PRIVACY_POLICY_TITLE", "TERMS_TITLE", "REGISTRY_TITLE"];
-  for (let i = 0; i < titleKeys.length; i++) {
-    const k = titleKeys[i];
-    if (typeof mod?.[k] === "string" && mod[k].trim()) {
-      title = String(mod[k]);
-      break;
-    }
-  }
-
-  let websiteUrl = "";
-  const urlKeys = ["websiteUrl", "web", "url", "WEBSITE_URL"];
-  for (let i = 0; i < urlKeys.length; i++) {
-    const k = urlKeys[i];
-    if (typeof mod?.[k] === "string" && mod[k].trim()) {
-      websiteUrl = String(mod[k]);
-      break;
-    }
-  }
-
-  return { title, content: String(content || ""), websiteUrl };
-}
-
-function pickPolicyMeta(mod) {
-  const get = (obj, keys) => {
-    for (let i = 0; i < keys.length; i++) {
-      const k = keys[i];
-      if (obj && typeof obj[k] === "string" && obj[k].trim().length > 0) {
-        return String(obj[k]);
-      }
-    }
-    return null;
-  };
-
-  const version =
-    get(mod, [
-      "version",
-      "VERSION",
-      "policyVersion",
-      "POLICY_VERSION",
-      "PRIVACY_POLICY_VERSION",
-      "TERMS_VERSION",
-      "REGISTRY_VERSION",
-    ]) || null;
-
-  const updatedAt =
-    get(mod, ["updatedAt", "updated_at", "UPDATED_AT", "LAST_UPDATED", "lastUpdated"]) ||
-    null;
-
-  return { version, updatedAt };
-}
 
 /* ---- Info button with NO blur/dim ---- */
 function InfoButton({ title, tips = [] }) {
@@ -139,19 +66,26 @@ export default function LegalSettings() {
   const insets = useSafeAreaInsets();
   const [open, setOpen] = useState(null); // 'terms' | 'privacy' | 'registry'
 
-  // Pre-resolve all policy content and meta (avoids any runtime shape issues)
-  const termsResolved = useMemo(
-    () => ({ ...pickPolicyContent(Terms, "Terms of Service"), meta: pickPolicyMeta(Terms) }),
-    []
-  );
-  const privacyResolved = useMemo(
-    () => ({ ...pickPolicyContent(Privacy, "Privacy Policy"), meta: pickPolicyMeta(Privacy) }),
-    []
-  );
-  const registryResolved = useMemo(
-    () => ({ ...pickPolicyContent(Registry, "Data Processing Registry"), meta: pickPolicyMeta(Registry) }),
-    []
-  );
+  // Direct mapping for modal content
+  const policyMap = {
+    terms: {
+      title: "Terms & Conditions — TradeMate",
+      content: TERMS_MD,
+      meta: { version: TERMS_VERSION },
+    },
+    privacy: {
+      title: "Privacy Policy — TradeMate",
+      content: PRIVACY_POLICY_MD,
+      meta: { version: PRIVACY_POLICY_VERSION },
+    },
+    registry: {
+      title: "Data Processing Registry — TradeMate",
+      content: POLICIES[0]?.content || "No registry policy available.",
+      meta: { version: POLICIES[0]?.version },
+    },
+  };
+
+  const current = open ? policyMap[open] : null;
 
   useEffect(() => {
     StatusBar.setBarStyle("dark-content", false);
@@ -163,14 +97,6 @@ export default function LegalSettings() {
     }
     SystemUI.setBackgroundColorAsync?.("#ffffff");
   }, []);
-
-  const policyMap = {
-    terms: termsResolved,
-    privacy: privacyResolved,
-    registry: registryResolved,
-  };
-
-  const current = open ? policyMap[open] : null;
 
   return (
     <View style={styles.screen}>
@@ -193,25 +119,25 @@ export default function LegalSettings() {
             <InfoButton
               title="Legal Information"
               tips={[
-                "These documents outline your rights and responsibilities when using our service.",
-                "Terms of Service cover usage, billing, and legal obligations.",
-                "Privacy Policy explains how we handle your personal data.",
-                "All documents are regularly updated to reflect current practices and regulations.",
+                "These documents outline your rights and responsibilities as a TradeMate user.",
+                "Terms & Conditions cover usage, billing, and legal obligations.",
+                "Privacy Policy details how your personal data is collected, used, and protected.",
+                "Documents are regularly updated to reflect current practices and regulations.",
               ]}
             />
           </View>
 
           <SectionCard
-            title="Terms of Service"
-            subtitle="Your contract with us: usage, billing, liabilities."
-            meta={termsResolved.meta}
+            title="Terms & Conditions"
+            subtitle="Your agreement with TradeMate: usage, billing, and legal responsibilities."
+            meta={policyMap.terms.meta}
             onPress={() => setOpen("terms")}
           />
 
           <SectionCard
             title="Privacy Policy"
-            subtitle="How we collect, use, and protect your personal data."
-            meta={privacyResolved.meta}
+            subtitle="How TradeMate collects, uses, and safeguards your personal data."
+            meta={policyMap.privacy.meta}
             onPress={() => setOpen("privacy")}
           />
         </View>
@@ -223,9 +149,9 @@ export default function LegalSettings() {
             <InfoButton
               title="Compliance Information"
               tips={[
-                "We maintain detailed records of data processing activities for regulatory compliance.",
+                "TradeMate maintains records of data processing activities for regulatory compliance.",
                 "GDPR requires businesses to document how personal data is processed.",
-                "The registry helps demonstrate compliance with data protection laws.",
+                "Our registry demonstrates compliance with data protection laws.",
                 "This information may be requested by data protection authorities.",
               ]}
             />
@@ -233,8 +159,8 @@ export default function LegalSettings() {
 
           <SectionCard
             title="Data Processing Registry"
-            subtitle="Records of processing activities (ROPA) for compliance."
-            meta={registryResolved.meta}
+            subtitle="Records of processing activities for GDPR and legal compliance."
+            meta={policyMap.registry.meta}
             onPress={() => setOpen("registry")}
           />
         </View>
@@ -248,14 +174,13 @@ export default function LegalSettings() {
         <View style={{ height: 20 }} />
       </ScrollView>
 
-      {/* Policy modal — NO blur/dim (dimmed={false}) and feeding explicit content/title/url */}
+      {/* Policy modal */}
       {current && (
         <PolicyModal
           visible={!!open}
           dimmed={false}
           title={current.title}
           content={current.content}
-          websiteUrl={current.websiteUrl}
           onClose={() => setOpen(null)}
         />
       )}
@@ -278,9 +203,7 @@ function SectionCard({ title, subtitle, meta, onPress }) {
         <View style={styles.sectionTextWrap}>
           <Text style={styles.sectionTitle}>{title}</Text>
           <Text style={styles.sectionSubtitle}>{subtitle}</Text>
-          {metaLine.length > 0 && (
-            <Text style={styles.sectionMeta}>{metaLine.join(" • ")}</Text>
-          )}
+          {metaLine.length > 0 && <Text style={styles.sectionMeta}>{metaLine.join(" • ")}</Text>}
         </View>
         <Feather name="chevron-right" size={16} color={MUTED} />
       </View>

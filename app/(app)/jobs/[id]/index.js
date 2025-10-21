@@ -313,11 +313,7 @@ export default function JobDetails() {
         .eq("id", user.id)
         .maybeSingle();
       if (profile) {
-        const status = getPremiumStatus(profile);
-        if (status.isBlocked) {
-          router.replace("/(app)/trial-expired");
-          return;
-        }
+        // Paywall handled globally in app layout; no in-screen redirect
       }
 
       const { data: jobData, error: jobError } = await supabase

@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import useAssistant from "../lib/assistant/useAssistant";
 
 const fabPng = require("../assets/images/fab.png");
@@ -52,6 +53,7 @@ export default function AssistantSheet({ visible, onClose, context = "unknown" }
   const [ticketSubject, setTicketSubject] = useState("");
   const [ticketBody, setTicketBody] = useState("");
   const [quickActionsExpanded, setQuickActionsExpanded] = useState(false);
+  const [clipboardIdx, setClipboardIdx] = useState(null); // Track which bot message is tapped for clipboard icon
 
   // Pass the screen context to the hook so the edge function gets body.screen
   const { messages, ask, busy, createTicket, clear } = useAssistant({
@@ -117,6 +119,17 @@ export default function AssistantSheet({ visible, onClose, context = "unknown" }
     const ok = await createTicket(ticketSubject.trim(), ticketBody.trim());
     if (ok) setCreating(false);
   };
+
+  // Detect if last message is an error or disconnect
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const showRefresh =
+    !busy &&
+    lastMessage &&
+    lastMessage.role === "assistant" &&
+    (
+      lastMessage.error ||
+      /fail|error|disconnect|unavailable|timeout/i.test(lastMessage.text || "")
+    );
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
@@ -266,29 +279,69 @@ export default function AssistantSheet({ visible, onClose, context = "unknown" }
 
                   {messages.map((m, idx) => {
                     const mine = m.role === "user";
+                    const showClipboard = !mine && clipboardIdx === idx;
+                    const showRefreshBtn = showRefresh && idx === messages.length - 1 && !mine;
                     return (
                       <View
                         key={idx}
                         style={[
                           styles.msgRow,
-                          mine ? styles.msgRowMine : styles.msgRowBot,
+                          mine ? styles.msgRowMine : styles.msgRowBot, // ensures alignment
                         ]}
                       >
-                        <View
+                        <TouchableOpacity
+                          activeOpacity={mine ? 1 : 0.7}
+                          onPress={() => {
+                            if (!mine) setClipboardIdx(idx === clipboardIdx ? null : idx);
+                          }}
                           style={[
-                            styles.msgBubble,
-                            mine ? styles.msgBubbleMine : styles.msgBubbleBot,
+                            { flexDirection: "row", alignItems: "center" },
+                            mine && { justifyContent: "flex-end", flex: 1 }, // user messages right
+                            !mine && { justifyContent: "flex-start", flex: 1 }, // bot messages left
                           ]}
                         >
-                          <Text
+                          <View
                             style={[
-                              styles.msgText,
-                              mine ? styles.msgTextMine : styles.msgTextBot,
+                              styles.msgBubble,
+                              mine ? styles.msgBubbleMine : styles.msgBubbleBot,
+                              showClipboard || showRefreshBtn ? styles.msgBubbleWithActions : null,
                             ]}
                           >
-                            {m.text}
-                          </Text>
-                        </View>
+                            <Text
+                              style={[
+                                styles.msgText,
+                                mine ? styles.msgTextMine : styles.msgTextBot,
+                              ]}
+                            >
+                              {m.text}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                        {(showClipboard || showRefreshBtn) && (
+                          <View style={styles.bubbleActionsRow}>
+                            {showClipboard && (
+                              <TouchableOpacity
+                                onPress={async () => {
+                                  await Clipboard.setStringAsync(m.text || "");
+                                  setClipboardIdx(null);
+                                }}
+                                activeOpacity={0.8}
+                                style={styles.bubbleActionIcon}
+                              >
+                                <Feather name="clipboard" size={18} color={TEXT} />
+                              </TouchableOpacity>
+                            )}
+                            {showRefreshBtn && (
+                              <TouchableOpacity
+                                onPress={onRetry}
+                                style={styles.bubbleActionIcon}
+                                activeOpacity={0.9}
+                              >
+                                <Feather name="refresh-ccw" size={18} color={TEXT} />
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                        )}
                       </View>
                     );
                   })}
@@ -302,16 +355,7 @@ export default function AssistantSheet({ visible, onClose, context = "unknown" }
                     </View>
                   )}
                 </ScrollView>
-
-                {/* Action bar (Retry) - match app button style */}
-                {!busy && lastUserQuestion ? (
-                  <View style={styles.actionBar}>
-                    <TouchableOpacity onPress={onRetry} style={styles.retryBtn} activeOpacity={0.9}>
-                      <Feather name="refresh-ccw" size={12} color={TEXT} />
-                      <Text style={styles.retryBtnText}>Retry</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : null}
+                {/* Remove previous actionBar for retry */}
               </>
             )}
           </ScrollView>
@@ -469,8 +513,8 @@ const styles = StyleSheet.create({
   
   timeline: { flex: 1, marginBottom: 8, zIndex: 1 }, // Lower z-index than dropdown
   msgRow: { marginBottom: 8, flexDirection: "row" },
-  msgRowMine: { justifyContent: "flex-end" },
-  msgRowBot: { justifyContent: "flex-start" },
+  msgRowMine: { justifyContent: "flex-end", flex: 1 }, // user messages right
+  msgRowBot: { justifyContent: "flex-start", flex: 1 }, // bot messages left
   msgBubble: {
     maxWidth: "82%",
     paddingHorizontal: 10,
@@ -497,23 +541,14 @@ const styles = StyleSheet.create({
   emptyTitle: { color: TEXT, fontWeight: "900", fontSize: 14, marginBottom: 3 },
   emptyText: { color: MUTED, textAlign: "center", lineHeight: 18, fontSize: 12 },
   
-  actionBar: {
-    paddingVertical: 6,
-    flexDirection: "row",
-    justifyContent: "flex-start",
+  // Remove actionBar and refreshIconBtn styles
+  // Add inline refresh icon style
+  refreshIconInline: {
+    marginTop: 2,
+    marginLeft: 6,
+    alignSelf: "flex-start",
+    padding: 0,
   },
-  retryBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#f8fafc",
-  },
-  retryBtnText: { color: TEXT, fontWeight: "700", fontSize: 11 },
   
   composer: {
     paddingHorizontal: 14,
@@ -598,4 +633,56 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   secondaryBtnText: { color: TEXT, fontWeight: "900" },
+
+  clipboardIcon: {
+    marginLeft: 4,
+    alignSelf: "center",
+    backgroundColor: "#f8fafc",
+    borderRadius: 6,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: BORDER,
+    // subtle shadow
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOpacity: 0.08,
+        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 2 },
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  clipboardIconBottomLeft: {
+    position: "absolute",
+    left: 4,
+    bottom: 4,
+    // Remove background/border for minimal look
+    zIndex: 10,
+  },
+  clipboardIconSlide: {
+    alignSelf: "flex-start",
+    marginTop: 2,
+    marginLeft: 12,
+    // Animate slide up (simple fade-in and translateY)
+    // You can use Animated for a real slide, but for simplicity:
+    // Just position below the bubble
+  },
+  msgBubbleWithActions: {
+    minHeight: 54, // increase bubble height to allow space for actions below
+    paddingBottom: 28, // add padding so actions don't overlap bubble
+  },
+  bubbleActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    position: "absolute",
+    left: 0,
+    bottom: 4, // now inside the bubble's extra padding
+    zIndex: 20,
+    paddingLeft: 4,
+    gap: 8,
+  },
+  bubbleActionIcon: {
+    padding: 4,
+  },
 });
