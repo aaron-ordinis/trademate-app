@@ -548,7 +548,9 @@ export default function JobDetails() {
           <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
             <Feather name="arrow-left" size={20} color={TEXT} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Job Details</Text>
+          <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
+            Job Details
+          </Text>
           <View style={{ width: 40 }} />
         </View>
 
@@ -579,7 +581,7 @@ export default function JobDetails() {
           <Feather name="arrow-left" size={20} color={TEXT} />
         </TouchableOpacity>
         <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
-          {job.title || "Job"}
+          Job Details
         </Text>
         <View style={{ width: 40 }} />
       </View>
@@ -589,7 +591,6 @@ export default function JobDetails() {
         contentContainerStyle={{
           paddingTop: 10,
           paddingHorizontal: 14,
-          // keep just enough bottom space to clear the sticky bar
           paddingBottom: insets.bottom + 64,
         }}
         overScrollMode="never"
@@ -622,6 +623,31 @@ export default function JobDetails() {
             />
           </View>
         </Card>
+
+        {/* Summary row: Expenses, Documents, Payments in one row */}
+        <View style={styles.summaryRow}>
+          <SummaryCard
+            icon={<Receipt size={18} color={"#b45309"} />}
+            title="Expenses"
+            value={`${job.expenses_count} • ${money(job.expenses_total)}`}
+            onPress={handleExpensesPress}
+            isEmpty={job.expenses_count === 0}
+          />
+          <SummaryCard
+            icon={<FileText size={18} color={BRAND} />}
+            title="Documents"
+            value={job.documents_count}
+            onPress={handleDocumentsPress}
+            isEmpty={job.documents_count === 0}
+          />
+          <SummaryCard
+            icon={<Banknote size={18} color={SUCCESS} />}
+            title="Payments"
+            value={`Due ${money(job.payments_due)}`}
+            onPress={handlePaymentsPress}
+            isEmpty={job.payments_due === 0}
+          />
+        </View>
 
         {/* Details */}
         <Card style={styles.compactCard}>
@@ -715,50 +741,22 @@ export default function JobDetails() {
             saving={savingFields.client_address}
           />
         </Card>
-
-        {/* Summary */}
-        <View style={styles.compactSummaryGrid}>
-          <SummaryCard
-            icon={<Receipt size={18} color={"#b45309"} />}
-            title="Expenses"
-            value={`${job.expenses_count} • ${money(job.expenses_total)}`}
-            onPress={handleExpensesPress}
-            isEmpty={job.expenses_count === 0}
-          />
-          <SummaryCard
-            icon={<FileText size={18} color={BRAND} />}
-            title="Documents"
-            value={job.documents_count}
-            onPress={handleDocumentsPress}
-            isEmpty={job.documents_count === 0}
-          />
-        </View>
-
-        <View style={styles.compactSummaryGrid}>
-          <SummaryCard
-            icon={<Banknote size={18} color={SUCCESS} />}
-            title="Payments"
-            value={`Due ${money(job.payments_due)}`}
-            onPress={handlePaymentsPress}
-            isEmpty={job.payments_due === 0}
-          />
-        </View>
       </ScrollView>
 
       {/* Sticky bottom bar (compact) */}
       <View style={[styles.actionBar, { paddingBottom: insets.bottom }]}>
-        <View style={styles.bottomActionsTop}>
+        {/* Remove View Quote button */}
+        {/* <View style={styles.bottomActionsTop}>
           {job.quote_id ? (
             <TouchableOpacity onPress={handleViewQuote} style={styles.smallBtn}>
               <Text style={styles.smallBtnText}>View Quote</Text>
             </TouchableOpacity>
           ) : null}
-        </View>
+        </View> */}
         <Btn onPress={handleCreateInvoice} style={styles.fullWidthBtn}>
           Create Invoice
         </Btn>
       </View>
-
       {/* bottom safe area fill */}
       <View style={{ height: insets.bottom, backgroundColor: "#ffffff" }} />
     </View>
@@ -868,8 +866,17 @@ const styles = StyleSheet.create({
 
   /* Summary grid */
   compactSummaryGrid: { flexDirection: "row", gap: 8, marginBottom: 8 },
+  summaryRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "stretch",
+    gap: 8,
+    marginBottom: 8,
+    marginTop: 2,
+  },
   summaryCard: {
     flex: 1,
+    minWidth: 0,
     backgroundColor: CARD,
     borderRadius: 12,
     padding: 10,
@@ -928,7 +935,7 @@ const styles = StyleSheet.create({
   btn: {
     paddingVertical: 12, // tighter
     paddingHorizontal: 18,
-    borderRadius: 12,
+                                                                                          borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
