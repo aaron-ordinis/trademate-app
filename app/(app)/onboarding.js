@@ -15,6 +15,7 @@ import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as NavigationBar from 'expo-navigation-bar';
 import * as SystemUI from 'expo-system-ui';
+import TemplatePicker from "../../components/TemplatePicker";
 
 // Theme
 const BRAND  = '#2a86ff';
@@ -28,8 +29,14 @@ const OK     = '#16a34a';
 const DISABLED = '#9ca3af';
 
 const BUCKET = 'logos';
-const TOTAL_STEPS = 4;
-const STEP_TITLES = ["Logo & Basics", "Address & Trade", "Company Details", "Rates & Terms"];
+const TOTAL_STEPS = 5; // was 4
+const STEP_TITLES = [
+  "Logo & Basics",
+  "Address & Trade",
+  "Company Details",
+  "Rates & Terms",
+  "Default Template"
+];
 const ONBOARDING_COMPLETE_KEY = 'onboarding_profile_complete';
 
 /* ---------- helpers ---------- */
@@ -154,7 +161,13 @@ export default function Onboarding() {
   const [logoWorking, setLogoWorking] = useState(false);
   const [logoModalOpen, setLogoModalOpen] = useState(false);
 
+  // Template
+  const [defaultTemplate, setDefaultTemplate] = useState(null);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [templateError, setTemplateError] = useState(null);
+
   const [saving, setSaving] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   // validation state
   const [fieldErrors, setFieldErrors] = useState({});
@@ -199,13 +212,43 @@ export default function Onboarding() {
     getUser();
   }, [router]);
 
+  // Load user's default template if exists (on mount)
+  useEffect(() => {
+    // Always run this effect, but only fetch if step === 5 and email is loaded
+    let alive = true;
+    if (step === 5 && email) {
+      (async () => {
+        setTemplateLoading(true);
+        setTemplateError(null);
+        try {
+          const { data: userData } = await supabase.auth.getUser();
+          const user = userData?.user;
+          if (!user || !alive) return;
+          const { data, error } = await supabase
+            .from("profiles")
+            .select("default_template_code")
+            .eq("id", user.id)
+            .single();
+          if (!alive) return;
+          if (error) setTemplateError(error.message || "Failed to load template");
+          else setDefaultTemplate(data?.default_template_code || null);
+        } catch (e) {
+          if (alive) setTemplateError("Failed to load template");
+        }
+        if (alive) setTemplateLoading(false);
+      })();
+    }
+    return () => { alive = false; };
+  }, [step, email]);
+  
+  // loading state while checking profile - REMOVE SPINNER
+  // Move this check AFTER all hooks
   // loading state while checking profile - REMOVE SPINNER
   if (!email) {
     return (
       <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
         <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          {/* Removed ActivityIndicator */}
           <Text style={{ color: MUTED, marginTop: 16 }}>Loading...</Text>
         </View>
       </View>
@@ -311,18 +354,30 @@ export default function Onboarding() {
   };
   const validateStep2 = () => {
     const errors = {};
+    if (!businessName.trim()) errors.businessName = 'Business name is required';
     if (!address1.trim()) errors.address1 = 'Address is required';
     if (!city.trim()) errors.city = 'City is required';
     if (!postcode.trim()) errors.postcode = 'Postcode is required';
     return errors;
   };
-  const validateStep3 = () => ({});
+  const validateStep3 = () => {
+    const errors = {};
+    if (!businessName.trim()) errors.businessName = 'Business name is required';
+    return errors;
+  };
   const validateStep4 = () => {
     const errors = {};
+    if (!businessName.trim()) errors.businessName = 'Business name is required';
     if (!hourlyRate || toNumber(hourlyRate) <= 0) errors.hourlyRate = 'Hourly rate is required';
     if (!markup || toNumber(markup) < 0) errors.markup = 'Materials markup is required';
     if (!travelRate || toNumber(travelRate) < 0) errors.travelRate = 'Travel rate is required';
     if (!hoursPerDay || toNumber(hoursPerDay, 8) <= 0) errors.hoursPerDay = 'Hours per day is required';
+    return errors;
+  };
+  const validateStep5 = () => {
+    const errors = {};
+    if (!businessName.trim()) errors.businessName = 'Business name is required';
+    if (!defaultTemplate) errors.defaultTemplate = "Please select a template";
     return errors;
   };
 
@@ -332,6 +387,7 @@ export default function Onboarding() {
       case 2: return validateStep2();
       case 3: return validateStep3();
       case 4: return validateStep4();
+      case 5: return validateStep5();
       default: return {};
     }
   };
@@ -362,7 +418,7 @@ export default function Onboarding() {
 
   // save profile
   const saveProfile = async () => {
-    const allErrors = { ...validateStep1(), ...validateStep2(), ...validateStep4() };
+    const allErrors = { ...validateStep1(), ...validateStep2(), ...validateStep4(), ...validateStep5() };
     if (Object.keys(allErrors).length > 0) {
       setFieldErrors(allErrors);
       return;
@@ -392,7 +448,8 @@ export default function Onboarding() {
         hours_per_day: toNumber(hoursPerDay, 10),
         payment_terms: terms.trim(),
         warranty_text: warranty.trim(),
-        custom_logo_url: logoUrl || null
+        custom_logo_url: logoUrl || null,
+        default_template_code: defaultTemplate || null
       };
 
       const { error } = await supabase
@@ -401,12 +458,22 @@ export default function Onboarding() {
         .eq('id', user.id);
       if (error) throw error;
 
-      // Navigate to the tab structure, not directly to list
-      router.replace('/(app)/(tabs)/quotes');
+      // Use quotesListHref for navigation after onboarding
+      router.replace(quotesListHref);
     } catch (e) {
       console.error('Save error:', e);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      setLoggingOut(true);
+      await supabase.auth.signOut();
+      router.replace(loginHref);
+    } catch (e) {
+      setLoggingOut(false);
     }
   };
 
@@ -574,6 +641,8 @@ export default function Onboarding() {
                     <Label>Trade</Label>
                     <Text style={styles.optionalText}>Optional</Text>
                     <Input placeholder="e.g. Electrician, Plumber, Carpenter" value={tradeType} onChangeText={setTradeType} />
+                    {/* Show error if business name missing */}
+                    {fieldErrors.businessName && <ErrorText>{fieldErrors.businessName}</ErrorText>}
                   </Card>
                 </View>
               )}
@@ -707,6 +776,30 @@ export default function Onboarding() {
                   </Card>
                 </View>
               )}
+
+              {/* STEP 5 — Default Template */}
+              {step === 5 && (
+                <View style={{ gap: 6 }}>
+                  <Card>
+                    <Text style={styles.cardTitle}>Choose Default Template</Text>
+                    <Text style={styles.hint}>Select your default layout for new documents.</Text>
+                    <View style={{ marginTop: 12 }}>
+                      {templateLoading ? (
+                        <Text style={{ color: MUTED, marginTop: 16 }}>Loading templates…</Text>
+                      ) : (
+                        <TemplatePicker
+                          selected={defaultTemplate}
+                          onSelect={setDefaultTemplate}
+                        />
+                      )}
+                      {templateError && <Text style={{ color: "#b91c1c", marginTop: 10 }}>{templateError}</Text>}
+                      {fieldErrors.defaultTemplate && <ErrorText>{fieldErrors.defaultTemplate}</ErrorText>}
+                      {/* Show error if business name missing */}
+                      {fieldErrors.businessName && <ErrorText>{fieldErrors.businessName}</ErrorText>}
+                    </View>
+                  </Card>
+                </View>
+              )}
             </ScrollView>
           </View>
 
@@ -727,6 +820,25 @@ export default function Onboarding() {
 
       {/* White safe area bottom */}
       <View style={{ height: insets.bottom, backgroundColor: '#ffffff' }} />
+
+      {/* Log Out Button */}
+      <TouchableOpacity
+        style={{
+          marginHorizontal: 24,
+          marginTop: 12,
+          backgroundColor: '#ef4444',
+          borderRadius: 12,
+          paddingVertical: 14,
+          alignItems: 'center',
+        }}
+        onPress={handleLogout}
+        disabled={loggingOut}
+        activeOpacity={0.8}
+      >
+        <Text style={{ color: '#fff', fontWeight: '900', fontSize: 16 }}>
+          {loggingOut ? "Logging Out..." : "Log Out"}
+        </Text>
+      </TouchableOpacity>
 
       {/* Logo sheet */}
       <Modal visible={logoModalOpen} animationType="fade" transparent>

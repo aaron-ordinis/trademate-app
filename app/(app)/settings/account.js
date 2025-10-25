@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   ScrollView,
   Modal,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from "expo-router";
@@ -72,6 +73,7 @@ export default function AccountSettings() {
   const [billingPhone, setBillingPhone] = useState("");
 
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   /* ---------- system chrome (white header to status bar) ---------- */
   useEffect(() => {
@@ -147,6 +149,40 @@ export default function AccountSettings() {
       setSaving(false);
     }
   }, [uid, phone, billingEmail, billingPhone]);
+
+  // Delete account handler
+  const deleteAccount = useCallback(async () => {
+    if (!uid) return;
+    Alert.alert(
+      "Delete Account",
+      "Are you sure you want to permanently delete your account? This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setDeleting(true);
+              // Call the Supabase Edge Function
+              const { data, error } = await supabase.functions.invoke("delete-account", {
+                body: { user_id: uid },
+              });
+              if (error) throw error;
+              // Sign out the user
+              await supabase.auth.signOut();
+              Alert.alert("Account Deleted", "Your account has been deleted.");
+              router.replace("/login");
+            } catch (e) {
+              Alert.alert("Delete Failed", e?.message || "Could not delete account.");
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  }, [uid, router]);
 
   return (
     <View style={styles.screen}>
@@ -265,6 +301,19 @@ export default function AccountSettings() {
             Account changes are saved immediately. Billing details are used for subscription management and payment communications only.
           </Text>
         </View>
+
+        {/* Delete Account Button */}
+        <TouchableOpacity
+          style={[styles.deleteBtn, deleting && { opacity: 0.5 }]}
+          onPress={deleteAccount}
+          disabled={deleting}
+        >
+          {deleting ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.deleteBtnText}>Delete Account</Text>
+          )}
+        </TouchableOpacity>
 
         <View style={{ height: 20 }} />
       </ScrollView>
@@ -466,5 +515,18 @@ const styles = StyleSheet.create({
     color: TEXT, 
     fontWeight: "700", 
     fontSize: 12 
+  },
+
+  deleteBtn: {
+    backgroundColor: "#ef4444",
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+    marginTop: 24,
+  },
+  deleteBtnText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 16,
   },
 });

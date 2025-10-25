@@ -1,5 +1,5 @@
 // app/(app)/jobs/create.js
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -23,6 +23,7 @@ import { jobHref, loginHref } from "../../../lib/nav";
 import * as Haptics from "expo-haptics";
 import SharedCalendar from "../../../components/SharedCalendar";
 import Constants from "expo-constants";
+import TemplatePicker from "../../../components/TemplatePicker";
 
 /* ---------- theme ---------- */
 const BRAND = "#2a86ff";
@@ -123,47 +124,17 @@ const addWorkingDays = (startDate, days, includeWeekends) => {
   return cur;
 };
 
+/* ---------- template helpers ---------- */
+const normalizeTemplateCode = (code) => {
+  if (!code) return "clean-classic.html";
+  let c = String(code).trim();
+  c = c.replace(/\s+/g, "");
+  if (!/\.html$/i.test(c)) c += ".html";
+  c = c.replace(/[^A-Za-z0-9._-]/g, "");
+  return c.toLowerCase();
+};
+
 /* =================== Screen =================== */
-const TOTAL_STEPS = 2;
-const STEP_TITLES = ["Deposit Options", "Schedule"];
-
-/* ---------- INFO BUTTON COMPONENT ---------- */
-function InfoButton({ title, tips = [] }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <TouchableOpacity
-        onPress={() => {
-          Haptics.selectionAsync();
-          setOpen(true);
-        }}
-        style={styles.infoBtn}
-      >
-        <Text style={{ color: MUTED, fontWeight: "900" }}>i</Text>
-      </TouchableOpacity>
-      <Modal visible={open} animationType="fade" transparent onRequestClose={() => setOpen(false)}>
-        <View style={styles.modalBackdrop} />
-        <View style={styles.modalWrap}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHead}>
-              <Text style={{ color: TEXT, fontWeight: "900", fontSize: 16 }}>{title}</Text>
-              <TouchableOpacity onPress={() => setOpen(false)} style={styles.smallBtn}>
-                <Text style={styles.smallBtnText}>Close</Text>
-              </TouchableOpacity>
-            </View>
-            {tips.slice(0, 6).map((t, i) => (
-              <View key={i} style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
-                <Text style={{ color: BRAND, fontWeight: "900" }}>•</Text>
-                <Text style={{ color: TEXT, flex: 1 }}>{t}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      </Modal>
-    </>
-  );
-}
-
 export default function CreateJobScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -172,28 +143,13 @@ export default function CreateJobScreen() {
 
   // Steps
   const [step, setStep] = useState(1);
-  const next = () =>
-    setStep((s) => {
-      const n = Math.min(s + 1, TOTAL_STEPS);
-      if (n !== s) Haptics.selectionAsync();
-      return n;
-    });
-  const back = () =>
-    setStep((s) => {
-      const n = Math.max(s - 1, 1);
-      if (n !== s) Haptics.selectionAsync();
-      return n;
-    });
-
-  const [quote, setQuote] = useState(null);
-  const [userId, setUserId] = useState(null);
-  const [loading, setLoading] = useState(true);
 
   /* Deposit UI */
   const [depEnabled, setDepEnabled] = useState(false);
   const [depMaterials, setDepMaterials] = useState([]);
   const [depLabourPct, setDepLabourPct] = useState(10);
   const [depLabourSubtotal, setDepLabourSubtotal] = useState(0);
+  const [depTemplateCode, setDepTemplateCode] = useState("");
 
   /* Scheduling */
   const [cjDays, setCjDays] = useState(1);
@@ -208,12 +164,31 @@ export default function CreateJobScreen() {
   const [cjBusy, setCjBusy] = useState(false);
   const [cjError, setCjError] = useState("");
 
+  const [quote, setQuote] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  /* Dynamic steps based on deposit enabled */
+  const stepTitles = useMemo(() => {
+    return depEnabled ? ["Deposit Options", "Deposit Template", "Schedule"] : ["Deposit Options", "Schedule"];
+  }, [depEnabled]);
+  const totalSteps = stepTitles.length;
+
+  const clampStep = (n) => Math.max(1, Math.min(n, totalSteps));
+  const next = () => setStep((s) => clampStep(s + 1));
+  const back = () => setStep((s) => clampStep(s - 1));
+
+  // Clamp when toggling
+  useEffect(() => {
+    setStep((s) => clampStep(s));
+  }, [totalSteps]);
+
   /* Load data */
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
-        
+
         const { data: auth } = await supabase.auth.getUser();
         const user = auth?.user;
         if (!user) {
@@ -222,39 +197,43 @@ export default function CreateJobScreen() {
         }
         setUserId(user.id);
 
+        // default template from profile
+        try {
+          const { data: prof } = await supabase
+            .from("profiles")
+            .select("default_template_code")
+            .eq("id", user.id)
+            .maybeSingle();
+
+          const def = normalizeTemplateCode(prof?.default_template_code || "");
+          setDepTemplateCode((cur) => cur || def);
+        } catch {}
+
         if (quoteId) {
-          const { data: full, error } = await supabase
+          const { data: full } = await supabase
             .from("quotes")
             .select("*")
             .eq("id", quoteId)
             .maybeSingle();
-          if (error) console.warn("[CREATE_JOB] Quote load error:", error?.message);
+
           if (full) {
             setQuote(full);
-            const { labourSubtotal, materialItems } = splitQuoteItems(full);
-            setDepLabourSubtotal(labourSubtotal);
-            setDepMaterials((materialItems || []).map((m) => ({ ...m, selected: false })));
+            const sp = splitQuoteItems(full);
+            setDepLabourSubtotal(sp.labourSubtotal);
+            setDepMaterials((sp.materialItems || []).map((m) => ({ ...m, selected: false })));
           }
         } else {
           setQuote({ id: null, client_name: "", job_summary: "" });
         }
 
-        // Load jobs for calendar
+        // jobs for calendar
         try {
-          const { data: jobsData, error: jobsErr } = await supabase
+          const { data: jobsData } = await supabase
             .from("jobs")
             .select("id, title, start_date, end_date, status, include_weekends, user_id")
             .eq("user_id", user?.id || "");
-          
-          if (jobsErr) {
-            console.error("[CREATE_JOB] Jobs load error:", jobsErr);
-            setJobs([]);
-          } else {
-            setJobs(jobsData || []);
-            console.log("[CREATE_JOB] Loaded jobs:", jobsData?.length || 0);
-          }
-        } catch (jobsLoadError) {
-          console.error("[CREATE_JOB] Jobs load exception:", jobsLoadError);
+          setJobs(jobsData || []);
+        } catch {
           setJobs([]);
         }
       } catch (e) {
@@ -285,21 +264,17 @@ export default function CreateJobScreen() {
       const start = toYMD(cjStart);
       const end = toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends));
 
-      console.log("[CREATE_JOB] Creating job for quote:", quote.id);
-
-      // Create job using the proven working approach
       let jobId = null;
       let jobCreated = false;
 
       try {
-        // Step 1: Create basic job record
         const basicPayload = {
           user_id: user.id,
           title: quote.job_summary || "Job",
           status: "scheduled",
           start_date: start,
           end_date: end,
-          total: Number(quote.total || 0)
+          total: Number(quote.total || 0),
         };
 
         const { data: basicInsert, error: basicError } = await supabase
@@ -309,13 +284,11 @@ export default function CreateJobScreen() {
           .single();
 
         if (basicError) {
-          throw new Error(`Job creation failed: ${basicError.message}`);
+          throw new Error("Job creation failed: " + basicError.message);
         }
 
         jobId = basicInsert.id;
-        console.log("[CREATE_JOB] Job created with ID:", jobId);
 
-        // Step 2: Update with additional fields
         const updatePayload = {
           client_name: quote.client_name || "Client",
           client_email: quote.client_email,
@@ -337,21 +310,19 @@ export default function CreateJobScreen() {
 
         if (updateError) {
           console.warn("[CREATE_JOB] Update warning:", updateError.message);
-          // Job creation succeeded, update failure is not critical
         }
 
         jobCreated = true;
-        console.log("[CREATE_JOB] Job creation completed successfully");
       } catch (jobError) {
         console.error("[CREATE_JOB] Job creation failed:", jobError);
-        Alert.alert("Database Error", `Could not create the job: ${jobError.message}`);
+        Alert.alert("Database Error", "Could not create the job: " + jobError.message);
         setCjBusy(false);
         return;
       }
 
       // Update quote status
       if (quote.id && jobCreated) {
-        const { error: updateError } = await supabase
+        await supabase
           .from("quotes")
           .update({
             status: "accepted",
@@ -359,20 +330,15 @@ export default function CreateJobScreen() {
             job_id: jobId,
           })
           .eq("id", quote.id);
-
-        if (updateError) {
-          console.error("[CREATE_JOB] Quote update error:", updateError);
-        } else {
-          console.log("[CREATE_JOB] Quote marked as accepted");
-        }
       }
 
       // Generate deposit invoice if enabled
       if (depEnabled) {
-        console.log("[CREATE_JOB] Generating deposit invoice...");
-
-        const selectedIds = depMaterials.filter((m) => m.selected).map((m) => m.ref);
+        const selectedIds = depMaterials
+          .filter((m) => m.selected)
+          .map((m) => m.ref);
         const labour_percent = Math.min(100, Math.max(0, Math.floor(depLabourPct || 0)));
+        const tplCode = normalizeTemplateCode(depTemplateCode || "clean-classic.html");
 
         const payload = {
           user_id: user.id,
@@ -380,21 +346,25 @@ export default function CreateJobScreen() {
           job_id: jobId,
           labour_percent,
           material_item_ids: selectedIds,
+          template_code: tplCode,
         };
 
         const extra = Constants.expoConfig?.extra ?? Constants.manifest?.extra ?? {};
         const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || extra.SUPABASE_URL || "";
-        const FUNCTIONS_URL = (SUPABASE_URL || "").replace(/\/$/, "") + "/functions/v1/create_deposit_invoice";
+        const FUNCTIONS_URL =
+          (SUPABASE_URL || "").replace(/\/$/, "") + "/functions/v1/create_deposit_invoice";
 
         try {
           const { data: sessRes } = await supabase.auth.getSession();
           const accessToken = sessRes?.session?.access_token;
-          
-          const authHeaders = accessToken 
+
+          const authHeaders = accessToken
             ? { Authorization: "Bearer " + accessToken }
-            : { 
-                Authorization: "Bearer " + (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || extra?.SUPABASE_ANON_KEY || ""),
-                apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || extra?.SUPABASE_ANON_KEY || ""
+            : {
+                Authorization:
+                  "Bearer " +
+                  (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || extra?.SUPABASE_ANON_KEY || ""),
+                apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || extra?.SUPABASE_ANON_KEY || "",
               };
 
           const res = await fetch(FUNCTIONS_URL, {
@@ -405,15 +375,17 @@ export default function CreateJobScreen() {
 
           const text = await res.text();
           let efData = null;
-          try { 
-            efData = text ? JSON.parse(text) : null; 
-          } catch { 
-            efData = null; 
+          try {
+            efData = text ? JSON.parse(text) : null;
+          } catch {
+            efData = null;
           }
 
           if (!res.ok) {
-            console.warn("[CREATE_JOB] Deposit generation failed:", efData?.error || text);
-            Alert.alert("Partial Success", "Job created, but deposit invoice generation failed.");
+            Alert.alert(
+              "Partial Success",
+              "Job created, but deposit invoice generation failed."
+            );
             router.replace(jobHref(jobId));
             return;
           }
@@ -424,16 +396,22 @@ export default function CreateJobScreen() {
 
             if (docId) {
               router.replace(
-                "/(app)/invoices/deposit/preview?docId=" + encodeURIComponent(docId) +
-                "&jobId=" + encodeURIComponent(jobId) + "&name=deposit.pdf"
+                "/(app)/invoices/deposit/preview?docId=" +
+                  encodeURIComponent(docId) +
+                  "&jobId=" +
+                  encodeURIComponent(jobId) +
+                  "&name=deposit.pdf"
               );
               return;
             }
 
             if (pdfUrl) {
               router.replace(
-                "/(app)/invoices/deposit/preview?url=" + encodeURIComponent(pdfUrl) +
-                "&jobId=" + encodeURIComponent(jobId) + "&name=deposit.pdf"
+                "/(app)/invoices/deposit/preview?url=" +
+                  encodeURIComponent(pdfUrl) +
+                  "&jobId=" +
+                  encodeURIComponent(jobId) +
+                  "&name=deposit.pdf"
               );
               return;
             }
@@ -442,20 +420,28 @@ export default function CreateJobScreen() {
             router.replace(jobHref(jobId));
             return;
           } else {
-            Alert.alert("Partial Success", "Job created, but deposit invoice may not have generated.");
+            Alert.alert(
+              "Partial Success",
+              "Job created, but deposit invoice may not have generated."
+            );
             router.replace(jobHref(jobId));
             return;
           }
         } catch (e) {
-          console.warn("[CREATE_JOB] Deposit generation error:", e.message);
-          Alert.alert("Partial Success", "Job created, but deposit invoice generation failed.");
+          Alert.alert(
+            "Partial Success",
+            "Job created, but deposit invoice generation failed."
+          );
           router.replace(jobHref(jobId));
           return;
         }
       }
 
       // Success - no deposit invoice requested
-      Alert.alert("Success", "Job created and scheduled!\n\nStart: " + start + "\nEnd: " + end);
+      Alert.alert(
+        "Success",
+        "Job created and scheduled!\n\nStart: " + start + "\nEnd: " + end
+      );
       router.replace(jobHref(jobId));
     } catch (e) {
       console.error("[CREATE_JOB] General error", e);
@@ -505,6 +491,8 @@ export default function CreateJobScreen() {
     );
   }
 
+  const currentTitle = stepTitles[step - 1] || "";
+
   return (
     <View style={styles.screen}>
       <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
@@ -530,13 +518,13 @@ export default function CreateJobScreen() {
         {/* Step progress */}
         <View style={styles.stepProgress}>
           <View style={styles.stepRow}>
-            <Text style={styles.stepTitle}>{STEP_TITLES[step - 1]}</Text>
+            <Text style={styles.stepTitle}>{currentTitle}</Text>
             <Text style={styles.stepCounter}>
-              Step {step} of {TOTAL_STEPS}
+              Step {step} of {totalSteps}
             </Text>
           </View>
-          <View className="progressTrack" style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: String((step / TOTAL_STEPS) * 100) + "%" }]} />
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: String((step / totalSteps) * 100) + "%" }]} />
           </View>
         </View>
 
@@ -561,7 +549,7 @@ export default function CreateJobScreen() {
                 <Text style={styles.toggleLabel}>Generate deposit invoice</Text>
                 <Switch
                   value={depEnabled}
-                  onValueChange={(v) => {
+                  onValueChange={function (v) {
                     setDepEnabled(v);
                     Haptics.selectionAsync();
                   }}
@@ -589,17 +577,17 @@ export default function CreateJobScreen() {
                 <View style={styles.linkRow}>
                   <TouchableOpacity
                     disabled={!depEnabled}
-                    onPress={() =>
-                      setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: true })))
-                    }
+                    onPress={function () {
+                      setDepMaterials(function (prev) { return prev.map(function (m) { return { ...m, selected: true }; }); });
+                    }}
                   >
                     <Text style={[styles.linkSm, !depEnabled && styles.disabledLink]}>Select all</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     disabled={!depEnabled}
-                    onPress={() =>
-                      setDepMaterials((prev) => prev.map((m) => ({ ...m, selected: false })))
-                    }
+                    onPress={function () {
+                      setDepMaterials(function (prev) { return prev.map(function (m) { return { ...m, selected: false }; }); });
+                    }}
                   >
                     <Text style={[styles.linkSm, !depEnabled && styles.disabledLink]}>Clear all</Text>
                   </TouchableOpacity>
@@ -609,18 +597,18 @@ export default function CreateJobScreen() {
               {depMaterials.length ? (
                 <View style={styles.materialListWrap}>
                   <ScrollView style={styles.materialScrollView} showsVerticalScrollIndicator={false}>
-                    {depMaterials.map((m, index) => {
+                    {depMaterials.map(function (m, index) {
                       const Icon = m.selected ? CheckSquare : Square;
                       const isLast = index === depMaterials.length - 1;
                       return (
                         <Pressable
                           key={m.ref}
                           disabled={!depEnabled}
-                          onPress={() =>
-                            setDepMaterials((prev) =>
-                              prev.map((x) => (x.ref === m.ref ? { ...x, selected: !x.selected } : x))
-                            )
-                          }
+                          onPress={function () {
+                            setDepMaterials(function (prev) {
+                              return prev.map(function (x) { return x.ref === m.ref ? { ...x, selected: !x.selected } : x; });
+                            });
+                          }}
                           style={[
                             styles.materialRow,
                             !depEnabled && styles.disabledRow,
@@ -660,7 +648,7 @@ export default function CreateJobScreen() {
                   <TouchableOpacity
                     style={styles.counterBtn}
                     disabled={!depEnabled}
-                    onPress={() => setDepLabourPct((p) => Math.max(0, Math.floor((p || 0) - 1)))}
+                    onPress={function () { setDepLabourPct(function (p) { return Math.max(0, Math.floor((p || 0) - 1)); }); }}
                   >
                     <Minus size={16} color={depEnabled ? TEXT : MUTED} />
                   </TouchableOpacity>
@@ -670,7 +658,7 @@ export default function CreateJobScreen() {
                   <TouchableOpacity
                     style={styles.counterBtn}
                     disabled={!depEnabled}
-                    onPress={() => setDepLabourPct((p) => Math.min(100, Math.floor((p || 0) + 1)))}
+                    onPress={function () { setDepLabourPct(function (p) { return Math.min(100, Math.floor((p || 0) + 1)); }); }}
                   >
                     <PlusIcon size={16} color={depEnabled ? TEXT : MUTED} />
                   </TouchableOpacity>
@@ -686,7 +674,7 @@ export default function CreateJobScreen() {
                     Selected materials
                   </Text>
                   <Text style={[styles.summaryValue, !depEnabled && styles.disabledText]}>
-                    {money(depMaterials.filter((m) => m.selected).reduce((s, x) => s + (x.total || 0), 0))}
+                    {money(depMaterials.filter(function (m) { return m.selected; }).reduce(function (s, x) { return s + (x.total || 0); }, 0))}
                   </Text>
                 </View>
                 <View style={styles.summaryRow}>
@@ -707,7 +695,7 @@ export default function CreateJobScreen() {
                     style={[styles.summaryValue, styles.summaryTotalText, !depEnabled && styles.disabledText]}
                   >
                     {money(
-                      depMaterials.filter((m) => m.selected).reduce((s, x) => s + (x.total || 0), 0) +
+                      depMaterials.filter(function (m) { return m.selected; }).reduce(function (s, x) { return s + (x.total || 0); }, 0) +
                         (depLabourSubtotal * (depLabourPct || 0)) / 100
                     )}
                   </Text>
@@ -717,8 +705,20 @@ export default function CreateJobScreen() {
           </>
         )}
 
-        {/* Step 2: Schedule */}
-        {step === 2 && (
+        {/* Step 2: Deposit Template (only when deposit enabled) */}
+        {depEnabled && step === 2 && (
+          <TemplatePicker
+            kind="deposit"
+            selected={depTemplateCode}
+            onSelect={function (code) {
+              setDepTemplateCode(normalizeTemplateCode(code));
+              Haptics.selectionAsync();
+            }}
+          />
+        )}
+
+        {/* Final Step: Schedule */}
+        {((depEnabled && step === 3) || (!depEnabled && step === 2)) && (
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <Text style={styles.cardTitle}>Job Schedule</Text>
@@ -734,13 +734,12 @@ export default function CreateJobScreen() {
               />
             </View>
 
-            {/* Calendar */}
             <View style={styles.calendarContainer}>
               <SharedCalendar
                 month={calMonth}
                 onChangeMonth={setCalMonth}
                 selectedDate={cjStart}
-                onSelectDate={(d) => setCjStart(atMidnight(d))}
+                onSelectDate={function (d) { setCjStart(atMidnight(d)); }}
                 jobs={jobs}
                 span={{
                   start: cjStart,
@@ -748,7 +747,7 @@ export default function CreateJobScreen() {
                   includeWeekends: cjIncludeWeekends,
                 }}
                 blockStarts
-                onDayLongPress={() => {}}
+                onDayLongPress={function () {}}
               />
             </View>
 
@@ -757,7 +756,7 @@ export default function CreateJobScreen() {
               <View style={styles.counterWrap}>
                 <TouchableOpacity
                   style={styles.counterBtn}
-                  onPress={() => setCjDays((d) => Math.max(1, d - 1))}
+                  onPress={function () { setCjDays(function (d) { return Math.max(1, d - 1); }); }}
                 >
                   <Minus size={16} color={TEXT} />
                 </TouchableOpacity>
@@ -766,7 +765,7 @@ export default function CreateJobScreen() {
                 </Text>
                 <TouchableOpacity
                   style={styles.counterBtn}
-                  onPress={() => setCjDays((d) => d + 1)}
+                  onPress={function () { setCjDays(function (d) { return d + 1; }); }}
                 >
                   <PlusIcon size={16} color={TEXT} />
                 </TouchableOpacity>
@@ -780,7 +779,7 @@ export default function CreateJobScreen() {
               <Text style={styles.toggleLabel}>Include weekends</Text>
               <Switch
                 value={cjIncludeWeekends}
-                onValueChange={(v) => {
+                onValueChange={function (v) {
                   setCjIncludeWeekends(v);
                   Haptics.selectionAsync();
                 }}
@@ -795,13 +794,10 @@ export default function CreateJobScreen() {
                 <Text style={styles.previewBold}>Start:</Text> {toYMD(cjStart)}
               </Text>
               <Text style={styles.previewText}>
-                <Text style={styles.previewBold}>End:</Text>{" "}
-                {toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends))}
+                <Text style={styles.previewBold}>End:</Text> {toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends))}
               </Text>
               <Text style={styles.previewText}>
-                <Text style={styles.previewBold}>Duration:</Text> {cjDays}{" "}
-                {cjDays === 1 ? "day" : "days"}{" "}
-                {cjIncludeWeekends ? "(including weekends)" : "(working days only)"}
+                <Text style={styles.previewBold}>Duration:</Text> {cjDays} {cjDays === 1 ? "day" : "days"} {cjIncludeWeekends ? "(including weekends)" : "(working days only)"}
               </Text>
             </View>
 
@@ -822,20 +818,59 @@ export default function CreateJobScreen() {
           style={[styles.actionBtn, styles.primaryActionBtn, cjBusy && { opacity: 0.55 }]}
           activeOpacity={0.9}
           disabled={cjBusy}
-          onPress={step < TOTAL_STEPS ? next : createJobInternal}
+          onPress={step < totalSteps ? next : createJobInternal}
         >
           <Text style={[styles.actionBtnText, { color: "#ffffff" }]} numberOfLines={1}>
-            {step < TOTAL_STEPS ? "Continue" : cjBusy ? "Creating..." : "Create Job"}
+            {step < totalSteps ? "Continue" : cjBusy ? "Creating..." : "Create Job"}
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* White safe area bottom */}
       <View style={{ height: insets.bottom, backgroundColor: "#ffffff" }} />
     </View>
   );
 }
 
+/* ---------- Info button ---------- */
+function InfoButton({ title, tips = [] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <TouchableOpacity
+        onPress={function () {
+          Haptics.selectionAsync();
+          setOpen(true);
+        }}
+        style={styles.infoBtn}
+      >
+        <Text style={{ color: MUTED, fontWeight: "900" }}>i</Text>
+      </TouchableOpacity>
+      <Modal visible={open} animationType="fade" transparent onRequestClose={function () { setOpen(false); }}>
+        <View style={styles.modalBackdrop} />
+        <View style={styles.modalWrap}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHead}>
+              <Text style={{ color: TEXT, fontWeight: "900", fontSize: 16 }}>{title}</Text>
+              <TouchableOpacity onPress={function () { setOpen(false); }} style={styles.smallBtn}>
+                <Text style={styles.smallBtnText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+            {tips.slice(0, 6).map(function (t, i) {
+              return (
+                <View key={i} style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+                  <Text style={{ color: BRAND, fontWeight: "900" }}>•</Text>
+                  <Text style={{ color: TEXT, flex: 1 }}>{t}</Text>
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
+/* ---------- styles ---------- */
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG },
   header: {
@@ -907,6 +942,7 @@ const styles = StyleSheet.create({
   linkSm: { color: BRAND, fontWeight: "900", fontSize: 14 },
   disabledLink: { color: MUTED },
   disabledText: { color: MUTED },
+
   materialListWrap: {
     borderWidth: 1,
     borderColor: BORDER,
@@ -927,6 +963,7 @@ const styles = StyleSheet.create({
   materialContent: { flex: 1, marginLeft: 12, marginRight: 12 },
   materialTitle: { color: TEXT, fontWeight: "700", fontSize: 15, marginBottom: 2 },
   materialAmt: { color: TEXT, fontWeight: "900", fontSize: 15, minWidth: 80, textAlign: "right" },
+
   emptyState: { paddingVertical: 20, alignItems: "center" },
   emptyHint: { color: MUTED, fontSize: 12, fontStyle: "italic" },
   counterWrap: {
@@ -943,12 +980,14 @@ const styles = StyleSheet.create({
   counterBtn: { height: 36, width: 36, alignItems: "center", justifyContent: "center" },
   counterValue: { minWidth: 80, textAlign: "center", fontWeight: "900", color: TEXT, fontSize: 14 },
   helpText: { color: MUTED, fontSize: 12, marginTop: 6, lineHeight: 16 },
+
   summaryBlock: { marginTop: 20, paddingTop: 16, borderTopWidth: 1, borderTopColor: BORDER },
   summaryRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 8 },
   summaryTotal: { paddingTop: 8, marginTop: 8, borderTopWidth: 1, borderTopColor: BORDER },
   summaryLabel: { color: TEXT, fontSize: 14 },
   summaryValue: { color: TEXT, fontWeight: "700", fontSize: 14 },
   summaryTotalText: { fontWeight: "900", fontSize: 16 },
+
   schedulePreview: {
     marginTop: 12,
     padding: 12,
@@ -960,6 +999,7 @@ const styles = StyleSheet.create({
   previewLabel: { color: TEXT, fontWeight: "900", fontSize: 14, marginBottom: 8 },
   previewText: { color: MUTED, fontSize: 13, lineHeight: 18 },
   previewBold: { fontWeight: "700", color: TEXT },
+
   errorContainer: {
     marginTop: 12,
     padding: 12,
@@ -969,6 +1009,7 @@ const styles = StyleSheet.create({
     borderColor: "#fecaca",
   },
   errorText: { color: "#dc2626", fontSize: 12, fontWeight: "600" },
+
   actionBar: {
     backgroundColor: CARD,
     borderTopWidth: 1,
@@ -1002,6 +1043,7 @@ const styles = StyleSheet.create({
   },
   primaryActionBtn: { backgroundColor: BRAND, borderColor: BRAND },
   actionBtnText: { fontSize: 15, fontWeight: "900", color: TEXT },
+
   calendarContainer: {
     marginTop: 6,
     borderWidth: 1,
@@ -1011,6 +1053,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     marginBottom: 16,
   },
+
   infoBtn: {
     width: 26,
     height: 26,

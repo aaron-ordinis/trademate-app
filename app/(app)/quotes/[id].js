@@ -8,61 +8,37 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
 
 /* ---------- constants ---------- */
-// Call your function directly by URL so you can see logs in Supabase dashboard
-const EDGE_FUNCTION_URL = 'https://bvbjvxjtxfzipwvfkrrb.supabase.co/functions/v1/pdf-rebuild';
+// Call the HTML-template renderer (NOT pdf-builder)
+const EDGE_FUNCTION_URL =
+  'https://bvbjvxjtxfzipwvfkrrb.supabase.co/functions/v1/render_document';
 
 /* ---------- small utils ---------- */
-const money = (v = 0) => '£' + Number(v || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+const money = (v = 0) =>
+  '£' +
+  Number(v || 0)
+    .toFixed(2)
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
 const clone = (x) => JSON.parse(JSON.stringify(x ?? null));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ---------- url & storage helpers ---------- */
-function withBust(url) {
-  if (!url) return url;
-  const cb = `cb=${Date.now()}&r=${Math.random().toString(36).slice(2)}`;
-  return url.includes('?') ? url + '&' + cb : url + '?' + cb;
-}
+/** Ensure template codes always include ".html" so the edge function
+ *  can resolve the exact object in the "templates" bucket. */
+const normalizeTemplateCode = (code) => {
+  if (!code) return undefined;
+  let c = String(code).trim();
+  if (!/\.html$/i.test(c)) c += '.html';
+  return c.toLowerCase();
+};
 
-function parseStorageUrl(url) {
-  // Works with Supabase public or signed URLs:
-  // .../storage/v1/object/<sign|public>/<bucket>/<path>
-  if (!url) return null;
-  const m = String(url).match(/\/storage\/v1\/object\/(?:sign|public)\/([^/]+)\/(.+?)(?:\?|$)/);
-  if (!m) return null;
-  return { bucket: m[1], path: decodeURIComponent(m[2]) };
-}
-
-async function probeUrl(url) {
-  const u = withBust(url);
-  try {
-    let res = await fetch(u, { method: 'HEAD' });
-    if (res.ok || [206, 304].includes(res.status)) return true;
-    res = await fetch(u, { method: 'GET', headers: { Range: 'bytes=0-1' } });
-    if ([200, 206, 304].includes(res.status)) return true;
-    res = await fetch(u, { method: 'GET' });
-    return res.ok;
-  } catch { return false; }
-}
-
-async function pollSignedUrlReady(path, { tries = 80, baseDelay = 250, step = 250, maxDelay = 1500, ttl = 60 * 60 * 24 * 7 } = {}) {
-  if (!path) return null;
-  const storage = supabase.storage.from('quotes');
-  for (let i = 0; i < tries; i++) {
-    const { data } = await storage.createSignedUrl(path, ttl);
-    const url = data?.signedUrl;
-    if (url && await probeUrl(url)) return url;
-    await sleep(Math.min(baseDelay + i * step, maxDelay));
-  }
-  return null;
-}
-
-/* ---------- data helpers ---------- */
+/* ---------- helpers ---------- */
 const toNum = (t) => {
   if (t == null) return 0;
   const cleaned = String(t).replace(',', '.').replace(/[^0-9.]/g, '');
   const n = parseFloat(cleaned);
   return Number.isFinite(n) ? n : 0;
 };
+
 const toUiItem = (li = {}) => {
   const type = String(li.type || '').toLowerCase();
   const qty = toNum(li.qty ?? li.quantity ?? li.units ?? li.amount ?? 1);
@@ -77,30 +53,32 @@ const toUiItem = (li = {}) => {
     unit_text: String(unit),
   };
 };
+
 const toDbItem = (ui = {}) => {
   const type = String(ui.type || '').toLowerCase();
   if (type === 'note') return { description: ui.description ?? '', type: 'note' };
   const qty = toNum(ui.qty_text ?? ui.qty);
   const unit = toNum(ui.unit_text ?? ui.unit_price ?? ui.price ?? ui.rate);
   const total = +(qty * unit).toFixed(2);
+  // what the HTML templates expect
   return {
     description: ui.description ?? '',
     type,
     qty,
-    quantity: qty,
-    unit,
+    unit: ui.unit ?? (type === 'labour' ? 'hours' : ''),
     unit_price: unit,
-    price: unit,
-    rate: unit,
-    total,
+    price: unit, // compatibility
+    line_total: total,
   };
 };
+
 const rowTotal = (ui = {}) => {
   if (String(ui.type || '').toLowerCase() === 'note') return 0;
   const qty = toNum(ui.qty_text ?? ui.qty);
   const unit = toNum(ui.unit_text ?? ui.unit_price ?? ui.price ?? ui.rate);
   return +(qty * unit).toFixed(2);
 };
+
 const extractItems = (raw) => {
   if (Array.isArray(raw)) return raw;
   if (raw && typeof raw === 'object') {
@@ -110,11 +88,21 @@ const extractItems = (raw) => {
   }
   return [];
 };
+
 const extractTotals = (raw) => {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
   if (raw && typeof raw?.data === 'object' && !Array.isArray(raw.data)) return raw.data;
   return {};
 };
+
+function currencySymbol(code) {
+  const c = String(code || 'GBP').toUpperCase();
+  if (c === 'GBP' || c === 'UKP') return '£';
+  if (c === 'USD') return '$';
+  if (c === 'EUR') return '€';
+  if (['AUD', 'CAD', 'NZD'].includes(c)) return '$';
+  return '£';
+}
 
 /* ---------- component ---------- */
 export default function QuoteDetails() {
@@ -156,7 +144,7 @@ export default function QuoteDetails() {
     return () => { dotsTimer.current && clearInterval(dotsTimer.current); };
   }, [building]);
 
-  // Load profile + quote (use passed quote data if present to avoid refetch)
+  // Load profile + quote
   useEffect(() => {
     let cancelled = false;
     if (!id && !passedQuote?.id) { setLoading(false); return; }
@@ -167,10 +155,27 @@ export default function QuoteDetails() {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) { if (!cancelled) router.replace('/(auth)/login'); return; }
 
-        // Profile
+        // Profile (expand fields so seller block is populated)
         const { data: prof } = await supabase
           .from('profiles')
-          .select('id, branding, business_name, custom_logo_url, vat_registered, payment_terms, warranty_text')
+          .select([
+            'id',
+            'branding',
+            'business_name',
+            'custom_logo_url',
+            'vat_registered',
+            'payment_terms',
+            'warranty_text',
+            'invoice_currency',
+            'invoice_tax_rate',
+            'address_line1',
+            'city',
+            'postcode',
+            'email',
+            'phone',
+            'vat_number',
+            'company_reg_no'
+          ].join(','))
           .eq('id', user.id)
           .single();
 
@@ -179,13 +184,34 @@ export default function QuoteDetails() {
         setProfile(prof || null);
         setIsPremium(String(prof?.branding || '').toLowerCase() === 'premium');
 
-        // Prefer the quote object passed from Preview to avoid cache misses
+        // Quote (prefer passed)
         let q = passedQuote || null;
-
         if (!q) {
           const { data: qData, error: qErr } = await supabase
             .from('quotes')
-            .select('id, user_id, quote_number, client_name, client_email, client_phone, client_address, site_address, job_summary, status, pdf_url, line_items, totals, created_at, subtotal, vat_amount, total, template_key, template_version')
+            .select([
+              'id',
+              'user_id',
+              'quote_number',
+              'quote_date',
+              'client_name',
+              'client_email',
+              'client_phone',
+              'client_address',
+              'site_address',
+              'job_summary',
+              'status',
+              'pdf_url',
+              'line_items',
+              'totals',
+              'created_at',
+              'subtotal',
+              'vat_amount',
+              'total',
+              'template_code',
+              'template_version',
+              'reference'
+            ].join(','))
             .eq('id', id)
             .single();
           if (qErr || !qData) throw new Error(qErr?.message || 'Quote not found.');
@@ -230,6 +256,7 @@ export default function QuoteDetails() {
       return next;
     });
   };
+
   const onUnitChange = (idx, t) => {
     setDirty(true);
     setItems(prev => {
@@ -246,6 +273,7 @@ export default function QuoteDetails() {
       return next;
     });
   };
+
   const updateDescOrType = (idx, patch) => {
     setDirty(true);
     setItems(prev => {
@@ -254,10 +282,12 @@ export default function QuoteDetails() {
       return next;
     });
   };
+
   const addRow = (type = 'materials') => {
     setDirty(true);
     setItems(prev => [...prev, toUiItem({ description: 'New item', qty: 1, unit_price: 0, type })]);
   };
+
   const removeRow = (idx) => {
     setDirty(true);
     setItems(prev => (Array.isArray(prev) ? prev : []).filter((_, i) => i !== idx));
@@ -287,41 +317,117 @@ export default function QuoteDetails() {
     if (error) throw error;
   };
 
-  /* ---------- PDF rebuild: direct fetch to Edge Function ---------- */
+  /* ---------- Build Mustache view for HTML templates ---------- */
+  const buildTemplateView = () => {
+    const currency = profile?.invoice_currency || 'GBP';
+    const sym = currencySymbol(currency);
+
+    const doc = {
+      title: 'Quote',
+      number: String(quoteData?.quote_number || ''),
+      issue_date: (quoteData?.quote_date || '').split('T')[0] || new Date().toISOString().slice(0, 10),
+      reference: quoteData?.reference || '',
+    };
+
+    const seller = {
+      company_name: profile?.business_name || '',
+      address:
+        [profile?.address_line1, [profile?.city, profile?.postcode].filter(Boolean).join(' ')].filter(Boolean).join('\n'),
+      email: profile?.email || '',
+      phone: profile?.phone || '',
+      vat_number: profile?.vat_number || '',
+      company_reg_no: profile?.company_reg_no || '',
+      // logo is injected by the edge function automatically (logo_url + logo_data_url)
+    };
+
+    const client = {
+      name: quoteData?.client_name || '',
+      address: quoteData?.client_address || '',
+    };
+
+    const itemsForTpl = items.map(toDbItem).map((it) => ({
+      ...it,
+      price: Number(it.unit_price || it.price || 0).toFixed(2),
+      line_total: Number(it.line_total ?? (Number(it.qty || 0) * Number(it.unit_price || 0))).toFixed(2),
+    }));
+
+    const totals = {
+      currency_symbol: sym,
+      subtotal: subtotal.toFixed(2),
+      tax: vat_amount.toFixed(2),
+      total: total.toFixed(2),
+      vat_rate_pct: Math.round(vatRate * 100),
+    };
+
+    return {
+      doc,
+      seller,
+      client,
+      items: itemsForTpl,           // the edge function will also auto-split labour/materials
+      totals,
+      notes: profile?.payment_terms || '',  // many templates show "Notes"
+      extras: {
+        job_summary: jobSummary || '',
+        assumptions: [],             // keep for templates that render list
+      },
+    };
+  };
+
+  /* ---------- PDF via template-aware edge function ---------- */
   const rebuildPdf = async () => {
     const traceId = Math.random().toString(36).slice(2, 10);
 
     try {
       setBuilding(true);
 
-      // Session + token
       const { data: { session } } = await supabase.auth.getSession();
       const accessToken = session?.access_token;
-      if (!accessToken) throw new Error('Not signed in');
+      const pdfUserId = session?.user?.id;
+      if (!accessToken || !pdfUserId) throw new Error('Not signed in');
 
-      // Persist edits to DB first
+      // Persist edits first
       await persistEdits();
 
-      // Request body to function
+      const view = buildTemplateView();
+
+      // Normalize code so the edge function doesn't fall back
+      const tplVersion = quoteData?.template_version || undefined;
+      const tplNorm = normalizeTemplateCode(quoteData?.template_code);
+
       const body = {
-        user_id: session.user.id,
-        quote_id: quoteData?.id,
-        job_summary: jobSummary,
-        line_items: items.map(toDbItem),
-        totals: { vat_rate: vatRate },
-        delete_previous: true,
-        template: (quoteData?.template_key && quoteData?.template_version)
-          ? { key: String(quoteData.template_key), version: String(quoteData.template_version) }
-          : undefined,
+        kind: 'quote',
+        user_id: pdfUserId,
+        quote_id: quoteData?.id,      // optional (edge can fetch by id if you extend it)
+        templateCode: tplNorm,        // explicit normalized code (e.g., "elegant-outline.html")
+        data: view,
+        output: 'pdf',
+        store: {
+          bucket: 'quotes',
+          path_prefix: `${pdfUserId}/`,
+          filename: `${quoteData?.quote_number || 'quote'}.pdf`,
+          sign_secs: 60 * 60 * 24 * 7,
+        },
+        template: tplNorm ? { key: String(tplNorm), version: String(tplVersion || '') } : undefined,
+        pdf: {
+          page_size: 'A4',
+          margin_top: 0,
+          margin_right: 0,
+          margin_bottom: 0,
+          margin_left: 0,
+          use_print_css: true,
+          print_background: true,
+          viewport_width: 1280,
+          css_media_type: 'print',
+          scale: 100,
+        },
       };
 
-      // Try to obtain anon key (optional header). Fallback to env if you expose it.
       const maybeAnon =
         (typeof process !== 'undefined' && process?.env?.EXPO_PUBLIC_SUPABASE_ANON_KEY) ||
         (supabase && supabase._getSettings && supabase._getSettings()?.headers?.apikey) ||
         undefined;
 
-      console.log('[TMQ] Calling Edge Function', EDGE_FUNCTION_URL, 'trace', traceId);
+      console.log('[TMQ] Calling render_document', EDGE_FUNCTION_URL, 'trace', traceId);
 
       const res = await fetch(EDGE_FUNCTION_URL, {
         method: 'POST',
@@ -346,32 +452,40 @@ export default function QuoteDetails() {
       }
       if (!resp?.ok) {
         console.error('[TMQ] Edge logical error', resp, 'trace', traceId);
-        throw new Error(resp?.error || 'PDF rebuild failed');
+        throw new Error(resp?.error || 'PDF build failed');
       }
 
-      // Get final URL
-      let nextUrl = resp.publicUrl || resp.public_url || resp.signedUrl || resp.signed_url || null;
+      const nextUrl =
+        resp.signed_url || resp.signedUrl || resp.public_url || resp.publicUrl || null;
+
       if (!nextUrl) {
-        const path = resp.path || resp.key || null;
-        if (path) nextUrl = await pollSignedUrlReady(path);
+        throw new Error('PDF created but URL missing. Please try again.');
       }
-      if (!nextUrl) throw new Error('PDF created but not yet available. Try again in a moment.');
 
-      // Ensure DB points to latest (function already updates, but just in case)
+      // Update quote with new URL + ensure template_code/version saved (normalized)
       try {
-        await supabase.from('quotes')
+        await supabase
+          .from('quotes')
           .update({
             pdf_url: nextUrl,
             status: 'sent',
-            template_key: resp.template_key ?? quoteData?.template_key ?? null,
-            template_version: resp.template_version ?? quoteData?.template_version ?? null,
+            template_code:
+              tplNorm
+              ?? normalizeTemplateCode(resp?.templateCode)
+              ?? normalizeTemplateCode(quoteData?.template_code)
+              ?? null,
+            template_version: tplVersion ?? resp?.template_version ?? quoteData?.template_version ?? null,
+            subtotal,
+            vat_amount,
+            total,
+            totals: { subtotal, vat_rate: vatRate, vat_amount, total },
           })
           .eq('id', quoteData?.id);
       } catch (e) {
-        console.log('[TMQ] Post-rebuild DB update skipped/failed', e);
+        console.log('[TMQ] Post-build DB update skipped/failed', e);
       }
 
-      // Navigate to Preview with fresh URL
+      // Navigate to Preview
       const name = `${quoteData?.quote_number || 'quote'}.pdf`;
       router.replace({
         pathname: '/(app)/quotes/preview',

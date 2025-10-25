@@ -6,27 +6,28 @@ import {
   StatusBar, StyleSheet, Platform
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { supabase } from "../../../lib/supabase";
 import * as Haptics from "expo-haptics";
 import { Feather } from "@expo/vector-icons";
 import * as NavigationBar from "expo-navigation-bar";
+import TemplatePicker from "../../../components/TemplatePicker";
 
 /* ---------------- Theme ---------------- */
-const BRAND = '#2a86ff';
-const TEXT = '#0b1220';
-const MUTED = '#6b7280';
-const CARD = '#ffffff';
-const BG = '#ffffff';
-const BORDER = '#e6e9ee';
-const OK = '#16a34a';
-const DISABLED = '#9ca3af';
-const WARN = '#dc2626';
+const BRAND = "#2a86ff";
+const TEXT = "#0b1220";
+const MUTED = "#6b7280";
+const CARD = "#ffffff";
+const BG = "#ffffff";
+const BORDER = "#e6e9ee";
+const OK = "#16a34a";
+const DISABLED = "#9ca3af";
+const WARN = "#dc2626";
 
 /* ---------------- Utils ---------------- */
 function money(n) { if (!isFinite(n)) return "0.00"; return (Math.round(n * 100) / 100).toFixed(2); }
 function num(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
-function todayISO() { return new Date().toISOString().slice(0,10); }
+function todayISO() { return new Date().toISOString().slice(0, 10); }
 function isHoursUnit(u) {
   const t = String(u || "").trim().toLowerCase();
   return t === "h" || t === "hr" || t === "hrs" || t === "hour" || t === "hours";
@@ -38,7 +39,7 @@ function isLabourItem(row) {
   if (isHoursUnit(row?.unit)) return true;
   return false;
 }
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 const haversineMiles = (lat1, lon1, lat2, lon2) => {
   const toRad = (x) => (x * Math.PI) / 180;
@@ -66,7 +67,7 @@ async function tryJson(url, opts = {}, tries = 2) {
   throw lastErr;
 }
 
-async function probeUrl(url){
+async function probeUrl(url) {
   const bust = "cb=" + Date.now() + "&r=" + Math.random().toString(36).slice(2);
   const u = url && url.indexOf("?") >= 0 ? url + "&" + bust : url + "?" + bust;
   try {
@@ -92,14 +93,14 @@ function deriveExpenseTotal(e) {
 }
 
 /* ---------------- Wizard ---------------- */
-const TOTAL_STEPS = 7;
-const STEP_TITLES = ["Hours","Expenses","Attachments","Deposit","Client","Terms","Review"];
+const TOTAL_STEPS = 8;
+const STEP_TITLES = ["Hours", "Expenses", "Attachments", "Deposit", "Client", "Terms", "Template", "Review"];
 
 export default function InvoiceWizard() {
   const params = useLocalSearchParams();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  
+
   const [step, setStep] = useState(1);
 
   const [loadingDefaults, setLoadingDefaults] = useState(true);
@@ -141,6 +142,12 @@ export default function InvoiceWizard() {
   const [cisApply, setCisApply] = useState(false);
   const [cisRate, setCisRate] = useState("20"); // percent as string
 
+  // Template selection
+  const [templateCode, setTemplateCode] = useState(null);
+  const [templatePreviewUrl, setTemplatePreviewUrl] = useState(null);
+  const [templatePreviewHtml, setTemplatePreviewHtml] = useState(null);
+
+  /* ---------------- Lifecycle ---------------- */
   useEffect(() => {
     StatusBar.setBarStyle("dark-content");
     if (Platform.OS === "android") {
@@ -149,7 +156,7 @@ export default function InvoiceWizard() {
     }
   }, []);
 
-  // Load defaults (profile) - includes travel & CIS
+  // Load defaults (profile) - includes travel & CIS + default template
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -164,7 +171,8 @@ export default function InvoiceWizard() {
           .select(`
             invoice_terms, invoice_due_days, invoice_tax_rate, invoice_currency,
             hourly_rate, travel_rate_per_mile, address_line1, city, postcode,
-            cis_enabled, cis_deduction_rate, cis_apply_by_default, cis_exclude_materials
+            cis_enabled, cis_deduction_rate, cis_apply_by_default, cis_exclude_materials,
+            default_template_code
           `)
           .eq("id", user.id)
           .single();
@@ -179,7 +187,11 @@ export default function InvoiceWizard() {
           if (data.invoice_currency) setCurrency(data.invoice_currency);
           if (data.invoice_terms && !note) setNote(data.invoice_terms);
 
-          // CIS
+          // Initial template selection (still user-changeable in the picker)
+          if (data.default_template_code) {
+            setTemplateCode(String(data.default_template_code));
+          }
+
           const ded = Number(data.cis_deduction_rate);
           const rateStr = Number.isFinite(ded) ? String(ded) : "20";
           setCisProfileEnabled(!!data.cis_enabled);
@@ -205,7 +217,6 @@ export default function InvoiceWizard() {
     if (!ex.error) {
       const list = ex.data || [];
       setExpenses(list);
-      // Pre-tick all expenses by default
       setSelectedExpenseIds(new Set(list.map(e => e.id)));
     }
   }
@@ -220,7 +231,6 @@ export default function InvoiceWizard() {
     if (!docs.error) {
       const list = docs.data || [];
       setDocuments(list);
-      // Pre-tick all docs by default
       setSelectedDocIds(new Set(list.map(d => d.id)));
     }
   }
@@ -283,7 +293,7 @@ export default function InvoiceWizard() {
     setTravelCharge(Math.round(roundTripCharge * 100) / 100);
   }, [distanceMiles, profile]);
 
-  // Google Maps helpers (optional env)
+  // Google helpers
   const GOOGLE =
     process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY ||
     globalThis?.expo?.env?.EXPO_PUBLIC_GOOGLE_MAPS_KEY;
@@ -348,7 +358,7 @@ export default function InvoiceWizard() {
       if (!miles) miles = haversineMiles(origin.lat, origin.lng, dest.lat, dest.lng);
       const rounded = Math.round(Number(miles) * 100) / 100;
       if (Number.isFinite(rounded)) setDistanceMiles(String(rounded));
-    } catch (e) {
+    } catch {
       // ignore
     } finally {
       setAutoDistLoading(false);
@@ -408,7 +418,7 @@ export default function InvoiceWizard() {
     return () => { alive = false; };
   }, [params.quote_id, sourceQuoteId, profile, autoCalcDistance]); // eslint-disable-line
 
-  // Prefill deposit from oldest paid deposit invoice (legacy)
+  // Prefill deposit from legacy deposit invoice
   useEffect(() => {
     let alive = true;
     if (!jobId) return;
@@ -422,7 +432,7 @@ export default function InvoiceWizard() {
           .select("id, total, type, status, job_id, created_at")
           .eq("job_id", jobId)
           .eq("type", "deposit")
-          .in("status", ["issued","sent","partially_paid","paid"])
+          .in("status", ["issued", "sent", "partially_paid", "paid"])
           .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle();
@@ -469,6 +479,7 @@ export default function InvoiceWizard() {
     return () => { alive = false; };
   }, [jobId]); // eslint-disable-line
 
+  /* ---------------- Expense Modal ---------------- */
   const [expModalOpen, setExpModalOpen] = useState(false);
   const [expEditingId, setExpEditingId] = useState(null);
   const emptyDraft = { name: "", qty: "", unit: "", unit_cost: "", total: "", notes: "", date: todayISO() };
@@ -497,7 +508,7 @@ export default function InvoiceWizard() {
   }
   async function saveExpense() {
     try {
-      if (!userId || !jobId) { Alert.alert("Missing context","Login or select a job first."); return; }
+      if (!userId || !jobId) { Alert.alert("Missing context", "Login or select a job first."); return; }
       setSavingExpense(true);
       const qty = expDraft.qty === "" ? null : Number(expDraft.qty);
       const unit_cost = expDraft.unit_cost === "" ? null : Number(expDraft.unit_cost);
@@ -509,7 +520,7 @@ export default function InvoiceWizard() {
         job_id: jobId, user_id, kind: "expense",
         name: expDraft.name || "Item", qty, unit: (expDraft.unit || null),
         unit_cost, total, notes: expDraft.notes || null, date: expDraft.date || todayISO(),
-        fingerprint: "ui-" + Date.now() + "-" + Math.random().toString(36).slice(2,8)
+        fingerprint: "ui-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8)
       };
       if (expEditingId) {
         const { error } = await supabase.from("expenses").update(payload).eq("id", expEditingId);
@@ -526,6 +537,7 @@ export default function InvoiceWizard() {
     } finally { setSavingExpense(false); }
   }
 
+  /* ---------------- Document Modal ---------------- */
   const [docModalOpen, setDocModalOpen] = useState(false);
   const [docEditingId, setDocEditingId] = useState(null);
   const emptyDoc = { name: "", kind: "other", url: "", mime: "", size: "" };
@@ -565,19 +577,10 @@ export default function InvoiceWizard() {
     } finally { setSavingDoc(false); }
   }
 
-  function toggleExpense(id) {
-    setSelectedExpenseIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
-    Haptics.selectionAsync();
-  }
-  function toggleDoc(id) {
-    setSelectedDocIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
-    Haptics.selectionAsync();
-  }
-
+  /* ---------------- Totals + CIS ---------------- */
   const selectedExpenses = useMemo(() => expenses.filter(e => selectedExpenseIds.has(e.id)), [expenses, selectedExpenseIds]);
   const selectedDocuments = useMemo(() => documents.filter(d => selectedDocIds.has(d.id)), [documents, selectedDocIds]);
 
-  // Totals (includes travel) + CIS
   const totals = useMemo(() => {
     const h = parseFloat(hoursQty || "0");
     const r = parseFloat(hourlyRate || "0");
@@ -591,7 +594,6 @@ export default function InvoiceWizard() {
     const dep = parseFloat(deposit || "0");
     const depositAmt = isNaN(dep) ? 0 : dep;
 
-    // CIS: applies when enabled + chosen for this invoice
     const cisEnabledForInvoice = cisProfileEnabled && cisApply;
     const cisRateNum = Math.min(100, Math.max(0, Number(cisRate || "0")));
     const cisBase = cisProfileExcludeMaterials ? labour : (labour + exp);
@@ -607,9 +609,11 @@ export default function InvoiceWizard() {
     };
   }, [hoursQty, hourlyRate, taxRate, selectedExpenses, deposit, travelCharge, cisApply, cisRate, cisProfileEnabled, cisProfileExcludeMaterials]);
 
+  /* ---------------- Step Control ---------------- */
   function next() { setStep(s => { const n = Math.min(s + 1, TOTAL_STEPS); if (n !== s) Haptics.selectionAsync(); return n; }); }
   function back() { setStep(s => { const n = Math.max(s - 1, 1); if (n !== s) Haptics.selectionAsync(); return n; }); }
 
+  /* ---------------- Generate Invoice ---------------- */
   async function onGenerate() {
     try {
       if (submitting) return;
@@ -625,6 +629,10 @@ export default function InvoiceWizard() {
         address: job.client_address || fallbackClient.address || ""
       } : fallbackClient;
 
+      // build IDs/URLs for payload
+      const selectedExpenseIdsArr = expenses.filter(e => selectedExpenseIds.has(e.id)).map(e => e.id);
+      const selectedDocUrlsArr = documents.filter(d => selectedDocIds.has(d.id)).map(d => d.url).filter(Boolean);
+
       const payload = {
         job_id: jobId || null,
         quote_id: params.quote_id || sourceQuoteId || null,
@@ -635,8 +643,8 @@ export default function InvoiceWizard() {
         due_in_days: Number(dueDays || "14"),
         deposit_amount: Number(deposit || "0"),
         note: note || null,
-        billable_expense_ids: selectedExpenses.map(e => e.id),
-        attachment_paths: selectedDocuments.map(d => d.url).filter(Boolean),
+        billable_expense_ids: selectedExpenseIdsArr,
+        attachment_paths: selectedDocUrlsArr,
         currency: currency || "GBP",
         client_snapshot: {
           name: roClient.name || null,
@@ -644,7 +652,6 @@ export default function InvoiceWizard() {
           phone: roClient.phone || null,
           address: roClient.address || null
         },
-        // CIS info passed to the function (server may choose to use/ignore)
         cis: {
           enabled: totals.cis.enabled,
           rate_percent: totals.cis.rate,
@@ -654,6 +661,7 @@ export default function InvoiceWizard() {
         },
         travel_charge: Number(travelCharge || 0),
         distance_miles_one_way: Number(distanceMiles || 0),
+        template_code: templateCode || null
       };
 
       const { data, error } = await supabase.functions.invoke("create_invoice", { body: payload });
@@ -662,20 +670,15 @@ export default function InvoiceWizard() {
 
       const createdInvoiceId = String(data.invoice_id || "");
       let readyUrl = data.pdf_signed_url || "";
-
       if (!readyUrl && data.pdf_path) {
         try {
-          const { data: sig } = await supabase
-            .storage.from(data.bucket || "secured")
-            .createSignedUrl(data.pdf_path, 600);
+          const { data: sig } = await supabase.storage.from(data.bucket || "secured").createSignedUrl(data.pdf_path, 600);
           readyUrl = sig?.signedUrl || "";
         } catch {}
       }
-
-      let ok = false;
-      for (let i = 0; i < 12; i++) {
-        if (readyUrl && await probeUrl(readyUrl)) { ok = true; break; }
-        await sleep(300);
+      for (let i = 0; i < 10; i++) {
+        if (readyUrl && await probeUrl(readyUrl)) break;
+        await sleep(250);
       }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -683,7 +686,9 @@ export default function InvoiceWizard() {
     } catch (e) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("Error", String(e?.message || e));
-    } finally { setSubmitting(false); }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const actionsDisabled = submitting || loadingDefaults || loadingExpenses || loadingDocs;
@@ -696,8 +701,9 @@ export default function InvoiceWizard() {
     address: job.client_address || fallbackClient.address || ""
   } : fallbackClient;
 
-  const { width, height } = Dimensions.get("window");
+  const { width } = Dimensions.get("window");
 
+  /* ---------------- UI Render ---------------- */
   return (
     <View style={{ flex: 1, backgroundColor: BG }}>
       <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
@@ -730,7 +736,7 @@ export default function InvoiceWizard() {
             <Text style={styles.stepCounter}>Step {step} of {TOTAL_STEPS}</Text>
           </View>
           <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: ((step / TOTAL_STEPS) * 100) + '%' }]} />
+            <View style={[styles.progressFill, { width: (step / TOTAL_STEPS) * 100 + "%" }]} />
           </View>
         </View>
 
@@ -761,7 +767,7 @@ export default function InvoiceWizard() {
                   <Input keyboardType="decimal-pad" value={hourlyRate} onChangeText={() => {}} editable={false} style={{ opacity: 0.7 }} placeholder="Set in Settings → Business Profile" />
                   <Text style={styles.hint}>This rate is pulled from your profile.</Text>
                 </View>
-                
+
                 <View style={styles.card}>
                   <View style={styles.cardHeader}>
                     <Text style={styles.cardTitle}>Travel & Distance</Text>
@@ -817,7 +823,7 @@ export default function InvoiceWizard() {
                   const displayTotal = deriveExpenseTotal(ex);
                   return (
                     <View key={ex.id} style={styles.rowLine}>
-                      <Checkbox checked={included} onPress={() => toggleExpense(ex.id)} />
+                      <Checkbox checked={included} onPress={() => setSelectedExpenseIds(prev => { const next = new Set(prev); next.has(ex.id) ? next.delete(ex.id) : next.add(ex.id); return next; })} />
                       <View style={{ flex: 1 }}>
                         <Text style={{ color: TEXT, fontWeight: "600" }}>
                           {ex.name || "Item"}{ex.qty ? " • " + ex.qty + (ex.unit ? " " + ex.unit : "") : ""}
@@ -855,7 +861,7 @@ export default function InvoiceWizard() {
                   const included = selectedDocIds.has(d.id);
                   return (
                     <View key={d.id} style={styles.rowLine}>
-                      <Checkbox checked={included} onPress={() => toggleDoc(d.id)} />
+                      <Checkbox checked={included} onPress={() => setSelectedDocIds(prev => { const next = new Set(prev); next.has(d.id) ? next.delete(d.id) : next.add(d.id); return next; })} />
                       <View style={{ flex: 1 }}>
                         <Text style={{ color: TEXT, fontWeight: "600" }}>
                           {d.name || "(unnamed)"} • {d.kind || "other"}
@@ -936,7 +942,7 @@ export default function InvoiceWizard() {
               </View>
             )}
 
-            {/* Step 6: Terms (+ CIS controls) */}
+            {/* Step 6: Terms (+ CIS) */}
             {step === 6 && (
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -956,7 +962,7 @@ export default function InvoiceWizard() {
                 <Label>Note / Terms</Label>
                 <Input multiline numberOfLines={4} value={note} onChangeText={setNote} placeholder="Any terms or notes…" style={{ minHeight: 100, textAlignVertical: "top" }} />
 
-                {/* CIS Section */}
+                {/* CIS */}
                 {cisProfileEnabled ? (
                   <View style={[styles.card, { marginTop: 12, marginBottom: 0 }]}>
                     <View style={styles.cardHeader}>
@@ -990,8 +996,26 @@ export default function InvoiceWizard() {
               </View>
             )}
 
-            {/* Step 7: Review */}
+            {/* Step 7: Template */}
             {step === 7 && (
+              <View style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <Text style={styles.cardTitle}>Template</Text>
+                  <InfoButton title="Template" tips={[
+                    "Choose how your invoice PDF will look.",
+                    "Preview updates automatically below.",
+                    "This uses the same templates as Quotes and Deposit Invoices."
+                  ]} />
+                </View>
+                <TemplatePicker
+                  selected={templateCode}
+                  onSelect={setTemplateCode}
+                />
+              </View>
+            )}
+
+            {/* Step 8: Review */}
+            {step === 8 && (
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
                   <Text style={styles.cardTitle}>Review</Text>
@@ -1084,7 +1108,7 @@ export default function InvoiceWizard() {
           >
             <Text style={[styles.actionBtnText, { color: TEXT }]}>Back</Text>
           </TouchableOpacity>
-          
+
           {step < TOTAL_STEPS && (
             <TouchableOpacity
               style={[styles.primaryActionBtn, { opacity: actionsDisabled ? 0.5 : 1 }]}
@@ -1094,7 +1118,7 @@ export default function InvoiceWizard() {
               <Text style={[styles.actionBtnText, { color: "#ffffff" }]}>Next</Text>
             </TouchableOpacity>
           )}
-          
+
           {step === TOTAL_STEPS && (
             <TouchableOpacity
               style={[styles.primaryActionBtn, { opacity: actionsDisabled || totals.total <= 0 ? 0.5 : 1 }]}
@@ -1109,78 +1133,78 @@ export default function InvoiceWizard() {
         </View>
       </View>
 
-      <View style={{ height: insets.bottom, backgroundColor: '#ffffff' }} />
+      <View style={{ height: insets.bottom, backgroundColor: "#ffffff" }} />
 
       {/* Expense Editor */}
       <CenteredEditor visible={expModalOpen} onClose={() => setExpModalOpen(false)}>
         <Text style={{ color: TEXT, fontWeight: "800", fontSize: 16, marginBottom: 16 }}>
           {expEditingId ? "Edit expense" : "Add expense"}
         </Text>
-        
+
         <Label>Name</Label>
-        <Input 
-          value={expDraft.name} 
-          onChangeText={(t) => setExpDraft(s => ({...s, name: t}))} 
-          placeholder="Item" 
+        <Input
+          value={expDraft.name}
+          onChangeText={(t) => setExpDraft(s => ({ ...s, name: t }))}
+          placeholder="Item"
         />
-        
+
         <View style={{ flexDirection: "row", gap: 8 }}>
           <View style={{ flex: 1 }}>
             <Label>Qty</Label>
-            <Input 
-              keyboardType="decimal-pad" 
-              value={expDraft.qty} 
-              onChangeText={(t) => setExpDraft(s => ({...s, qty: t}))} 
-              placeholder="e.g. 5" 
+            <Input
+              keyboardType="decimal-pad"
+              value={expDraft.qty}
+              onChangeText={(t) => setExpDraft(s => ({ ...s, qty: t }))}
+              placeholder="e.g. 5"
             />
           </View>
           <View style={{ flex: 1 }}>
             <Label>Unit</Label>
-            <Input 
-              value={expDraft.unit} 
-              onChangeText={(t) => setExpDraft(s => ({...s, unit: t}))} 
-              placeholder="hrs / pcs / m" 
+            <Input
+              value={expDraft.unit}
+              onChangeText={(t) => setExpDraft(s => ({ ...s, unit: t }))}
+              placeholder="hrs / pcs / m"
             />
           </View>
         </View>
-        
+
         <View style={{ flexDirection: "row", gap: 8 }}>
           <View style={{ flex: 1 }}>
             <Label>Unit cost</Label>
-            <Input 
-              keyboardType="decimal-pad" 
-              value={expDraft.unit_cost} 
-              onChangeText={(t) => setExpDraft(s => ({...s, unit_cost: t}))} 
-              placeholder="e.g. 25" 
+            <Input
+              keyboardType="decimal-pad"
+              value={expDraft.unit_cost}
+              onChangeText={(t) => setExpDraft(s => ({ ...s, unit_cost: t }))}
+              placeholder="e.g. 25"
             />
           </View>
           <View style={{ flex: 1 }}>
             <Label>Total</Label>
-            <Input 
-              keyboardType="decimal-pad" 
-              value={expDraft.total} 
-              onChangeText={(t) => setExpDraft(s => ({...s, total: t}))} 
-              placeholder="auto if blank" 
+            <Input
+              keyboardType="decimal-pad"
+              value={expDraft.total}
+              onChangeText={(t) => setExpDraft(s => ({ ...s, total: t }))}
+              placeholder="auto if blank"
             />
           </View>
         </View>
-        
+
         <Label>Date (YYYY-MM-DD)</Label>
-        <Input 
-          value={expDraft.date} 
-          onChangeText={(t) => setExpDraft(s => ({...s, date: t}))} 
-          placeholder={todayISO()} 
+        <Input
+          value={expDraft.date}
+          onChangeText={(t) => setExpDraft(s => ({ ...s, date: t }))}
+          placeholder={todayISO()}
         />
-        
+
         <Label>Notes</Label>
-        <Input 
-          value={expDraft.notes} 
-          onChangeText={(t) => setExpDraft(s => ({...s, notes: t}))} 
-          placeholder="Optional" 
-          multiline 
+        <Input
+          value={expDraft.notes}
+          onChangeText={(t) => setExpDraft(s => ({ ...s, notes: t }))}
+          placeholder="Optional"
+          multiline
           style={{ minHeight: 80, textAlignVertical: "top" }}
         />
-        
+
         <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
           <Btn variant="secondary" onPress={() => setExpModalOpen(false)}>Cancel</Btn>
           <Btn onPress={saveExpense} variant="primary" disabled={savingExpense}>
@@ -1194,50 +1218,50 @@ export default function InvoiceWizard() {
         <Text style={{ color: TEXT, fontWeight: "800", fontSize: 16, marginBottom: 16 }}>
           {docEditingId ? "Edit document" : "Add document"}
         </Text>
-        
+
         <Label>Name</Label>
-        <Input 
-          value={docDraft.name} 
-          onChangeText={(t) => setDocDraft(s => ({...s, name: t}))} 
-          placeholder="e.g. Receipt / Photo / Quote PDF" 
+        <Input
+          value={docDraft.name}
+          onChangeText={(t) => setDocDraft(s => ({ ...s, name: t }))}
+          placeholder="e.g. Receipt / Photo / Quote PDF"
         />
-        
+
         <Label>Kind</Label>
-        <Input 
-          value={docDraft.kind} 
-          onChangeText={(t) => setDocDraft(s => ({...s, kind: t}))} 
-          placeholder="quote | photo | receipt | other | quote_pdf" 
+        <Input
+          value={docDraft.kind}
+          onChangeText={(t) => setDocDraft(s => ({ ...s, kind: t }))}
+          placeholder="quote | photo | receipt | other | quote_pdf"
         />
-        
+
         <Label>URL</Label>
-        <Input 
-          value={docDraft.url} 
-          onChangeText={(t) => setDocDraft(s => ({...s, url: t}))} 
-          placeholder="https://…" 
-          autoCapitalize="none" 
+        <Input
+          value={docDraft.url}
+          onChangeText={(t) => setDocDraft(s => ({ ...s, url: t }))}
+          placeholder="https://…"
+          autoCapitalize="none"
         />
-        
+
         <View style={{ flexDirection: "row", gap: 8 }}>
           <View style={{ flex: 1 }}>
             <Label>MIME</Label>
-            <Input 
-              value={docDraft.mime} 
-              onChangeText={(t) => setDocDraft(s => ({...s, mime: t}))} 
-              placeholder="application/pdf" 
-              autoCapitalize="none" 
+            <Input
+              value={docDraft.mime}
+              onChangeText={(t) => setDocDraft(s => ({ ...s, mime: t }))}
+              placeholder="application/pdf"
+              autoCapitalize="none"
             />
           </View>
           <View style={{ flex: 1 }}>
             <Label>Size (bytes)</Label>
-            <Input 
-              keyboardType="decimal-pad" 
-              value={docDraft.size} 
-              onChangeText={(t) => setDocDraft(s => ({...s, size: t}))} 
-              placeholder="optional" 
+            <Input
+              keyboardType="decimal-pad"
+              value={docDraft.size}
+              onChangeText={(t) => setDocDraft(s => ({ ...s, size: t }))}
+              placeholder="optional"
             />
           </View>
         </View>
-        
+
         <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
           <Btn variant="secondary" onPress={() => setDocModalOpen(false)}>Cancel</Btn>
           <Btn onPress={saveDoc} variant="primary" disabled={savingDoc}>
@@ -1303,7 +1327,7 @@ function Checkbox({ checked, onPress }) {
   );
 }
 
-// Simple switch-like control (native Switch isn’t imported here)
+// Simple switch-like control
 function SwitchLike({ checked, onChange }) {
   return (
     <TouchableOpacity
@@ -1358,7 +1382,7 @@ function CenteredEditor({ visible, onClose, children }) {
       presentationStyle="overFullScreen"
       onRequestClose={onClose}
     >
-      <View style={{ position: "absolute", inset: 0, backgroundColor: 'rgba(0,0,0,0.5)' }} />
+      <View style={{ position: "absolute", inset: 0, backgroundColor: "rgba(0,0,0,0.5)" }} />
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 12 }}>
         <View style={[styles.modalCard, { width: Math.min(width - 32, 560) }]}>
           <View style={{ flexDirection: "row", justifyContent: "flex-end", marginBottom: 8 }}>
@@ -1451,7 +1475,7 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     marginBottom: 16,
     ...Platform.select({
-      ios: { shadowColor: '#0b1220', shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 4 } },
+      ios: { shadowColor: "#0b1220", shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 4 } },
       android: { elevation: 3 },
     }),
   },
@@ -1467,7 +1491,7 @@ const styles = StyleSheet.create({
 
   btn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: "center" },
   btnText: { fontWeight: "800" },
-  smallBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: '#f3f4f6' },
+  smallBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: "#f3f4f6" },
   smallBtnText: { color: TEXT, fontWeight: "700", fontSize: 12 },
 
   checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, alignItems: "center", justifyContent: "center" },
@@ -1491,36 +1515,59 @@ const styles = StyleSheet.create({
 
   totalsCard: {
     backgroundColor: CARD, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: BORDER, marginBottom: 16,
-    ...Platform.select({ ios: { shadowColor: '#0b1220', shadowOpacity: 0.08, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } }, android: { elevation: 4 } }),
+    ...Platform.select({ ios: { shadowColor: "#0b1220", shadowOpacity: 0.08, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } }, android: { elevation: 4 } }),
   },
   totalsRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 6 },
   totalsLabel: { color: MUTED, fontWeight: "600" },
   totalsValue: { color: TEXT, fontWeight: "600" },
 
   calcRow: {
-    backgroundColor: '#eef2f7', borderWidth: 1, borderColor: BORDER, paddingVertical: 12, paddingHorizontal: 14,
-    borderRadius: 10, marginBottom: 12, alignItems: 'center', justifyContent: 'center'
+    backgroundColor: "#eef2f7", borderWidth: 1, borderColor: BORDER, paddingVertical: 12, paddingHorizontal: 14,
+    borderRadius: 10, marginBottom: 12, alignItems: "center", justifyContent: "center"
   },
-  calcValue: { color: TEXT, fontWeight: '900' },
+  calcValue: { color: TEXT, fontWeight: "900" },
 
   actionBarContainer: {
-    backgroundColor: CARD, borderTopWidth: 1, borderTopColor: BORDER,
-    ...Platform.select({ ios: { shadowColor: "#0b1220", shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -4 } }, android: { elevation: 8 } }),
+    backgroundColor: CARD,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+    paddingHorizontal: 16,
+    paddingTop: 10
   },
-  actionBarContent: { paddingHorizontal: 16, paddingVertical: 12, flexDirection: "row", gap: 12, justifyContent: "center", alignItems: "center" },
+  actionBarContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
   primaryActionBtn: {
-    backgroundColor: BRAND, borderColor: BRAND, paddingVertical: 14, paddingHorizontal: 32,
-    borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center", flex: 1,
+    flex: 1,
+    backgroundColor: BRAND,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center"
   },
   secondaryActionBtn: {
-    backgroundColor: "#f8fafc", borderColor: BORDER, paddingVertical: 14, paddingHorizontal: 32,
-    borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center", flex: 1,
+    flex: 1,
+    backgroundColor: "#f3f4f6",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center"
   },
-
-  infoBtn: { padding: 6, borderRadius: 8 },
-
+  infoBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f3f4f6"
+  },
   modalCard: {
-    backgroundColor: CARD, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: BORDER,
-    ...Platform.select({ ios: { shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 16, shadowOffset: { width: 0, height: 6 } }, android: { elevation: 14 } }),
-  },
+    backgroundColor: CARD,
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: BORDER
+  }
 });
