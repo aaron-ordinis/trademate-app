@@ -28,6 +28,7 @@ import {
   Search,
   Eye,
   PoundSterling,
+  Bell, // <-- add this import
 } from "lucide-react-native";
 import { jobHref, jobCreateHref } from "../../../../lib/nav";
 import SharedCalendar from "../../../../components/SharedCalendar.js";
@@ -274,37 +275,40 @@ export default function JobsIndex() {
     });
   }, [jobs, query]);
 
-  if (!dataLoaded) {
-    return (
-      <View style={st.screen}>
-        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-        <SafeAreaView edges={["top"]} style={st.headerSafe}>
-          <View style={st.header}>
-            <Text style={st.headerTitle}>Jobs</Text>
-            <View style={st.headerRight}>
-              <View style={[st.iconBtn, { backgroundColor: "#f3f4f6" }]} />
-              <View style={[st.iconBtn, { backgroundColor: "#f3f4f6" }]} />
-              <View style={[st.iconBtn, { backgroundColor: "#f3f4f6" }]} />
-            </View>
-          </View>
-        </SafeAreaView>
-        <View style={st.searchRow}>
-          <View style={{ width: 18, height: 18, backgroundColor: "#f3f4f6", borderRadius: 9 }} />
-          <View style={{ flex: 1, height: 18, backgroundColor: "#f3f4f6", borderRadius: 4, marginLeft: 8 }} />
-        </View>
-      </View>
-    );
-  }
+  // Unread notifications state
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Helper to fetch unread count
+  const fetchUnread = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { count } = await supabase
+        .from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .eq("read", false);
+      setUnreadCount(count || 0);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchUnread();
+    const interval = setInterval(() => { if (mounted) fetchUnread(); }, 30000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, [fetchUnread]);
+
+  // Refresh unread count when returning to this screen
+  useFocusEffect(
+    useCallback(() => {
+      fetchUnread();
+    }, [fetchUnread])
+  );
 
   const right = (
     <View style={{ flexDirection: "row", gap: 8 }}>
-      <TouchableOpacity
-        style={st.iconBtn}
-        onPress={onRefresh}
-        activeOpacity={0.9}
-      >
-        <RefreshCcw size={18} color={MUTED} />
-      </TouchableOpacity>
+      {/* Calendar/List toggle button - now far left */}
       <TouchableOpacity
         style={st.iconBtn}
         onPress={() => {
@@ -319,6 +323,28 @@ export default function JobsIndex() {
         ) : (
           <ListIcon size={18} color={MUTED} />
         )}
+      </TouchableOpacity>
+      {/* Bell button with unread badge */}
+      <TouchableOpacity
+        style={st.iconBtn}
+        onPress={() => {
+          router.push("/(app)/notifications");
+        }}
+        activeOpacity={0.9}
+      >
+        <Bell size={18} color={MUTED} />
+        {unreadCount > 0 && (
+          <View style={st.bellBadge}>
+            <Text style={st.bellBadgeText}>{unreadCount > 9 ? "9+" : unreadCount}</Text>
+          </View>
+        )}
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={st.iconBtn}
+        onPress={onRefresh}
+        activeOpacity={0.9}
+      >
+        <RefreshCcw size={18} color={MUTED} />
       </TouchableOpacity>
       <TouchableOpacity
         style={st.iconBtn}
@@ -571,4 +597,25 @@ const st = StyleSheet.create({
   actionBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
   actionBtnSecondary: { backgroundColor: "#f8fafc", borderColor: BORDER },
   actionBtnText: { fontSize: 15, fontWeight: "900", color: TEXT },
-});  
+  bellBadge: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#2a86ff",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+    zIndex: 10,
+    // Add a border for better visibility if needed:
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  bellBadgeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "bold",
+  },
+});

@@ -31,6 +31,7 @@ import {
   Minus,
   Plus as PlusIcon,
   RefreshCcw,
+  Bell, // <-- add this import
 } from "lucide-react-native";
 
 import SharedCalendar from "../../../components/SharedCalendar";
@@ -168,6 +169,9 @@ export default function QuoteList() {
     log("assistant.close", { screen: "quotes" });
   };
 
+  // Unread notifications state
+  const [unreadCount, setUnreadCount] = useState(0);
+
   /* Data */
   const loadQuotes = useCallback(async () => {
     try {
@@ -229,6 +233,25 @@ export default function QuoteList() {
     };
     loadAllData();
   }, [loadQuotes, loadJobs, userId, query]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function fetchUnread() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { count } = await supabase
+          .from("notifications")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .eq("read", false);
+        if (mounted) setUnreadCount(count || 0);
+      } catch {}
+    }
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
 
   /* ---------- toggle expansion ---------- */
   const toggleExpansion = (quoteId) => {
@@ -476,6 +499,21 @@ export default function QuoteList() {
         <View style={styles.header}>
           <Text style={styles.headerTitle}>Quotes</Text>
           <View style={styles.headerRight}>
+            {/* Bell button with unread badge */}
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={() => {
+                router.push("/(app)/notifications");
+              }}
+              activeOpacity={0.9}
+            >
+              <Bell size={18} color={MUTED} />
+              {unreadCount > 0 && (
+                <View style={styles.bellBadge}>
+                  <Text style={styles.bellBadgeText}>{unreadCount > 9 ? "9+" : unreadCount}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
             <TouchableOpacity
               style={styles.iconBtn}
               onPress={() => {
@@ -867,4 +905,25 @@ const styles = StyleSheet.create({
   actionBtnPrimary: { backgroundColor: BRAND, borderColor: BRAND },
   actionBtnSecondary: { backgroundColor: "#f8fafc", borderColor: BORDER },
   actionBtnText: { fontSize: 15, fontWeight: "900", color: TEXT },
+
+  bellBadge: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#2a86ff",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+    zIndex: 10,
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  bellBadgeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "bold",
+  },
 });

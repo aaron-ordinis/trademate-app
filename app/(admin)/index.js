@@ -17,6 +17,7 @@ import * as NavigationBar from "expo-navigation-bar";
 import * as SystemUI from "expo-system-ui";
 import { Feather } from "@expo/vector-icons";
 import { supabase } from '../../lib/supabase';
+import { Alert as RNAlert } from "react-native"; // alias to avoid name clash
 
 /* ---------- THEME ---------- */
 const CARD = "#ffffff";
@@ -248,6 +249,67 @@ export default function AdminDashboard() {
     return Array.isArray(inbox.cachedTickets) ? inbox.cachedTickets.length : (inbox.unread || 0);
   }, [inbox.cachedTickets, inbox.unread]);
 
+  // Send notification to all users
+  const sendNotificationToAll = async () => {
+    let title = "";
+    let body = "";
+    // Prompt for title
+    RNAlert.prompt?.("Notification Title", "Enter the notification title:", [
+      {
+        text: "Cancel",
+        style: "cancel",
+      },
+      {
+        text: "Next",
+        onPress: (inputTitle) => {
+          title = inputTitle || "";
+          if (!title.trim()) return;
+          // Prompt for body
+          RNAlert.prompt?.("Notification Body", "Enter the notification body:", [
+            {
+              text: "Cancel",
+              style: "cancel",
+            },
+            {
+              text: "Send",
+              onPress: async (inputBody) => {
+                body = inputBody || "";
+                try {
+                  // Fetch all user ids
+                  const { data: users, error } = await supabase
+                    .from("profiles")
+                    .select("id");
+                  if (error) throw error;
+                  if (!users || users.length === 0) {
+                    RNAlert.alert("No users found");
+                    return;
+                  }
+                  // Insert notifications in batches (avoid exceeding row limit)
+                  const batchSize = 1000;
+                  for (let i = 0; i < users.length; i += batchSize) {
+                    const batch = users.slice(i, i + batchSize);
+                    const rows = batch.map((u) => ({
+                      user_id: u.id,
+                      title,
+                      body,
+                    }));
+                    const { error: insError } = await supabase
+                      .from("notifications")
+                      .insert(rows);
+                    if (insError) throw insError;
+                  }
+                  RNAlert.alert("Success", "Notification sent to all users.");
+                } catch (e) {
+                  RNAlert.alert("Error", e.message || "Failed to send notification.");
+                }
+              },
+            },
+          ], "plain-text");
+        },
+      },
+    ], "plain-text");
+  };
+
   return (
     <View style={styles.screen}>
       <View style={{ height: insets.top, backgroundColor: CARD }} />
@@ -301,6 +363,13 @@ export default function AdminDashboard() {
                 })
               }
               hot={inboxHot}
+            />
+            {/* Add new quick action for sending notifications */}
+            <QuickActionButton
+              icon="send"
+              title="Send Notification"
+              subtitle="Push to all users"
+              onPress={() => router.push('/(admin)/notifications-create')}
             />
           </View>
         </View>
