@@ -25,9 +25,32 @@ export default function NotificationsScreen() {
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
 
-  // Add a computed value for unread notifications
-  const hasUnread = notifications.some((n) => !n.read);
+  // Fetch unread count from notifications table and update on interval
+  useEffect(() => {
+    let mounted = true;
+    async function fetchUnread() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          if (mounted) setUnreadCount(0);
+          return;
+        }
+        const { count } = await supabase
+          .from("notifications")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .eq("read", false);
+        if (mounted) setUnreadCount(count || 0);
+      } catch {
+        if (mounted) setUnreadCount(0);
+      }
+    }
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
 
   const loadNotifications = useCallback(async () => {
     setLoading(true);
@@ -68,6 +91,11 @@ export default function NotificationsScreen() {
     loadNotifications().then(markAllAsRead);
   }, [loadNotifications]);
 
+  // Update unreadCount whenever notifications change
+  useEffect(() => {
+    setUnreadCount(notifications.filter((n) => !n.read).length);
+  }, [notifications]);
+
   const onRefresh = () => {
     setRefreshing(true);
     loadNotifications();
@@ -78,6 +106,16 @@ export default function NotificationsScreen() {
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, read: true } : n))
     );
+    // Refresh unread count from DB
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const { count } = await supabase
+        .from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .eq("read", false);
+      setUnreadCount(count || 0);
+    }
   };
 
   const markAsUnread = async (id) => {
@@ -85,6 +123,16 @@ export default function NotificationsScreen() {
       prev.map((n) => (n.id === id ? { ...n, read: false } : n))
     );
     await supabase.from("notifications").update({ read: false }).eq("id", id);
+    // Refresh unread count from DB
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const { count } = await supabase
+        .from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .eq("read", false);
+      setUnreadCount(count || 0);
+    }
   };
 
   const renderItem = ({ item }) => (
@@ -129,7 +177,7 @@ export default function NotificationsScreen() {
           <TouchableOpacity onPress={loadNotifications} style={{ padding: 4 }}>
             <View>
               <Bell size={20} color={MUTED} />
-              {hasUnread && (
+              {unreadCount > 0 && (
                 <View style={styles.bellDot} />
               )}
             </View>

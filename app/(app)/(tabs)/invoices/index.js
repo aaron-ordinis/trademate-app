@@ -5,7 +5,7 @@ import {
   TouchableOpacity, Alert, TextInput, Pressable, StatusBar
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Settings, Trash2, CalendarDays, MapPin, Search, RefreshCcw } from "lucide-react-native";
+import { Settings, Trash2, CalendarDays, MapPin, Search, RefreshCcw, Bell } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import { supabase } from "../../../../lib/supabase";
 import { settingsHref } from "../../../../lib/nav";
@@ -52,6 +52,32 @@ export default function InvoicesHome() {
   const [premiumStatus, setPremiumStatus] = useState({ isPremium: false, status: "no_profile" });
   const [showPaywall, setShowPaywall] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Fetch unread count from notifications table and update on interval
+  useEffect(() => {
+    let mounted = true;
+    async function fetchUnread() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          if (mounted) setUnreadCount(0);
+          return;
+        }
+        const { count } = await supabase
+          .from("notifications")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .eq("read", false);
+        if (mounted) setUnreadCount(count || 0);
+      } catch {
+        if (mounted) setUnreadCount(0);
+      }
+    }
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
 
   /* --- AI assistant state --- */
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -247,6 +273,21 @@ export default function InvoicesHome() {
 
   const right = (
     <View style={{ flexDirection: "row", gap: 8 }}>
+      {/* Bell button with unread badge */}
+      <TouchableOpacity
+        style={styles.iconBtn}
+        onPress={() => {
+          router.push("/(app)/notifications");
+        }}
+        activeOpacity={0.9}
+      >
+        <Bell size={18} color={MUTED} />
+        {unreadCount > 0 && (
+          <View style={styles.bellBadge}>
+            <Text style={styles.bellBadgeText}>{unreadCount > 9 ? "9+" : unreadCount}</Text>
+          </View>
+        )}
+      </TouchableOpacity>
       <TouchableOpacity
         style={styles.iconBtn}
         onPress={load}
@@ -410,5 +451,25 @@ const styles = StyleSheet.create({
     right: 12, top: 12, height: 34, width: 34, borderRadius: 10,
     alignItems: "center", justifyContent: "center",
     backgroundColor: "#fee2e2", borderWidth: 1, borderColor: "#fecaca", zIndex: 5,
+  },
+  bellBadge: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#2a86ff",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+    zIndex: 10,
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  bellBadgeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "bold",
   },
 });

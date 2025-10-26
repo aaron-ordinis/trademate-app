@@ -172,6 +172,31 @@ export default function QuoteList() {
   // Unread notifications state
   const [unreadCount, setUnreadCount] = useState(0);
 
+  // Fetch unread count from notifications table and update on interval
+  useEffect(() => {
+    let mounted = true;
+    async function fetchUnread() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          if (mounted) setUnreadCount(0);
+          return;
+        }
+        const { count } = await supabase
+          .from("notifications")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .eq("read", false);
+        if (mounted) setUnreadCount(count || 0);
+      } catch {
+        if (mounted) setUnreadCount(0);
+      }
+    }
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
+
   /* Data */
   const loadQuotes = useCallback(async () => {
     try {
@@ -233,25 +258,6 @@ export default function QuoteList() {
     };
     loadAllData();
   }, [loadQuotes, loadJobs, userId, query]);
-
-  useEffect(() => {
-    let mounted = true;
-    async function fetchUnread() {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
-        const { count } = await supabase
-          .from("notifications")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", user.id)
-          .eq("read", false);
-        if (mounted) setUnreadCount(count || 0);
-      } catch {}
-    }
-    fetchUnread();
-    const interval = setInterval(fetchUnread, 30000);
-    return () => { mounted = false; clearInterval(interval); };
-  }, []);
 
   /* ---------- toggle expansion ---------- */
   const toggleExpansion = (quoteId) => {
