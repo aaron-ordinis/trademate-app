@@ -143,9 +143,13 @@ export default function SupportTicketScreen() {
     if (!body || sending) return;
     setSending(true);
     try {
-      const { data: auth } = await supabase.auth.getUser();
+      const { data: auth, error: authError } = await supabase.auth.getUser();
       const user = auth?.user;
-      if (!user) return;
+      if (!user) {
+        Alert.alert("Error", "No authenticated user found.");
+        setSending(false);
+        return;
+      }
 
       // optimistic append
       const tempId = "temp-" + Date.now();
@@ -177,7 +181,9 @@ export default function SupportTicketScreen() {
 
       if (error) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
-        throw error;
+        Alert.alert("Send failed", error.message || "Could not send message");
+        console.warn("[support] sendMessage error", error);
+        return;
       }
 
       setMessages((m) => m.filter((x) => x.id !== tempId).concat([data]));
@@ -202,6 +208,7 @@ export default function SupportTicketScreen() {
           },
         ])
       );
+      Alert.alert("Send failed", e?.message || "Could not send message");
     } finally {
       setSending(false);
     }
@@ -241,16 +248,41 @@ export default function SupportTicketScreen() {
   const renderItem = ({ item }) => {
     const mine = item.sender_role === "admin";
     const isSystem = item.sender_role === "system";
+    // Sent (admin): right, blue. Received (user): left, grey.
+    const alignStyle = isSystem
+      ? { justifyContent: "center" }
+      : mine
+      ? { justifyContent: "flex-end" }
+      : { justifyContent: "flex-start" };
+    const bubbleStyle = isSystem
+      ? st.bubbleSystem
+      : mine
+      ? st.bubbleMine
+      : st.bubbleThem;
+    const selfAlign = isSystem
+      ? { alignSelf: "center" }
+      : mine
+      ? { alignSelf: "flex-end" }
+      : { alignSelf: "flex-start" };
     return (
-      <View style={[st.msgRow, mine ? st.msgMine : st.msgThem]}>
-        <View
-          style={[
-            st.bubble,
-            isSystem ? st.bubbleSystem : mine ? st.bubbleMine : st.bubbleThem,
-          ]}
-        >
-          <Text style={[st.msgText, mine && { color: "#fff" }]}>{item.body}</Text>
-          <Text style={[st.meta, mine && { color: "#fff" }]}>
+      <View style={[st.msgRow, alignStyle]}>
+        <View style={[st.bubble, bubbleStyle, selfAlign]}>
+          <Text
+            style={[
+              st.msgText,
+              mine && { color: "#fff" },
+              isSystem && { color: "#b45309" },
+            ]}
+          >
+            {item.body}
+          </Text>
+          <Text
+            style={[
+              st.meta,
+              mine && { color: "#fff" },
+              isSystem && { color: "#b45309" },
+            ]}
+          >
             {timeShort(item.created_at)}
           </Text>
         </View>
@@ -452,8 +484,12 @@ const st = StyleSheet.create({
   emptySubtitle: { color: MUTED, fontSize: 14, textAlign: "center", lineHeight: 20 },
 
   msgRow: { flexDirection: "row", marginHorizontal: 10 },
-  msgMine: { justifyContent: "flex-end" },
-  msgThem: { justifyContent: "flex-start" },
+  // Sent (admin): right, blue
+  bubbleMine: { backgroundColor: BRAND, borderColor: BRAND },
+  // Received (user): left, grey
+  bubbleThem: { backgroundColor: "#f3f4f6", borderColor: BORDER },
+  // System: center, orange
+  bubbleSystem: { backgroundColor: "#fff7ed", borderColor: "#fed7aa" },
   bubble: {
     maxWidth: "86%",
     paddingHorizontal: 12,
@@ -465,9 +501,6 @@ const st = StyleSheet.create({
       android: { elevation: 2 },
     }),
   },
-  bubbleMine: { backgroundColor: BRAND, borderColor: BRAND },
-  bubbleThem: { backgroundColor: CARD, borderColor: BORDER },
-  bubbleSystem: { backgroundColor: "#fff7ed", borderColor: "#fed7aa" },
   msgText: { color: TEXT, fontSize: 14, lineHeight: 20 },
   meta: { marginTop: 4, fontSize: 11, color: MUTED },
 

@@ -81,6 +81,10 @@ export default function CompanySettings() {
   const [email, setEmail] = useState(""); // Company contact email (editable here)
   const [phone, setPhone] = useState("");
 
+  const [hoursPerDay, setHoursPerDay] = useState("");
+  const [hourlyRate, setHourlyRate] = useState("");
+  const [travelRatePerMile, setTravelRatePerMile] = useState("");
+
   const [saving, setSaving] = useState(false);
 
   /* ---------- system chrome (white header to status bar) ---------- */
@@ -110,7 +114,8 @@ export default function CompanySettings() {
           business_name, company_name, company_reg_no,
           vat_registered, vat_number,
           address_line1, city, postcode,
-          email, phone
+          email, phone,
+          hours_per_day, hourly_rate, travel_rate_per_mile
         `
         )
         .eq("id", user.id)
@@ -132,6 +137,11 @@ export default function CompanySettings() {
       // prefer profile.email to auth email for company contact
       setEmail(prof?.email || user.email || "");
       setPhone(prof?.phone || "");
+
+      // New fields
+      setHoursPerDay(prof?.hours_per_day != null ? String(prof.hours_per_day) : "");
+      setHourlyRate(prof?.hourly_rate != null ? String(prof.hourly_rate) : "");
+      setTravelRatePerMile(prof?.travel_rate_per_mile != null ? String(prof.travel_rate_per_mile) : "");
     } catch (e) {
       console.warn("[company] load", e?.message || e);
     }
@@ -154,6 +164,20 @@ export default function CompanySettings() {
       return;
     }
 
+    // Validate new fields (optional, basic)
+    if (hoursPerDay && isNaN(Number(hoursPerDay))) {
+      Alert.alert("Check hours per day", "Please enter a valid number for hours per day.");
+      return;
+    }
+    if (hourlyRate && isNaN(Number(hourlyRate))) {
+      Alert.alert("Check hourly rate", "Please enter a valid number for hourly rate.");
+      return;
+    }
+    if (travelRatePerMile && isNaN(Number(travelRatePerMile))) {
+      Alert.alert("Check mileage rate", "Please enter a valid number for mileage rate.");
+      return;
+    }
+
     try {
       setSaving(true);
 
@@ -169,6 +193,10 @@ export default function CompanySettings() {
         email: emailVal || null,
         phone: trim(phone) || null,
         updated_at: new Date().toISOString(),
+        // New fields
+        hours_per_day: hoursPerDay !== "" ? Number(hoursPerDay) : null,
+        hourly_rate: hourlyRate !== "" ? Number(hourlyRate) : null,
+        travel_rate_per_mile: travelRatePerMile !== "" ? Number(travelRatePerMile) : null,
       };
 
       const { error } = await supabase.from("profiles").update(updates).eq("id", uid);
@@ -192,6 +220,9 @@ export default function CompanySettings() {
     postcode,
     email,
     phone,
+    hoursPerDay,
+    hourlyRate,
+    travelRatePerMile,
   ]);
 
   return (
@@ -361,6 +392,9 @@ export default function CompanySettings() {
               style={styles.input}
               autoCapitalize="characters"
             />
+            <Text style={styles.helpText}>
+              Your business postcode (for invoices and quotes).
+            </Text>
           </View>
         </View>
 
@@ -407,6 +441,67 @@ export default function CompanySettings() {
             />
             <Text style={styles.helpText}>
               Business phone number for customer enquiries.
+            </Text>
+          </View>
+        </View>
+
+        {/* Work & Rates */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Work & Rates</Text>
+            <InfoButton
+              title="Work & Rates"
+              tips={[
+                "Set your standard working hours per day for job calculations.",
+                "Hourly rate is used for labour cost calculations and quotes.",
+                "Mileage rate is used for travel cost calculations (per mile).",
+                "These values can be used in your quotes and invoices.",
+              ]}
+            />
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>Hours per Day</Text>
+            <TextInput
+              value={hoursPerDay}
+              onChangeText={setHoursPerDay}
+              placeholder="e.g. 8"
+              placeholderTextColor={MUTED}
+              style={styles.input}
+              keyboardType="numeric"
+            />
+            <Text style={styles.helpText}>
+              Typical number of hours you work per day.
+            </Text>
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>Hourly Rate (£)</Text>
+            <TextInput
+              value={hourlyRate}
+              onChangeText={setHourlyRate}
+              placeholder="e.g. 35"
+              placeholderTextColor={MUTED}
+              style={styles.input}
+              keyboardType="numeric"
+            />
+            <Text style={styles.helpText}>
+              Your standard labour charge per hour (before VAT).
+            </Text>
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>Mileage Rate (£ per mile)</Text>
+            <TextInput
+              value={travelRatePerMile}
+              onChangeText={setTravelRatePerMile}
+              placeholder="e.g. 0.45"
+              placeholderTextColor={MUTED}
+              style={styles.input}
+              keyboardType="numeric"
+            />
+            <Text style={styles.helpText}>
+              Your charge per mile for travel (used in quotes/invoices).
             </Text>
           </View>
         </View>

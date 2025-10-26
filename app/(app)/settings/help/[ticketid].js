@@ -196,7 +196,10 @@ export default function TicketThread() {
     };
   }, [ticketId]);
 
-  const isMine = useCallback((m) => m.sender_id === userId || m.sender_role === "user", [userId]);
+  const isMine = useCallback(
+    (m) => m.sender_id === userId || m.sender_role === "user",
+    [userId]
+  );
 
   const sendMessage = useCallback(async () => {
     try {
@@ -283,14 +286,40 @@ export default function TicketThread() {
         .update({ status: "closed" })
         .eq("id", ticketId);
       if (error) throw error;
-      setTicket((prev) => ({ ...prev, status: "closed" }));
+      await load(); // <-- reload ticket and messages from server
       Alert.alert("Success", "This ticket has been closed.");
     } catch (e) {
       Alert.alert("Error", e?.message || "Could not close ticket");
     } finally {
       setClosing(false);
     }
-  }, [ticketId]);
+  }, [ticketId, load]);
+
+  const deleteTicket = useCallback(() => {
+    if (!ticket) return;
+    Alert.alert(
+      "Delete Ticket",
+      "Are you sure you want to permanently delete this ticket and all its messages? This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // Only delete the ticket; messages will be deleted via ON DELETE CASCADE
+              const { error } = await supabase.from("support_tickets").delete().eq("id", ticket.id);
+              if (error) throw error;
+              Alert.alert("Deleted", "Ticket deleted successfully.");
+              router.push("/(app)/settings/help");
+            } catch (e) {
+              Alert.alert("Error", e?.message || "Could not delete ticket");
+            }
+          },
+        },
+      ]
+    );
+  }, [ticket, router]);
 
   const openAttachment = async (att) => {
     try {
@@ -361,7 +390,8 @@ export default function TicketThread() {
           </Text>
           <View style={[styles.statusBadge, { backgroundColor: statusColor }]}>
             <Text style={styles.statusBadgeText}>
-              {(ticket.status || "open").toUpperCase()}
+              {(ticket.status || "open").toUpperCase()
+              }
             </Text>
           </View>
         </View>
@@ -378,6 +408,14 @@ export default function TicketThread() {
         ) : (
           <View style={{ width: 40 }} />
         )}
+        {/* Delete button always visible */}
+        <TouchableOpacity
+          onPress={deleteTicket}
+          style={styles.deleteBtn}
+          activeOpacity={0.7}
+        >
+          <Feather name="trash-2" size={18} color="#dc2626" />
+        </TouchableOpacity>
       </View>
 
       <View style={{ flex: 1 }}>
@@ -404,25 +442,44 @@ export default function TicketThread() {
           ) : (
             messages.map((m) => {
               const mine = isMine(m);
+              const isSystem = m.sender_role === "system";
+              // Sent (user): right, blue. Received (admin): left, grey.
+              const alignStyle = isSystem
+                ? { justifyContent: "center" }
+                : mine
+                ? { justifyContent: "flex-end" }
+                : { justifyContent: "flex-start" };
+              const bubbleStyle = isSystem
+                ? styles.messageBubbleSystem
+                : mine
+                ? styles.messageBubbleMine
+                : styles.messageBubbleOther;
+              const selfAlign = isSystem
+                ? { alignSelf: "center" }
+                : mine
+                ? { alignSelf: "flex-end" }
+                : { alignSelf: "flex-start" };
               return (
                 <View
                   key={m.id}
                   style={[
                     styles.messageRow,
-                    mine ? styles.messageRowMine : styles.messageRowOther,
+                    alignStyle,
                   ]}
                 >
                   <View
                     style={[
                       styles.messageBubble,
-                      mine ? styles.messageBubbleMine : styles.messageBubbleOther,
+                      bubbleStyle,
+                      selfAlign,
                     ]}
                   >
                     {!!m.body && m.body !== "(attachment)" && (
                       <Text
                         style={[
                           styles.messageText,
-                          mine ? styles.messageTextMine : styles.messageTextOther,
+                          mine && { color: "#fff" },
+                          isSystem && { color: "#b45309" },
                         ]}
                       >
                         {m.body}
@@ -469,6 +526,7 @@ export default function TicketThread() {
                       style={[
                         styles.messageTime,
                         mine ? styles.messageTimeMine : styles.messageTimeOther,
+                        isSystem && { color: "#b45309" },
                       ]}
                     >
                       {new Date(m.created_at).toLocaleString()}
@@ -603,6 +661,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 
+  deleteBtn: {
+    marginLeft: 8,
+    padding: 2,
+    borderRadius: 6,
+    backgroundColor: "#fee2e2",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 36,
+    height: 36,
+  },
+
   messagesContainer: { flex: 1 },
   messagesContent: { padding: 16 },
 
@@ -613,10 +682,13 @@ const styles = StyleSheet.create({
   },
   emptyText: { color: MUTED, fontSize: 14, textAlign: "center" },
 
-  messageRow: { marginBottom: 12 },
-  messageRowMine: { alignItems: "flex-end" },
-  messageRowOther: { alignItems: "flex-start" },
-
+  messageRow: { marginBottom: 12, flexDirection: "row" },
+  // Sent (user): right, blue
+  messageBubbleMine: { backgroundColor: BRAND, borderColor: BRAND },
+  // Received (admin): left, grey
+  messageBubbleOther: { backgroundColor: "#f3f4f6", borderColor: BORDER },
+  // System: center, orange
+  messageBubbleSystem: { backgroundColor: "#fff7ed", borderColor: "#fed7aa" },
   messageBubble: {
     maxWidth: "85%",
     borderRadius: 16,
@@ -624,19 +696,11 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderWidth: 1,
   },
-  messageBubbleMine: { backgroundColor: BRAND, borderColor: BRAND },
-  messageBubbleOther: { backgroundColor: "#f8fafc", borderColor: BORDER },
-
-  messageText: { fontSize: 14, lineHeight: 20 },
-  messageTextMine: { color: "#fff" },
-  messageTextOther: { color: TEXT },
-
+  messageText: { fontSize: 14, lineHeight: 20, color: TEXT },
   messageTime: { marginTop: 8, fontSize: 10 },
   messageTimeMine: { color: "#e6f0ff" },
   messageTimeOther: { color: MUTED },
-
   attachmentsContainer: { marginTop: 8, gap: 6 },
-
   attachmentBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -648,11 +712,9 @@ const styles = StyleSheet.create({
   },
   attachmentBtnMine: { backgroundColor: "rgba(255,255,255,0.15)" },
   attachmentBtnOther: { backgroundColor: BRAND + "10" },
-
   attachmentText: { fontSize: 12, fontWeight: "700", maxWidth: 180 },
   attachmentTextMine: { color: "#fff" },
   attachmentTextOther: { color: BRAND },
-
   composer: {
     backgroundColor: CARD,
     borderTopWidth: 1,

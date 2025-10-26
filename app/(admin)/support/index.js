@@ -166,7 +166,7 @@ export default function AdminSupportInbox() {
           .order('created_at', { ascending: false }),
         userIds.length > 0
           ? supabase.from('profiles')
-              .select('id, full_name, company_name, billing_email')
+              .select('id, full_name, company_name, billing_email, business_name, email')
               .in('id', userIds)
           : { data: [] }
       ]);
@@ -189,8 +189,8 @@ export default function AdminSupportInbox() {
           created_at: t.created_at,
           last_message_at: t.last_message_at || latest?.created_at || t.created_at,
           message: latest?.body || '',
-          user_email: prof.billing_email || '',
-          user_name: prof.full_name || prof.company_name || 'Unknown user',
+          user_email: prof.email || prof.billing_email || '',
+          user_business: prof.business_name || prof.company_name || '',
           isLoading: false
         };
       });
@@ -231,7 +231,11 @@ export default function AdminSupportInbox() {
       setDeletingId(ticketId);
       const prevTickets = tickets;
       setTickets(prev => prev.filter(t => t.id !== ticketId));
-      const { error } = await supabase.functions.invoke('delete_support_ticket', { body: { ticket_id: ticketId } });
+      // Remove edge function, use direct delete
+      const { error } = await supabase
+        .from('support_tickets')
+        .delete()
+        .eq('id', ticketId);
       if (error) { setTickets(prevTickets); throw error; }
     } catch (e) {
       console.warn('Failed to delete ticket:', e);
@@ -296,7 +300,7 @@ export default function AdminSupportInbox() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {/* New */}
-        {displayNewCount > 0 && (
+        {displayNewCount > 0 && newTickets.length > 0 && (
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <Text style={styles.cardTitle}>New Tickets ({displayNewCount})</Text>
@@ -435,14 +439,17 @@ function SkeletonTicketItem() {
 function TicketItem({ ticket, onPress, onDelete, isDeleting = false, dimmed = false }) {
   const statusColor = getStatusColor(ticket.status);
   const statusIcon = getStatusIcon(ticket.status);
-  const fromLine = ticket.user_name || ticket.user_email || 'Unknown user';
+  // Show business name then email in brackets
+  const fromLine = ticket.user_business
+    ? `${ticket.user_business}${ticket.user_email ? ` (${ticket.user_email})` : ""}`
+    : ticket.user_email || 'Unknown user';
   const preview = (ticket.message || '').trim();
 
   return (
     <View style={[styles.ticketItem, dimmed && styles.dimmedItem]}>
       <TouchableOpacity style={styles.ticketContent} onPress={onPress} activeOpacity={0.7} disabled={isDeleting}>
         <View style={styles.ticketIcon}>
-          <Feather name={statusIcon} size={18} color={statusColor} />
+          <Feather name={statusIcon} size={22} color={statusColor} />
         </View>
         <View style={styles.ticketInfo}>
           <Text style={[styles.ticketSubject, dimmed && styles.dimmedText]} numberOfLines={1}>
@@ -464,7 +471,7 @@ function TicketItem({ ticket, onPress, onDelete, isDeleting = false, dimmed = fa
       </TouchableOpacity>
 
       <TouchableOpacity style={[styles.deleteBtn, isDeleting && { opacity: 0.5 }]} onPress={onDelete} disabled={isDeleting} activeOpacity={0.7}>
-        <Feather name="trash-2" size={16} color={DANGER} />
+        <Feather name="trash-2" size={22} color={DANGER} />
       </TouchableOpacity>
     </View>
   );
@@ -496,7 +503,14 @@ const styles = StyleSheet.create({
   cardTitle: { color: TEXT, fontWeight: "900", fontSize: 16, marginBottom: 12 },
   ticketItem: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f8fafc", gap: 8 },
   dimmedItem: { opacity: 0.6 },
-  ticketIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#f8fafc", alignItems: "center", justifyContent: "center" },
+  ticketIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#f8fafc",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   ticketContent: { flex: 1, flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 },
   ticketInfo: { flex: 1 },
   ticketSubject: { color: TEXT, fontWeight: "700", fontSize: 14, marginBottom: 2 },
@@ -520,5 +534,14 @@ const styles = StyleSheet.create({
   modalHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
   smallBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: "#f3f4f6" },
   smallBtnText: { color: TEXT, fontWeight: "700", fontSize: 12 },
-  deleteBtn: { width: 32, height: 32, borderRadius: 8, backgroundColor: "#fef2f2", borderWidth: 1, borderColor: "#fecaca", alignItems: "center", justifyContent: "center" },
+  deleteBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });

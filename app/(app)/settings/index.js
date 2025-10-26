@@ -236,9 +236,29 @@ export default function SettingsHome() {
 
   /** Upload / replace logo to logos/users/<uid>/logo.<ext> */
   const pickAndUploadLogo = async () => {
+    let oldLogoStoragePath = null;
     try {
       setWorking(true);
 
+      // 1. Get the storage path of the current logo (if any)
+      if (hasLogo) {
+        const url = String(userProfileData?.custom_logo_url || "");
+        const anchors = [
+          "/storage/v1/object/public/logos/",
+          "/object/public/logos/",
+          "/logos/",
+        ];
+        for (let i = 0; i < anchors.length; i++) {
+          const idx = url.indexOf(anchors[i]);
+          if (idx !== -1) {
+            oldLogoStoragePath = url.substring(idx + anchors[i].length);
+            break;
+          }
+        }
+        if (!oldLogoStoragePath) oldLogoStoragePath = "users/" + userId + "/logo.png";
+      }
+
+      // 2. Pick new logo
       const result = await DocumentPicker.getDocumentAsync({
         multiple: false,
         copyToCacheDirectory: true,
@@ -265,22 +285,36 @@ export default function SettingsHome() {
       const suffix = ext ? ext : "bin";
       const pathInBucket = "users/" + userId + "/logo." + suffix;
 
+      // 3. Upload new logo (upsert)
       const up = await supabase.storage.from("logos").upload(pathInBucket, bytes, {
         contentType,
         upsert: true,
       });
       if (up.error) throw up.error;
 
-      const publicishUrl = await resolveStorageUrl(pathInBucket);
+      // 4. Get new logo URL
+      let publicishUrl = await resolveStorageUrl(pathInBucket);
 
+      // 4b. Add cache-busting query param
+      publicishUrl += (publicishUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
+
+      // 5. Update profile with new logo URL
       const upd = await supabase
         .from("profiles")
         .update({ custom_logo_url: publicishUrl })
         .eq("id", userId);
       if (upd.error) throw upd.error;
 
-      // Optimistic update
+      // 6. Optimistically update UI
       setUserProfileData((p) => ({ ...(p || {}), custom_logo_url: publicishUrl }));
+
+      // 7. Delete old logo from storage if it exists and is different from the new one
+      if (
+        oldLogoStoragePath &&
+        oldLogoStoragePath !== pathInBucket // Don't delete if same as new
+      ) {
+        await supabase.storage.from("logos").remove([oldLogoStoragePath]).catch(() => {});
+      }
     } catch (e) {
       showError(e?.message || String(e));
     } finally {
@@ -464,12 +498,7 @@ export default function SettingsHome() {
             subtitle="Business name, address, phone, VAT"
             onPress={() => router.push("/(app)/settings/company")}
           />
-          <Row
-            icon={<ImageIcon size={18} color={MUTED} />}
-            title="Branding & Logo"
-            subtitle="Logo & brand colour"
-            onPress={() => router.push("/(app)/settings/branding")}
-          />
+          {/* Branding & Logo button removed */}
           {showProfile && isOwner && (
             <Row
               icon={<Shield size={18} color={MUTED} />}

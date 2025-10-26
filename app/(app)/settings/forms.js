@@ -1,59 +1,41 @@
-import React, { useEffect } from "react";
-import { View, Text, StyleSheet, StatusBar, Platform } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
-import * as NavigationBar from "expo-navigation-bar";
-import * as SystemUI from "expo-system-ui";
-import { Feather } from "@expo/vector-icons";
+import React from "react";
+import { View, Text, StyleSheet, SafeAreaView, ScrollView } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 
 const TEXT = "#0b1220";
 const BG = "#ffffff";
 const CARD = "#ffffff";
 const BORDER = "#e6e9ee";
-const MUTED = "#6b7280";
 
-export default function PortalSettings() {
+export default function FormsSettings() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-
-  useEffect(() => {
-    StatusBar.setBarStyle("dark-content", false);
-    if (Platform.OS === "android") {
-      StatusBar.setBackgroundColor("#ffffff", false);
-      NavigationBar.setBackgroundColorAsync?.("#ffffff");
-      NavigationBar.setButtonStyleAsync?.("dark");
-      NavigationBar.setBorderColorAsync?.("#ffffff");
-    }
-    SystemUI.setBackgroundColorAsync?.("#ffffff");
-  }, []);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: BG }}>
       <View style={{ height: insets.top, backgroundColor: CARD }} />
       <View style={styles.header}>
-        <Feather
-          name="arrow-left"
-          size={20}
-          color={TEXT}
-          style={styles.backBtn}
-          onPress={() => router.back()}
-        />
-        <Text style={styles.headerTitle}>Client Portal</Text>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Feather name="arrow-left" size={20} color={TEXT} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Forms & Certificates</Text>
         <View style={{ width: 40 }} />
       </View>
-      <View style={styles.content}>
+      <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.card}>
           <Text style={styles.title}>Coming Soon</Text>
           <Text style={styles.desc}>
-            The client portal will let your clients view quotes and invoices
-            online. This feature is coming in a future update.
+            Forms and certificates (EICR, Gas Safe, etc.) will be available here in a future update.
           </Text>
         </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
+
+import { TouchableOpacity } from "react-native";
 
 const styles = StyleSheet.create({
   header: {
@@ -78,7 +60,6 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: TEXT,
   },
-  container: { flex: 1, backgroundColor: "#ffffff" },
   content: {
     padding: 24,
     alignItems: "center",
@@ -107,7 +88,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   desc: {
-    color: MUTED,
+    color: "#6b7280",
     fontSize: 15,
     textAlign: "center",
   },

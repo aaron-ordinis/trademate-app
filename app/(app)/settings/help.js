@@ -113,6 +113,7 @@ export default function HelpScreen() {
     SystemUI.setBackgroundColorAsync?.("#ffffff");
   }, []);
 
+  // Add unread count to each ticket
   const load = useCallback(async () => {
     try {
       const {
@@ -123,7 +124,7 @@ export default function HelpScreen() {
       const { data, error } = await supabase
         .from("support_tickets")
         .select(
-          "id, subject, status, priority, last_message_at, created_at"
+          "id, subject, status, priority, last_message_at, created_at, unread_user_count"
         )
         .eq("user_id", user.id)
         .order("last_message_at", { ascending: false, nullsFirst: false })
@@ -205,12 +206,58 @@ export default function HelpScreen() {
     }
   }, [canSubmit, submitting, subjectTrim, messageTrim, load, router]);
 
+  // Close ticket handler
+  const closeTicket = useCallback(async (ticketId) => {
+    try {
+      const { error } = await supabase
+        .from("support_tickets")
+        .update({ status: "closed" })
+        .eq("id", ticketId);
+      if (error) throw error;
+      await load();
+      Alert.alert("Ticket closed", "This ticket has been closed.");
+    } catch (e) {
+      Alert.alert("Error", e?.message || "Could not close ticket");
+    }
+  }, [load]);
+
+  // Delete ticket handler
+  const deleteTicket = useCallback(async (ticketId) => {
+    Alert.alert(
+      "Delete Ticket",
+      "Are you sure you want to permanently delete this ticket and all its messages? This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // Only delete the ticket; messages will be deleted via ON DELETE CASCADE
+              const { error } = await supabase.from("support_tickets").delete().eq("id", ticketId);
+              if (error) throw error;
+              await load();
+              Alert.alert("Deleted", "Ticket deleted successfully.");
+            } catch (e) {
+              Alert.alert("Error", e?.message || "Could not delete ticket");
+            }
+          },
+        },
+      ]
+    );
+  }, [load]);
+
+  // Separate open, pending, and closed tickets
   const openTickets = useMemo(
     () => tickets.filter((t) => (t.status || "").toLowerCase() === "open"),
     [tickets]
   );
+  const pendingTickets = useMemo(
+    () => tickets.filter((t) => (t.status || "").toLowerCase() === "pending"),
+    [tickets]
+  );
   const closedTickets = useMemo(
-    () => tickets.filter((t) => (t.status || "").toLowerCase() !== "open"),
+    () => tickets.filter((t) => (t.status || "").toLowerCase() === "closed"),
     [tickets]
   );
 
@@ -360,15 +407,14 @@ export default function HelpScreen() {
                 Open Tickets ({openTickets.length})
               </Text>
               <InfoButton
-                title="Ticket Status"
+                title="Open Tickets"
                 tips={[
                   "Open: Waiting for a response or in progress.",
-                  "Pending: Waiting for your reply.",
-                  "Closed: Resolved or closed by request.",
+                  "Tap to view or reply.",
+                  "You can close a ticket when resolved.",
                 ]}
               />
             </View>
-
             {openTickets.map((ticket) => (
               <TicketItem
                 key={ticket.id}
@@ -379,6 +425,41 @@ export default function HelpScreen() {
                     params: { ticketId: ticket.id },
                   })
                 }
+                onClose={closeTicket}
+                onDelete={deleteTicket}
+              />
+            ))}
+          </View>
+        )}
+
+        {/* Pending Tickets */}
+        {pendingTickets.length > 0 && (
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <Text style={styles.cardTitle}>
+                Pending Tickets ({pendingTickets.length})
+              </Text>
+              <InfoButton
+                title="Pending Tickets"
+                tips={[
+                  "Pending: Waiting for your reply.",
+                  "Tap to view or reply.",
+                  "You can close a ticket when resolved.",
+                ]}
+              />
+            </View>
+            {pendingTickets.map((ticket) => (
+              <TicketItem
+                key={ticket.id}
+                ticket={ticket}
+                onPress={() =>
+                  router.push({
+                    pathname: "/(app)/settings/help/[ticketId]",
+                    params: { ticketId: ticket.id },
+                  })
+                }
+                onClose={closeTicket}
+                onDelete={deleteTicket}
               />
             ))}
           </View>
@@ -390,7 +471,6 @@ export default function HelpScreen() {
             <Text style={styles.cardTitle}>
               Previous Tickets ({closedTickets.length})
             </Text>
-
             {closedTickets.slice(0, 10).map((ticket) => (
               <TicketItem
                 key={ticket.id}
@@ -402,9 +482,9 @@ export default function HelpScreen() {
                   })
                 }
                 dimmed
+                onDelete={deleteTicket}
               />
             ))}
-
             {closedTickets.length > 10 && (
               <Text style={styles.moreText}>
                 And {closedTickets.length - 10} more closed tickets...
@@ -437,11 +517,12 @@ export default function HelpScreen() {
   );
 }
 
-function TicketItem({ ticket, onPress, dimmed = false }) {
+function TicketItem({ ticket, onPress, dimmed = false, onClose, onDelete }) {
   const statusColor = getStatusColor(ticket.status);
   const dateStr = new Date(
     ticket.last_message_at || ticket.created_at
   ).toLocaleDateString();
+  const unread = ticket.unread_user_count > 0 ? ticket.unread_user_count : 0;
 
   return (
     <TouchableOpacity
@@ -462,11 +543,41 @@ function TicketItem({ ticket, onPress, dimmed = false }) {
       </View>
 
       <View style={styles.ticketActions}>
+        {/* Blue notification dot with unread count */}
+        {unread > 0 && (
+          <View style={styles.unreadDotWrap}>
+            <View style={styles.unreadDot}>
+              <Text style={styles.unreadDotText}>
+                {unread > 9 ? "9+" : unread}
+              </Text>
+            </View>
+          </View>
+        )}
         <View style={[styles.statusBadge, { backgroundColor: statusColor }]}>
           <Text style={styles.statusBadgeText}>
             {(ticket.status || "open").toUpperCase()}
           </Text>
         </View>
+        {/* Close button for open tickets */}
+        {onClose && (ticket.status || "").toLowerCase() === "open" && (
+          <TouchableOpacity
+            onPress={() => onClose(ticket.id)}
+            style={styles.closeBtn}
+            activeOpacity={0.7}
+          >
+            <Feather name="x-circle" size={18} color={WARNING} />
+          </TouchableOpacity>
+        )}
+        {/* Delete button for all tickets */}
+        {onDelete && (
+          <TouchableOpacity
+            onPress={() => onDelete(ticket.id)}
+            style={styles.deleteBtn}
+            activeOpacity={0.7}
+          >
+            <Feather name="trash-2" size={18} color="#dc2626" />
+          </TouchableOpacity>
+        )}
       </View>
 
       <Feather name="chevron-right" size={16} color={MUTED} />
@@ -600,7 +711,39 @@ const styles = StyleSheet.create({
   ticketTitle: { color: TEXT, fontWeight: "700", fontSize: 14, marginBottom: 4 },
   ticketDate: { color: MUTED, fontSize: 12 },
   dimmedText: { color: MUTED },
-  ticketActions: { alignItems: "center" },
+  ticketActions: { alignItems: "center", flexDirection: "row", gap: 4 },
+  unreadDotWrap: {
+    marginRight: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  unreadDot: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: BRAND,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  unreadDotText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 11,
+    textAlign: "center",
+  },
+  closeBtn: {
+    marginRight: 2,
+    padding: 2,
+    borderRadius: 6,
+    backgroundColor: "#fef9c3",
+  },
+  deleteBtn: {
+    marginRight: 2,
+    padding: 2,
+    borderRadius: 6,
+    backgroundColor: "#fee2e2",
+  },
 
   statusBadge: {
     paddingHorizontal: 8,

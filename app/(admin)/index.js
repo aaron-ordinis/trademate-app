@@ -40,7 +40,9 @@ export default function AdminDashboard() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [overview, setOverview] = useState({
+    new_users_1d: 0, // add 1d
     new_users_7d: 0,
+    new_users_30d: 0, // add 30d
     users_total: 0,
     play_installs_7d: 0,
     play_installs_total: 0,
@@ -95,7 +97,9 @@ export default function AdminDashboard() {
       let o = {};
       if (row) {
         o = {
+          new_users_1d: row.new_users_1d || 0, // add 1d
           new_users_7d: row.new_users_7d || 0,
+          new_users_30d: row.new_users_30d || 0, // add 30d
           users_total: row.users_total || 0,
           play_installs_7d: row.play_installs_7d || 0,
           play_installs_total: row.play_installs_total || 0,
@@ -107,18 +111,29 @@ export default function AdminDashboard() {
           play_last_synced_at: row.play_last_synced_at || null,
         };
       } else {
-        const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        let newUsers = 0, totalUsers = 0;
+        // fallback if rpc not available
+        const now = Date.now();
+        const since1d = new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString();
+        const since7d = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const since30d = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+        let newUsers1d = 0, newUsers7d = 0, newUsers30d = 0, totalUsers = 0;
         try {
-          const r1 = await supabase.from('profiles').select('id', { count: 'exact', head: true }).gte('created_at', since);
-          if (r1.error) console.log('[admin] new users count error:', r1.error);
-          const r2 = await supabase.from('profiles').select('id', { count: 'exact', head: true });
-          if (r2.error) console.log('[admin] total users count error:', r2.error);
-          newUsers = r1.count ?? 0; totalUsers = r2.count ?? 0;
+          const r1 = await supabase.from('profiles').select('id', { count: 'exact', head: true }).gte('created_at', since1d);
+          if (r1.error) console.log('[admin] new users 1d count error:', r1.error);
+          const r2 = await supabase.from('profiles').select('id', { count: 'exact', head: true }).gte('created_at', since7d);
+          if (r2.error) console.log('[admin] new users 7d count error:', r2.error);
+          const r3 = await supabase.from('profiles').select('id', { count: 'exact', head: true }).gte('created_at', since30d);
+          if (r3.error) console.log('[admin] new users 30d count error:', r3.error);
+          const r4 = await supabase.from('profiles').select('id', { count: 'exact', head: true });
+          if (r4.error) console.log('[admin] total users count error:', r4.error);
+          newUsers1d = r1.count ?? 0;
+          newUsers7d = r2.count ?? 0;
+          newUsers30d = r3.count ?? 0;
+          totalUsers = r4.count ?? 0;
         } catch (e) {
           console.log('[admin] fallback count threw:', e);
         }
-        o = { new_users_7d: newUsers, users_total: totalUsers };
+        o = { new_users_1d: newUsers1d, new_users_7d: newUsers7d, new_users_30d: newUsers30d, users_total: totalUsers };
       }
 
       // Notifications / Inbox counts
@@ -227,6 +242,12 @@ export default function AdminDashboard() {
   const notifHot = isHot(lastNoteAt);
   const inboxHot = isHot(lastInboxAt);
 
+  // Calculate total tickets (new + pending)
+  const supportTicketCount = useMemo(() => {
+    // Use cachedTickets from inbox (open tickets), or fallback to inbox.unread
+    return Array.isArray(inbox.cachedTickets) ? inbox.cachedTickets.length : (inbox.unread || 0);
+  }, [inbox.cachedTickets, inbox.unread]);
+
   return (
     <View style={styles.screen}>
       <View style={{ height: insets.top, backgroundColor: CARD }} />
@@ -264,14 +285,21 @@ export default function AdminDashboard() {
             <QuickActionButton
               icon="inbox"
               title="Support Inbox"
-              subtitle={`${inbox.unread} new tickets`}
-              onPress={() => router.push({
-                pathname: '/(admin)/support',
-                params: { 
-                  initialCount: inbox.unread,
-                  cachedData: JSON.stringify(inbox.cachedTickets || [])
-                }
-              })}
+              subtitle={
+                supportTicketCount === 1
+                  ? "1 ticket"
+                  : `${supportTicketCount} tickets`
+              }
+              notifCount={supportTicketCount}
+              onPress={() =>
+                router.push({
+                  pathname: '/(admin)/support',
+                  params: {
+                    initialCount: inbox.unread,
+                    cachedData: JSON.stringify(inbox.cachedTickets || [])
+                  }
+                })
+              }
               hot={inboxHot}
             />
           </View>
@@ -281,6 +309,12 @@ export default function AdminDashboard() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>User Analytics</Text>
           <View style={styles.metricsGrid}>
+            <MetricCard
+              icon="user-plus"
+              title="New Users (1d)"
+              value={fmtInt(overview.new_users_1d)}
+              color={SUCCESS}
+            />
             <MetricCard
               icon="users"
               title="New Users (7d)"
@@ -292,6 +326,14 @@ export default function AdminDashboard() {
               title="Total Users"
               value={fmtInt(overview.users_total)}
               color={BRAND}
+            />
+          </View>
+          <View style={styles.metricsGrid}>
+            <MetricCard
+              icon="user-plus"
+              title="New Users (30d)"
+              value={fmtInt(overview.new_users_30d)}
+              color={SUCCESS}
             />
           </View>
         </View>
@@ -385,12 +427,19 @@ export default function AdminDashboard() {
 }
 
 /* Components */
-function QuickActionButton({ icon, title, subtitle, onPress, hot }) {
+function QuickActionButton({ icon, title, subtitle, onPress, hot, notifCount }) {
   return (
     <TouchableOpacity style={styles.quickActionBtn} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.quickActionIcon}>
         <Feather name={icon} size={20} color={BRAND} />
         {hot && <View style={styles.hotBadge} />}
+        {notifCount > 0 && (
+          <View style={styles.notifBubble}>
+            <Text style={styles.notifBubbleText}>
+              {notifCount > 99 ? "99+" : notifCount}
+            </Text>
+          </View>
+        )}
       </View>
       <View style={styles.quickActionText}>
         <Text style={styles.quickActionTitle}>{title}</Text>
@@ -548,6 +597,25 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: DANGER,
+  },
+  notifBubble: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: BRAND,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    zIndex: 2,
+  },
+  notifBubbleText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 11,
+    textAlign: "center",
   },
 
   quickActionText: {
