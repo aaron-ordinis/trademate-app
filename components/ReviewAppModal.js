@@ -55,7 +55,7 @@ export default function ReviewAppModal({ visible, onRateNow, onLater }) {
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    backgroundColor: 'rgba(0,0,0,0)', // fully transparent
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,

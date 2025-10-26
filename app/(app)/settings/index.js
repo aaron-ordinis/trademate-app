@@ -343,7 +343,8 @@ export default function SettingsHome() {
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backBtn}
-          onPress={() => router.back()}
+          // Always go to quotes index
+          onPress={() => router.replace("/(app)/(tabs)/quotes")}
           activeOpacity={0.7}
         >
           <Feather name="arrow-left" size={20} color={TEXT} />

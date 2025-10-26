@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Pressable,
-  Alert, Platform, Dimensions,
+  Alert, Platform, Dimensions, ScrollView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -44,7 +44,8 @@ function makePdfHtml(base64, viewerWidthCSSPx) {
     'html,body{margin:0;height:100%;background:#f5f7fb;overflow:hidden}',
     '#strip{display:flex;height:100%;width:100%;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;justify-content:center}',
     '.pageWrap{flex:0 0 var(--pageW);height:100%;display:flex;align-items:center;justify-content:center;scroll-snap-align:center}',
-    'canvas{display:block;width:calc(var(--pageW) - 16px);height:auto;margin:8px;border-radius:14px;background:#fff;box-shadow:0 2px 12px rgba(11,18,32,.08)}',
+    // Remove border-radius and box-shadow from canvas
+    'canvas{display:block;width:100%;height:auto;margin:0;background:#fff;box-shadow:none}',
     '#strip::-webkit-scrollbar{display:none}',
     '</style>',
     '<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script></head>',
@@ -252,69 +253,78 @@ export default function Preview() {
     [base64Pdf, viewerWidth]
   );
 
+  // Remove goBack text, use only icon
   const goBack = () => {
     vibrateTap();
     if (isDemo) router.replace('/(auth)/register');
     else router.replace('/(app)/quotes');
   };
 
-  const bottomBarH = 64 + Math.max(insets.bottom, 10);
-
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+      {/* Top safe area spacer */}
+      <View style={{ height: insets.top, backgroundColor: CARD }} />
+
       {/* Header */}
       <View style={styles.header}>
-        <Pressable onPress={goBack} style={styles.backBtn} android_ripple={{ color: 'rgba(0,0,0,0.06)' }}>
-          <Feather name="chevron-left" size={20} color={BRAND} />
-          <Text style={styles.backTxt}>{isDemo ? 'Sign Up' : 'Back'}</Text>
-        </Pressable>
-        {isDemo && (
-          <View style={styles.demoPill}>
-            <Text style={styles.demoTxt}>DEMO MODE</Text>
-          </View>
-        )}
-        <View style={{ width: 52 }} />
+        <TouchableOpacity style={styles.backBtn} onPress={goBack}>
+          <Feather name="arrow-left" size={20} color={TEXT} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Quote PDF</Text>
+        <View style={{ width: 40 }} />
       </View>
 
-      <View
-        style={[styles.viewerCard, { marginBottom: bottomBarH + 8 }]}
-        onLayout={(e) => setViewerWidth(e.nativeEvent.layout.width)}
-      >
-        {(loading || !viewerHtml) && (
-          <View style={styles.loading}>
-            <ActivityIndicator />
-            <Text style={styles.loadingText}>{fatal ? fatal : 'Preparing your PDF…'}</Text>
-            {!!fatal && (
-              <TouchableOpacity onPress={loadBase64} style={styles.retryBtn}>
-                <Text style={styles.retryText}>Retry</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
+        <View
+          style={[styles.viewerCard]}
+          onLayout={(e) => setViewerWidth(e.nativeEvent.layout.width)}
+        >
+          {(loading || !viewerHtml) && (
+            <View style={styles.loading}>
+              <ActivityIndicator />
+              <Text style={styles.loadingText}>{fatal ? fatal : 'Preparing your PDF…'}</Text>
+              {!!fatal && (
+                <TouchableOpacity onPress={loadBase64} style={styles.retryBtn}>
+                  <Text style={styles.retryText}>Retry</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
 
-        {!!viewerHtml && !fatal && (
-          <WebView
-            ref={wvRef}
-            source={{ html: viewerHtml }}
-            originWhitelist={['*']}
-            javaScriptEnabled
-            domStorageEnabled
-            onMessage={async (e) => {
-              const msg = String(e?.nativeEvent?.data || '');
-              if (msg === 'rendered' && !hasAskedRef.current) {
-                hasAskedRef.current = true;
-                try {
-                  if (await shouldShowReviewPrompt()) setShowReview(true);
-                } catch {}
-              }
-              if (msg.startsWith('error:')) setFatal(msg.slice(6));
-            }}
-            style={{ flex: 1 }}
-          />
-        )}
-      </View>
+          {!!viewerHtml && !fatal && (
+            <WebView
+              ref={wvRef}
+              source={{ html: viewerHtml }}
+              originWhitelist={['*']}
+              javaScriptEnabled
+              domStorageEnabled
+              onMessage={async (e) => {
+                const msg = String(e?.nativeEvent?.data || '');
+                if (msg === 'rendered' && !hasAskedRef.current) {
+                  hasAskedRef.current = true;
+                  try {
+                    if (await shouldShowReviewPrompt()) setShowReview(true);
+                  } catch {}
+                }
+                if (msg.startsWith('error:')) setFatal(msg.slice(6));
+              }}
+              style={{ flex: 1 }}
+            />
+          )}
+        </View>
 
-      {/* Bottom action bar (fixed) */}
+        <ReviewAppModal
+          visible={showReview}
+          onLater={() => setShowReview(false)}
+          onRateNow={async () => {
+            setShowReview(false);
+            await launchReviewFlow();
+          }}
+        />
+        <View style={{ height: 20 }} />
+      </ScrollView>
+
+      {/* Bottom action bar (absolute) */}
       <View style={[styles.actionBar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
         <ActionButton
           label={busy === 'edit' ? 'Loading' : 'Edit'}
@@ -345,15 +355,6 @@ export default function Preview() {
           busy={!isDemo && busy === 'open'}
         />
       </View>
-
-      <ReviewAppModal
-        visible={showReview}
-        onLater={() => setShowReview(false)}
-        onRateNow={async () => {
-          setShowReview(false);
-          await launchReviewFlow();
-        }}
-      />
     </SafeAreaView>
   );
 }
@@ -381,42 +382,60 @@ const BRAND = '#2a86ff';
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: BG },
-
   header: {
-    height: 52, paddingHorizontal: 12, flexDirection: 'row',
-    alignItems: 'center', justifyContent: 'space-between'
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
-  backBtn: { paddingVertical: 6, paddingRight: 8, width: 86, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  backTxt: { color: BRAND, fontWeight: '800', fontSize: 16 },
-
-  demoPill: { backgroundColor: 'rgba(42,134,255,0.1)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
-  demoTxt: { color: BRAND, fontWeight: '800', fontSize: 12 },
-
-  viewerCard: {
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: TEXT,
     flex: 1,
-    marginHorizontal: 12, marginTop: 4,
-    borderRadius: 14, borderWidth: 1, borderColor: BORDER,
-    backgroundColor: CARD, overflow: 'hidden',
-    shadowColor: '#0b1220', shadowOpacity: 0.06, shadowRadius: 12, elevation: 2,
+    textAlign: "center",
+    marginHorizontal: 16,
   },
-
+  content: { flex: 1 },
+  contentContainer: { padding: 16 },
+  viewerCard: {
+    // Remove borderRadius, border, and shadow for full-bleed effect
+    // borderRadius: 14,
+    // borderWidth: 1,
+    // borderColor: BORDER,
+    // ...Platform.select({ ... }),
+    backgroundColor: CARD,
+    overflow: 'hidden',
+    marginBottom: 0,
+    marginHorizontal: -16, // expand to screen edge (matches contentContainer padding)
+    minHeight: 540,
+  },
   loading: { ...StyleSheet.absoluteFillObject, alignItems:'center', justifyContent:'center', padding:16, gap:8, backgroundColor: CARD },
   loadingText: { color:'#6b7280', textAlign:'center' },
-  retryBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: BRAND },
-  retryText: { color: '#fff', fontWeight: '800' },
-
-  actionBar: {
+  retryBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: BRAND },m: 0,
+  retryText: { color: '#fff', fontWeight: '800' },ion:'row', alignItems:'center', gap:8,
+  actionBar: {r:CARD,
     position: 'absolute', left: 0, right: 0, bottom: 0,
     flexDirection:'row', alignItems:'center', gap:8,
     paddingHorizontal:12, paddingTop:10, backgroundColor:CARD,
     borderTopWidth:1, borderColor:BORDER,
-  },
-  actionBtn: {
+    borderRadius: 12,flex:1, minHeight:44,
+  },us:12, paddingVertical:10, paddingHorizontal:8,
+  actionBtn: {gap:6, flexDirection:'row', justifyContent:'center',
     flex:1, minHeight:44,
     borderRadius:12, paddingVertical:10, paddingHorizontal:8,
     alignItems:'center', gap:6, flexDirection:'row', justifyContent:'center',
-    backgroundColor:'#fff', borderWidth:1, borderColor:BORDER,
-  },
-  actionTxt: { color: TEXT, fontWeight:'900' },
-  busy: { opacity:0.55 },
+    backgroundColor:'#fff', borderWidth:1, borderColor:BORDER,sy: { opacity:0.55 },
+  },  actionTxt: { color: TEXT, fontWeight:'900' },  busy: { opacity:0.55 },
 });

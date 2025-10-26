@@ -288,7 +288,7 @@ export default function JobDocuments() {
       <View style={s.header}>
         <TouchableOpacity
           style={s.backBtn}
-          onPress={() => router.replace(jobHref(jobId))}
+          onPress={() => router.back()}
         >
           <Feather name="arrow-left" size={20} color={TEXT} />
         </TouchableOpacity>
