@@ -11,6 +11,7 @@ import {
   StatusBar,
   Platform,
   Modal,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -21,6 +22,10 @@ import { supabase } from '../../../lib/supabase';
 import { useDeviceId } from '../../../lib/useDeviceId';
 import { useAdminGate } from '../../../lib/useAdminGate';
 
+// NEW: push imports
+import * as Notifications from 'expo-notifications';
+import * as Device from 'expo-device';
+
 /* ---------- THEME ---------- */
 const CARD = "#ffffff";
 const TEXT = "#0b1220";
@@ -30,6 +35,7 @@ const BRAND = "#2a86ff";
 const BG = "#ffffff";
 const SUCCESS = "#10b981";
 const WARNING = "#f59e0b";
+const DANGER = "#dc2626";
 
 /* ---------- INFO BUTTON COMPONENT ---------- */
 function InfoButton({ title, tips = [] }) {
@@ -67,11 +73,16 @@ export default function AdminSettings() {
   const insets = useSafeAreaInsets();
   const deviceId = useDeviceId();
   const gate = useAdminGate();
+
   const [isOwner, setIsOwner] = useState(null); // null = unknown, true/false = known
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [navBusy, setNavBusy] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
+
+  // NEW: push state
+  const [pushToken, setPushToken] = useState(null);
+  const [pushBusy, setPushBusy] = useState(false);
 
   useEffect(() => {
     StatusBar.setBarStyle("dark-content", false);
@@ -84,7 +95,7 @@ export default function AdminSettings() {
     SystemUI.setBackgroundColorAsync?.("#ffffff");
   }, []);
 
-  // Load owner flag and whether THIS device is in admin_devices
+  // Load owner flag and whether THIS device is in admin_devices + current push token
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -92,37 +103,25 @@ export default function AdminSettings() {
       const uid = u?.user?.id;
       if (!uid || !deviceId) return;
 
-      // Use Promise.all for faster parallel loading
-      const [profResult, devResult] = await Promise.all([
-        supabase
-          .from('profiles')
-          .select('admin_owner')
-          .eq('id', uid)
-          .maybeSingle(),
-        supabase
-          .from('admin_devices')
-          .select('device_id')
-          .eq('user_id', uid)
-          .eq('device_id', deviceId)
-          .maybeSingle()
+      const [profResult, devResult, tokenResult] = await Promise.all([
+        supabase.from('profiles').select('admin_owner').eq('id', uid).maybeSingle(),
+        supabase.from('admin_devices').select('device_id').eq('user_id', uid).eq('device_id', deviceId).maybeSingle(),
+        supabase.from('profiles').select('push_token').eq('id', uid).maybeSingle(),
       ]);
 
       if (!mounted) return;
       
       setIsOwner(Boolean(profResult.data?.admin_owner));
       setEnabled(Boolean(devResult.data?.device_id));
+      setPushToken(tokenResult.data?.push_token || null);
       setDataLoaded(true);
     })();
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [deviceId, gate.lastChecked]);
 
   const toggle = async (next) => {
     if (isOwner === null || !deviceId || busy) return;
-    
-    // Optimistic update - show change immediately
-    setEnabled(next);
+    setEnabled(next); // optimistic
     setBusy(true);
 
     try {
@@ -131,35 +130,25 @@ export default function AdminSettings() {
       if (!uid) throw new Error('Not authenticated');
 
       if (next) {
-        const { error } = await supabase
-          .from('admin_devices')
-          .upsert({ user_id: uid, device_id: deviceId });
+        const { error } = await supabase.from('admin_devices').upsert({ user_id: uid, device_id: deviceId });
         if (error) throw error;
       } else {
-        const { error } = await supabase
-          .from('admin_devices')
-          .delete()
-          .eq('user_id', uid)
-          .eq('device_id', deviceId);
+        const { error } = await supabase.from('admin_devices').delete().eq('user_id', uid).eq('device_id', deviceId);
         if (error) throw error;
       }
 
-      // Refresh the server-side gate
       await gate.refresh();
 
-      // Optional audit log
-      await supabase
-        .rpc('rpc_write_audit', {
-          p_device_id: deviceId,
-          p_action: next ? 'admin_enable_device' : 'admin_disable_device',
-          p_target: deviceId,
-          p_metadata: {},
-        })
-        .catch(() => {});
+      // best-effort audit
+      await supabase.rpc('rpc_write_audit', {
+        p_device_id: deviceId,
+        p_action: next ? 'admin_enable_device' : 'admin_disable_device',
+        p_target: deviceId,
+        p_metadata: {},
+      }).catch(() => {});
     } catch (e) {
       console.warn('[AdminSettings.toggle] error', e?.message || e);
-      // Revert optimistic update on error
-      setEnabled(!next);
+      setEnabled(!next); // revert
     } finally {
       setBusy(false);
     }
@@ -176,7 +165,84 @@ export default function AdminSettings() {
     }
   };
 
-  // Show content immediately, even while loading
+  // NEW: register/refresh push token here
+  const registerPush = async () => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u?.user?.id;
+      if (!uid) throw new Error('Not authenticated');
+
+      if (!Device.isDevice) {
+        Alert.alert('Not supported', 'Push notifications require a physical device.');
+        return;
+      }
+
+      // Ensure Android channel exists
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'Default',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#FF231F7C',
+          sound: 'default',
+        });
+      }
+
+      // Permissions
+      let { status } = await Notifications.getPermissionsAsync();
+      if (status !== 'granted') {
+        const ask = await Notifications.requestPermissionsAsync();
+        status = ask.status;
+      }
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Please enable notification permissions in system settings.');
+        return;
+      }
+
+      // IMPORTANT: use projectId to avoid DeviceNotRegistered
+      const tokenData = await Notifications.getExpoPushTokenAsync({
+        projectId: 'bvbjvxjtxfzipwvfkrrb',
+      });
+      const token = tokenData?.data ? String(tokenData.data) : null;
+      if (!token) {
+        Alert.alert('Failed', 'Could not generate a push token.');
+        return;
+      }
+
+      const { error } = await supabase.from('profiles').update({ push_token: token }).eq('id', uid);
+      if (error) throw error;
+
+      setPushToken(token);
+      Alert.alert('Success', 'Push token saved for this account.');
+    } catch (e) {
+      console.log('registerPush error:', e?.message || e);
+      Alert.alert('Error', e?.message || 'Failed to register push token.');
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  // NEW: clear saved token
+  const clearPushToken = async () => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u?.user?.id;
+      if (!uid) throw new Error('Not authenticated');
+      const { error } = await supabase.from('profiles').update({ push_token: null }).eq('id', uid);
+      if (error) throw error;
+      setPushToken(null);
+      Alert.alert('Cleared', 'Push token removed for this account.');
+    } catch (e) {
+      Alert.alert('Error', e?.message || 'Failed to clear push token.');
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
   const showOwnerStatus = isOwner !== null;
   const showWarning = showOwnerStatus && !isOwner;
 
@@ -331,6 +397,66 @@ export default function AdminSettings() {
               </Text>
             </TouchableOpacity>
           )}
+        </View>
+
+        {/* NEW: Push Notifications */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Push Notifications</Text>
+            <InfoButton
+              title="Push Token"
+              tips={[
+                "Register to generate a valid Expo push token tied to this project.",
+                "We save the token to your profile so edge functions can send pushes.",
+                "If you reinstall the app, press Register again to refresh the token.",
+                "You can Clear it here to stop receiving pushes on this account.",
+              ]}
+            />
+          </View>
+
+          <View style={styles.statusCard}>
+            <View style={styles.statusRow}>
+              <Feather name="bell" size={20} color={MUTED} />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.statusLabel}>Current Token</Text>
+                {pushToken ? (
+                  <Text style={[styles.statusValue, { fontSize: 12 }]} numberOfLines={2}>
+                    {pushToken}
+                  </Text>
+                ) : (
+                  <Text style={[styles.statusValue, { color: MUTED }]}>No token saved</Text>
+                )}
+              </View>
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                onPress={registerPush}
+                disabled={pushBusy}
+                style={[styles.actionBtn, { backgroundColor: BRAND }, pushBusy && { opacity: 0.7 }]}
+                activeOpacity={0.85}
+              >
+                {pushBusy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Feather name="refresh-cw" size={16} color="#fff" />
+                    <Text style={styles.actionBtnText}>Register / Refresh</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={clearPushToken}
+                disabled={!pushToken || pushBusy}
+                style={[styles.actionBtn, { backgroundColor: DANGER }, (!pushToken || pushBusy) && { opacity: 0.5 }]}
+                activeOpacity={0.85}
+              >
+                <Feather name="trash-2" size={16} color="#fff" />
+                <Text style={styles.actionBtnText}>Clear Token</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
 
         <View style={styles.footerNote}>
@@ -629,5 +755,20 @@ const styles = StyleSheet.create({
     height: 31,
     backgroundColor: '#f3f4f6',
     borderRadius: 16,
+  },
+
+  // NEW: action button styles
+  actionBtn: {
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  actionBtnText: {
+    color: '#fff',
+    fontWeight: '800',
   },
 });

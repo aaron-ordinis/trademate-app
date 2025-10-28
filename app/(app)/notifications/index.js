@@ -63,7 +63,7 @@ export default function NotificationsScreen() {
       }
       const { data, error } = await supabase
         .from("notifications")
-        .select("id, title, body, created_at, read")
+        .select("id, title, body, created_at, read, type, quote_id, ticket_id") // <-- add ticket_id here
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
         .limit(50);
@@ -135,30 +135,97 @@ export default function NotificationsScreen() {
     }
   };
 
-  const renderItem = ({ item }) => (
-    <View style={[styles.card, !item.read && styles.unreadCard]}>
-      <Text style={styles.title}>{item.title}</Text>
-      {!!item.body && <Text style={styles.body}>{item.body}</Text>}
-      <Text style={styles.date}>
-        {new Date(item.created_at).toLocaleString()}
-      </Text>
-      {!item.read ? (
-        <Text
-          style={styles.markRead}
-          onPress={() => markAsRead(item.id)}
+  const handleDelete = async (id) => {
+    await supabase.from("notifications").delete().eq("id", id);
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    // Refresh unread count from DB
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const { count } = await supabase
+        .from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .eq("read", false);
+      setUnreadCount(count || 0);
+    }
+  };
+
+  const renderItem = ({ item }) => {
+    // Handler for notification press
+    const handleNotificationPress = () => {
+      if (item.type === "quote_created" && item.quote_id) {
+        router.push({
+          pathname: "/(app)/quotes/preview",
+          params: { id: String(item.quote_id) }
+        });
+      }
+      // Support message notification: navigate to support ticket
+      if (item.type === "support_message" && item.ticket_id) {
+        router.push({
+          pathname: "/(app)/settings/help/[ticketid]",
+          params: { ticketid: String(item.ticket_id) }
+        });
+      }
+    };
+
+    // Only show body for non-support_message notifications
+    const showBody =
+      item.type !== "support_message" && !!item.body;
+
+    // For support_message, show a generic message
+    const supportBody =
+      item.type === "support_message"
+        ? "You have a new support message."
+        : null;
+
+    return (
+      <TouchableOpacity
+        activeOpacity={
+          (item.type === "quote_created" && item.quote_id) ||
+          (item.type === "support_message" && item.ticket_id)
+            ? 0.7
+            : 1
+        }
+        onPress={handleNotificationPress}
+        disabled={
+          !(
+            (item.type === "quote_created" && item.quote_id) ||
+            (item.type === "support_message" && item.ticket_id)
+          )
+        }
+        style={[styles.card, !item.read && styles.unreadCard]}
+      >
+        <TouchableOpacity
+          style={styles.deleteX}
+          onPress={() => handleDelete(item.id)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          Mark as read
+          <Text style={styles.deleteXText}>×</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>{item.title}</Text>
+        {showBody && <Text style={styles.body}>{item.body}</Text>}
+        {supportBody && <Text style={styles.body}>{supportBody}</Text>}
+        <Text style={styles.date}>
+          {new Date(item.created_at).toLocaleString()}
         </Text>
-      ) : (
-        <Text
-          style={styles.markUnread}
-          onPress={() => markAsUnread(item.id)}
-        >
-          Mark as unread
-        </Text>
-      )}
-    </View>
-  );
+        {!item.read ? (
+          <Text
+            style={styles.markRead}
+            onPress={() => markAsRead(item.id)}
+          >
+            Mark as read
+          </Text>
+        ) : (
+          <Text
+            style={styles.markUnread}
+            onPress={() => markAsUnread(item.id)}
+          >
+            Mark as unread
+          </Text>
+        )}
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={styles.screen}>
@@ -227,6 +294,7 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     padding: 14,
     marginBottom: 12,
+    position: "relative", // for absolute deleteX
   },
   unreadCard: {
     borderColor: "#2a86ff",
@@ -243,7 +311,7 @@ const styles = StyleSheet.create({
     alignSelf: "flex-start",
   },
   markUnread: {
-    color: "#ff7a2a",
+    color: "#2a86ff", // blue
     marginTop: 8,
     fontWeight: "bold",
     fontSize: 13,
@@ -259,5 +327,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#2a86ff",
     borderWidth: 1,
     borderColor: "#fff",
+  },
+  deleteX: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    zIndex: 2,
+    padding: 2,
+  },
+  deleteXText: {
+    fontSize: 18,
+    color: "#6b7280", // grey
+    fontWeight: "bold",
   },
 });

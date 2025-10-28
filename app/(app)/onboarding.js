@@ -84,7 +84,6 @@ export default function Onboarding() {
   // Force white colors aggressively and repeatedly
   useEffect(() => {
     const forceWhiteColors = () => {
-      // Force status bar white immediately and synchronously
       StatusBar.setBarStyle('dark-content', false);
       if (Platform.OS === 'android') {
         StatusBar.setBackgroundColor('#ffffff', false);
@@ -94,26 +93,21 @@ export default function Onboarding() {
     const forceWhiteAsync = async () => {
       try {
         if (Platform.OS === 'android') {
-          // Force navigation bar white
           await NavigationBar.setBackgroundColorAsync('#ffffff');
           await NavigationBar.setButtonStyleAsync('dark');
           if (NavigationBar.setBorderColorAsync) {
             await NavigationBar.setBorderColorAsync('#ffffff');
           }
         }
-        
-        // Force system UI white
         await SystemUI.setBackgroundColorAsync('#ffffff');
       } catch (error) {
         console.log('Force white error:', error);
       }
     };
 
-    // Force immediately
     forceWhiteColors();
     forceWhiteAsync();
 
-    // Force every 100ms for the first 2 seconds to override any interference
     const intervals = [];
     for (let i = 0; i < 20; i++) {
       intervals.push(setTimeout(() => {
@@ -125,7 +119,6 @@ export default function Onboarding() {
     return () => intervals.forEach(clearTimeout);
   }, []);
 
-  // Force white colors on every render
   StatusBar.setBarStyle('dark-content', false);
   if (Platform.OS === 'android') {
     StatusBar.setBackgroundColor('#ffffff', false);
@@ -214,7 +207,6 @@ export default function Onboarding() {
 
   // Load user's default template if exists (on mount)
   useEffect(() => {
-    // Always run this effect, but only fetch if step === 5 and email is loaded
     let alive = true;
     if (step === 5 && email) {
       (async () => {
@@ -241,9 +233,6 @@ export default function Onboarding() {
     return () => { alive = false; };
   }, [step, email]);
   
-  // loading state while checking profile - REMOVE SPINNER
-  // Move this check AFTER all hooks
-  // loading state while checking profile - REMOVE SPINNER
   if (!email) {
     return (
       <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
@@ -255,7 +244,6 @@ export default function Onboarding() {
     );
   }
 
-  // Force white immediately when component renders
   StatusBar.setBarStyle('dark-content', false);
   if (Platform.OS === 'android') {
     StatusBar.setBackgroundColor('#ffffff', false);
@@ -294,7 +282,6 @@ export default function Onboarding() {
 
       const bytes = base64ToBytes(base64);
 
-      // Path matches RLS: logos/users/<uid>/logo-<timestamp>.<ext>
       const pathInBucket = 'users/' + logoUserData.id + '/logo-' + Date.now() + '.' + (ext || 'bin');
 
       const { error: upErr } = await supabase
@@ -329,7 +316,6 @@ export default function Onboarding() {
       const user = userData?.user;
       if (!user) throw new Error('Not signed in');
 
-      // Do NOT delete from storage here; DB trigger + worker will clean the old file
       const { error: updErr } = await supabase
         .from('profiles')
         .update({ custom_logo_url: null })
@@ -392,7 +378,6 @@ export default function Onboarding() {
     }
   };
 
-  // NOTE: define the handlers actually used in JSX
   const goNext = () => {
     const errors = getCurrentStepErrors();
     if (Object.keys(errors).length > 0) {
@@ -458,7 +443,24 @@ export default function Onboarding() {
         .eq('id', user.id);
       if (error) throw error;
 
-      // Use quotesListHref for navigation after onboarding
+      /* ---- NEW: ping admins via Edge Function ---- */
+      try {
+        await supabase.functions.invoke('notify_admin', {
+          body: {
+            type: 'new_user',
+            title: 'New user onboarded',
+            message: `${businessName || 'New business'} (${email}) finished onboarding`,
+            user_id: user.id,
+            meta: {
+              business_name: businessName || null,
+              email: email || null,
+            }
+          }
+        });
+      } catch (_) { /* don’t block flow if push fails */ }
+      /* ------------------------------------------- */
+
+      // Navigate after onboarding
       router.replace(quotesListHref);
     } catch (e) {
       console.error('Save error:', e);
@@ -641,7 +643,6 @@ export default function Onboarding() {
                     <Label>Trade</Label>
                     <Text style={styles.optionalText}>Optional</Text>
                     <Input placeholder="e.g. Electrician, Plumber, Carpenter" value={tradeType} onChangeText={setTradeType} />
-                    {/* Show error if business name missing */}
                     {fieldErrors.businessName && <ErrorText>{fieldErrors.businessName}</ErrorText>}
                   </Card>
                 </View>
@@ -744,7 +745,6 @@ export default function Onboarding() {
                       </View>
                     </View>
 
-                    {/* Day Rate (auto) - more compact */}
                     <View style={[styles.calcRow, { marginBottom: 4 }]}>
                       <Text style={styles.calcLabel}>Day Rate</Text>
                       <Text style={styles.calcValue}>£{dayRate.toFixed(2)}</Text>
@@ -794,7 +794,6 @@ export default function Onboarding() {
                       )}
                       {templateError && <Text style={{ color: "#b91c1c", marginTop: 10 }}>{templateError}</Text>}
                       {fieldErrors.defaultTemplate && <ErrorText>{fieldErrors.defaultTemplate}</ErrorText>}
-                      {/* Show error if business name missing */}
                       {fieldErrors.businessName && <ErrorText>{fieldErrors.businessName}</ErrorText>}
                     </View>
                   </Card>
@@ -880,7 +879,7 @@ const modalShadow = Platform.select({
 });
 
 const modalCard = {
-  backgroundColor: '#ffffff',  // Force white
+  backgroundColor: '#ffffff',
   borderRadius: 18,
   paddingTop: 12,
   borderWidth: 1,
@@ -891,7 +890,7 @@ const modalCard = {
 const footerWrap = {
   borderTopWidth: 1,
   borderTopColor: BORDER,
-  backgroundColor: '#ffffff',  // Force white
+  backgroundColor: '#ffffff',
   borderBottomLeftRadius: 18,
   borderBottomRightRadius: 18,
 };
@@ -900,7 +899,7 @@ function Card({ children }) {
   return (
     <View
       style={{
-        backgroundColor: '#ffffff',  // Force white instead of CARD constant
+        backgroundColor: '#ffffff',
         borderRadius: 12,
         padding: 10,
         borderWidth: 1,
@@ -937,7 +936,7 @@ function Input(props) {
       {...props}
       style={[
         { 
-          backgroundColor: '#ffffff',  // Force white instead of CARD constant
+          backgroundColor: '#ffffff',
           borderColor: BORDER, 
           borderWidth: 1, 
           borderRadius: 10, 
@@ -1032,11 +1031,10 @@ const styles = StyleSheet.create({
   calcLabel: { color: MUTED, fontWeight: '700' },
   calcValue: { color: TEXT, fontWeight: '900' },
 
-  // Bottom sheet backdrop (logo only)
   modalBackdrop: { flex: 1, backgroundColor: '#0008' },
   sheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
-    backgroundColor: '#ffffff',  // Force white instead of CARD constant
+    backgroundColor: '#ffffff',
     borderTopLeftRadius: 18, borderTopRightRadius: 18,
     padding: 16, borderTopWidth: 1, borderColor: BORDER,
   },

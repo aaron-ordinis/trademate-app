@@ -40,7 +40,7 @@ import {
   Pencil,
   Trash2,
   ExternalLink,
-  Shield, // owner-only Admin row
+  Shield, // owner/admin-only Admin row
   CreditCard, // for subscription
   Crown, // for premium features
 } from "lucide-react-native";
@@ -150,7 +150,7 @@ export default function SettingsHome() {
     return v;
   };
 
-  // Load the profile row (columns aligned to your table)
+  // Load the profile row (✅ now also selects is_admin)
   const loadProfile = useCallback(async () => {
     async function attempt() {
       const authRes = await supabase.auth.getUser();
@@ -161,7 +161,7 @@ export default function SettingsHome() {
 
       const { data, error } = await supabase
         .from("profiles")
-        .select("id,business_name,trade_type,custom_logo_url,plan_tier,plan_status,trial_ends_at,admin_owner,reminder_due_enabled,reminder_days_before,reminder_overdue_enabled,reminder_overdue_every_days,reminder_send_hour_utc")
+        .select("id,business_name,trade_type,custom_logo_url,plan_tier,plan_status,trial_ends_at,admin_owner,is_admin,reminder_due_enabled,reminder_days_before,reminder_overdue_enabled,reminder_overdue_every_days,reminder_send_hour_utc")
         .eq("id", user.id)
         .maybeSingle();
       if (error) throw error;
@@ -363,7 +363,35 @@ export default function SettingsHome() {
   };
 
   const isOwner = Boolean(userProfileData?.admin_owner);
+  const isAdmin = Boolean(userProfileData?.is_admin);
+  const canSeeAdminRow = isOwner || isAdmin; // ✅ visibility gate
   const isPremium = planInfo.isPremium;
+
+  // Final defensive click gate (re-reads server just before navigation)
+  const handleOpenAdminSafely = async () => {
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u?.user?.id;
+      if (!uid) throw new Error("Not authenticated");
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("admin_owner,is_admin")
+        .eq("id", uid)
+        .maybeSingle();
+      if (error) throw error;
+
+      const allowed = Boolean(data?.admin_owner || data?.is_admin);
+      if (!allowed) {
+        showError("Admin access is restricted to owners and admins.");
+        return;
+      }
+
+      router.push("/(app)/settings/admin");
+    } catch (e) {
+      showError(e?.message || String(e));
+    }
+  };
 
   // Show content immediately with skeletons
   const showProfile = dataLoaded || userEmail; // Show if we have any data
@@ -498,13 +526,15 @@ export default function SettingsHome() {
             subtitle="Business name, address, phone, VAT"
             onPress={() => router.push("/(app)/settings/company")}
           />
-          {/* Branding & Logo button removed */}
-          {showProfile && isOwner && (
+
+          {/* ✅ Admin row only for owners/admins (visibility gate) */}
+          {showProfile && canSeeAdminRow && (
             <Row
               icon={<Shield size={18} color={MUTED} />}
               title="Admin Access"
               subtitle="Enable Admin on this device"
-              onPress={() => router.push("/(app)/settings/admin")}
+              // ✅ Defensive server check before navigation (click gate)
+              onPress={handleOpenAdminSafely}
             />
           )}
         </View>

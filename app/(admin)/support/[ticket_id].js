@@ -16,9 +16,10 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { supabase } from "../../../lib/supabase"; // <-- updated path
+import { supabase } from "../../../lib/supabase";
 import * as NavigationBar from "expo-navigation-bar";
 import * as SystemUI from "expo-system-ui";
+import * as Notifications from "expo-notifications";
 import { Feather } from "@expo/vector-icons";
 
 const CARD = "#ffffff";
@@ -41,6 +42,27 @@ function timeShort(d) {
     });
   } catch {
     return "";
+  }
+}
+
+// Add helper to notify admin via Edge Function
+async function notifyAdminPush(params) {
+  try {
+    const payload = {
+      type: params?.type || "support_message",
+      title: params?.title || "",
+      body: params?.body || "",
+      ticket_id: params?.ticket_id || null,
+    };
+    const resp = await supabase.functions.invoke("notify_admin", { body: payload });
+    if (resp?.error) {
+      console.warn("[ADMIN] notify_admin → ERROR", resp.error?.message || resp.error);
+      return { ok: false, error: resp.error };
+    }
+    return { ok: true, data: resp?.data || null };
+  } catch (e) {
+    console.warn("[ADMIN] notify_admin → FATAL", e?.message || e);
+    return { ok: false, error: e };
   }
 }
 
@@ -80,7 +102,7 @@ export default function SupportTicketScreen() {
         return;
       }
 
-      // Check admin access
+      // Admin gate
       const { data: profile } = await supabase
         .from("profiles")
         .select("admin_owner")
@@ -101,9 +123,7 @@ export default function SupportTicketScreen() {
           .maybeSingle(),
         supabase
           .from("support_messages")
-          .select(
-            "id, sender_id, sender_role, body, created_at, read_by_user, read_by_admin"
-          )
+          .select("id, sender_id, sender_role, body, created_at, read_by_user, read_by_admin")
           .eq("ticket_id", tid)
           .order("created_at", { ascending: true }),
       ]);
@@ -111,7 +131,7 @@ export default function SupportTicketScreen() {
       if (!tRes.error) setTicket(tRes.data || null);
       if (!mRes.error) setMessages(mRes.data || []);
 
-      // Mark all user messages as read-by-admin
+      // Mark user msgs as read-by-admin
       await supabase
         .from("support_messages")
         .update({ read_by_admin: true })
@@ -119,7 +139,7 @@ export default function SupportTicketScreen() {
         .eq("sender_role", "user")
         .eq("read_by_admin", false);
 
-      // Auto-transition only once: DB 'open' -> 'pending'
+      // Auto: open -> pending
       if (tRes.data?.status === "open") {
         const { error: updateError } = await supabase
           .from("support_tickets")
@@ -138,12 +158,73 @@ export default function SupportTicketScreen() {
     load();
   }, [load]);
 
+  // ⬇ Realtime: append only new, user-authored rows; de-dupe by id
+  useEffect(() => {
+    if (!tid) return;
+
+    function addIfNew(msg) {
+      if (!msg || !msg.id) return;
+      setMessages((prev) => {
+        for (let i = 0; i < prev.length; i++) {
+          if (String(prev[i].id) === String(msg.id)) return prev; // already present
+        }
+        return prev.concat([msg]);
+      });
+    }
+
+    const ch = supabase
+      .channel("support_messages_admin_" + tid)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "support_messages", filter: "ticket_id=eq." + tid },
+        async (payload) => {
+          try {
+            const msg = payload?.new || null;
+
+            // Admin screen: ignore our own admin inserts (we optimistically add those)
+            if (!msg || String(msg.sender_role || "") !== "user") return;
+
+            addIfNew(msg);
+
+            // Foreground banner so you don't miss user replies
+            const text = msg.body && msg.body !== "(attachment)" ? msg.body : "New support attachment";
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title: "Support replied",
+                body: text.length > 220 ? text.slice(0, 217) + "…" : text,
+                data: { type: "support_message", ticket_id: tid, _src: "admin-local" },
+                ...(Platform.OS === "android" ? { channelId: "alerts" } : null),
+              },
+              trigger: null,
+            });
+
+            // Send push notification to admin device (Edge Function)
+            await notifyAdminPush({
+              type: "support_message",
+              title: "New message from user",
+              body: text.length > 140 ? text.slice(0, 140) + "…" : text,
+              ticket_id: tid,
+            });
+          } catch (e) {
+            console.warn("[admin realtime] handler error:", e?.message || e);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(ch);
+      } catch {}
+    };
+  }, [tid]);
+
   const sendMessage = useCallback(async () => {
     const body = String(input || "").trim();
     if (!body || sending) return;
     setSending(true);
     try {
-      const { data: auth, error: authError } = await supabase.auth.getUser();
+      const { data: auth } = await supabase.auth.getUser();
       const user = auth?.user;
       if (!user) {
         Alert.alert("Error", "No authenticated user found.");
@@ -151,14 +232,14 @@ export default function SupportTicketScreen() {
         return;
       }
 
-      // optimistic append
+      // optimistic append (temp id ensures unique key)
       const tempId = "temp-" + Date.now();
       const optimistic = {
         id: tempId,
         ticket_id: tid,
         sender_id: user.id,
         sender_role: "admin",
-        body,
+        body: body,
         created_at: new Date().toISOString(),
         read_by_user: false,
         read_by_admin: true,
@@ -166,29 +247,28 @@ export default function SupportTicketScreen() {
       setMessages((m) => m.concat([optimistic]));
       setInput("");
 
-      const { data, error } = await supabase
+      // write message
+      const ins = await supabase
         .from("support_messages")
         .insert({
           ticket_id: tid,
           sender_id: user.id,
           sender_role: "admin",
-          body,
+          body: body,
         })
-        .select(
-          "id, sender_id, sender_role, body, created_at, read_by_user, read_by_admin"
-        )
+        .select("id, sender_id, sender_role, body, created_at, read_by_user, read_by_admin")
         .single();
 
-      if (error) {
+      if (ins.error) {
         setMessages((m) => m.filter((x) => x.id !== tempId));
-        Alert.alert("Send failed", error.message || "Could not send message");
-        console.warn("[support] sendMessage error", error);
+        Alert.alert("Send failed", ins.error.message || "Could not send message");
+        console.warn("[support] sendMessage error", ins.error);
         return;
       }
 
-      setMessages((m) => m.filter((x) => x.id !== tempId).concat([data]));
+      setMessages((m) => m.filter((x) => x.id !== tempId).concat([ins.data]));
 
-      // Only touch timestamps; keep DB status as 'pending'
+      // touch timestamps; keep status pending
       await supabase
         .from("support_tickets")
         .update({
@@ -196,6 +276,31 @@ export default function SupportTicketScreen() {
           updated_at: new Date().toISOString(),
         })
         .eq("id", tid);
+
+      // inbox row for user (optional)
+      if (ticket?.user_id) {
+        await supabase.from("notifications").insert({
+          user_id: ticket.user_id,
+          title: "New support message",
+          body: body.length > 120 ? body.slice(0, 117) + "..." : body,
+          type: "support_message",
+          ticket_id: tid,
+          read: false,
+        });
+      }
+
+      // Push to ticket owner via Edge Function
+      if (ticket?.user_id) {
+        await supabase.functions.invoke("notify_user", {
+          body: {
+            user_id: ticket.user_id,
+            type: "support_message",
+            title: "New message from support",
+            body: body.length > 140 ? body.slice(0, 140) + "…" : body,
+            ticket_id: tid,
+          },
+        });
+      }
     } catch (e) {
       console.warn("[support] sendMessage", e);
       setMessages((m) =>
@@ -212,17 +317,17 @@ export default function SupportTicketScreen() {
     } finally {
       setSending(false);
     }
-  }, [input, sending, tid]);
+  }, [input, sending, tid, ticket?.user_id]);
 
   const closeTicket = useCallback(async () => {
     if (!ticket || closing) return;
     try {
       setClosing(true);
-      const { error } = await supabase
+      const upd = await supabase
         .from("support_tickets")
         .update({ status: "closed", updated_at: new Date().toISOString() })
         .eq("id", tid);
-      if (error) throw error;
+      if (upd.error) throw upd.error;
 
       setTicket((p) => (p ? { ...p, status: "closed" } : null));
       setMessages((m) =>
@@ -237,6 +342,27 @@ export default function SupportTicketScreen() {
         ])
       );
       setShowCloseModal(false);
+
+      if (ticket?.user_id) {
+        await supabase.from("notifications").insert({
+          user_id: ticket.user_id,
+          title: "Ticket closed",
+          body: "Support has closed your ticket.",
+          type: "support_message",
+          ticket_id: tid,
+          read: false,
+        });
+
+        await supabase.functions.invoke("notify_user", {
+          body: {
+            user_id: ticket.user_id,
+            type: "support_message",
+            title: "Ticket closed",
+            body: "Support has closed your ticket.",
+            ticket_id: tid,
+          },
+        });
+      }
     } catch (e) {
       console.warn("[support] closeTicket", e);
       Alert.alert("Error", "Failed to close ticket. Please try again.");
@@ -245,44 +371,29 @@ export default function SupportTicketScreen() {
     }
   }, [ticket, closing, tid]);
 
+  // Fix: Remove duplicate renderItem definition and ensure only one renderItem function exists
   const renderItem = ({ item }) => {
+    // Inverted: "admin" messages are left-aligned and grey, "user" messages are right-aligned and blue.
     const mine = item.sender_role === "admin";
     const isSystem = item.sender_role === "system";
-    // Sent (admin): right, blue. Received (user): left, grey.
     const alignStyle = isSystem
       ? { justifyContent: "center" }
       : mine
-      ? { justifyContent: "flex-end" }
-      : { justifyContent: "flex-start" };
-    const bubbleStyle = isSystem
-      ? st.bubbleSystem
-      : mine
-      ? st.bubbleMine
-      : st.bubbleThem;
+      ? { justifyContent: "flex-start" }
+      : { justifyContent: "flex-end" };
+    const bubbleStyle = isSystem ? st.bubbleSystem : mine ? st.bubbleThem : st.bubbleMine;
     const selfAlign = isSystem
       ? { alignSelf: "center" }
       : mine
-      ? { alignSelf: "flex-end" }
-      : { alignSelf: "flex-start" };
+      ? { alignSelf: "flex-start" }
+      : { alignSelf: "flex-end" };
     return (
       <View style={[st.msgRow, alignStyle]}>
         <View style={[st.bubble, bubbleStyle, selfAlign]}>
-          <Text
-            style={[
-              st.msgText,
-              mine && { color: "#fff" },
-              isSystem && { color: "#b45309" },
-            ]}
-          >
+          <Text style={[st.msgText, !mine && !isSystem && { color: "#fff" }, isSystem && { color: "#b45309" }]}>
             {item.body}
           </Text>
-          <Text
-            style={[
-              st.meta,
-              mine && { color: "#fff" },
-              isSystem && { color: "#b45309" },
-            ]}
-          >
+          <Text style={[st.meta, !mine && !isSystem && { color: "#fff" }, isSystem && { color: "#b45309" }]}>
             {timeShort(item.created_at)}
           </Text>
         </View>
@@ -291,6 +402,25 @@ export default function SupportTicketScreen() {
   };
 
   const isTicketClosed = ticket?.status === "closed";
+
+  // Header right actions (close and refresh, styled like index.js)
+  const headerActions = (
+    <View style={{ flexDirection: "row", gap: 8 }}>
+      {!isTicketClosed && (
+        <TouchableOpacity
+          style={st.iconBtn}
+          onPress={() => setShowCloseModal(true)}
+          disabled={closing}
+          activeOpacity={0.9}
+        >
+          <Feather name="x" size={18} color={DANGER} />
+        </TouchableOpacity>
+      )}
+      <TouchableOpacity style={st.iconBtn} onPress={load} activeOpacity={0.9}>
+        <Feather name="refresh-cw" size={18} color={BRAND} />
+      </TouchableOpacity>
+    </View>
+  );
 
   return (
     <View style={st.screen}>
@@ -307,36 +437,17 @@ export default function SupportTicketScreen() {
           </Text>
           {!!ticket && (
             <Text style={st.headerSubtitle}>
-              {ticket.status?.toUpperCase()} • Priority: {ticket.priority || "normal"}
+              {String(ticket.status || "").toUpperCase()} • Priority: {ticket.priority || "normal"}
             </Text>
           )}
         </View>
-        <View style={st.headerActions}>
-          {!isTicketClosed && (
-            <TouchableOpacity
-              style={[st.closeBtn, closing && { opacity: 0.6 }]}
-              onPress={() => setShowCloseModal(true)}
-              disabled={closing}
-            >
-              <Feather name="x" size={16} color="#fff" />
-              <Text style={st.closeBtnText}>
-                {closing ? "Closing..." : "Close"}
-              </Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity style={st.refreshBtn} onPress={load}>
-            <Feather name="refresh-cw" size={18} color={BRAND} />
-          </TouchableOpacity>
-        </View>
+        <View style={st.headerActions}>{headerActions}</View>
       </View>
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <FlatList
           data={messages}
-          keyExtractor={(it) => String(it.id)}
+          keyExtractor={(it, idx) => String(it?.id || it?.created_at || idx)}
           renderItem={renderItem}
           contentContainerStyle={{ padding: 16, paddingBottom: 110 }}
           ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
@@ -344,16 +455,14 @@ export default function SupportTicketScreen() {
             <View style={st.emptyState}>
               <Feather name="message-circle" size={48} color={MUTED} />
               <Text style={st.emptyTitle}>No messages yet</Text>
-              <Text style={st.emptySubtitle}>
-                Start the conversation by sending a message
-              </Text>
+              <Text style={st.emptySubtitle}>Start the conversation by sending a message</Text>
             </View>
           }
           onRefresh={load}
           refreshing={loading}
         />
 
-        {!isTicketClosed && (
+        {!isTicketClosed ? (
           <View style={st.composerWrap}>
             <TextInput
               value={input}
@@ -373,9 +482,7 @@ export default function SupportTicketScreen() {
               <Feather name="send" size={18} color="#fff" />
             </TouchableOpacity>
           </View>
-        )}
-
-        {isTicketClosed && (
+        ) : (
           <View style={st.closedNotice}>
             <Feather name="check-circle" size={20} color={SUCCESS} />
             <Text style={st.closedNoticeText}>This ticket has been closed</Text>
@@ -388,7 +495,9 @@ export default function SupportTicketScreen() {
       <Modal visible={showCloseModal} animationType="fade" transparent>
         <Pressable
           style={st.modalBackdrop}
-          onPress={() => !closing && setShowCloseModal(false)}
+          onPress={() => {
+            if (!closing) setShowCloseModal(false);
+          }}
         />
         <View style={st.modalContainer}>
           <View style={st.modalCard}>
@@ -398,8 +507,7 @@ export default function SupportTicketScreen() {
             </View>
 
             <Text style={st.modalMessage}>
-              Are you sure you want to close this ticket? This will mark it as
-              resolved and stop further replies.
+              Are you sure you want to close this ticket? This will mark it as resolved and stop further replies.
             </Text>
 
             <View style={st.modalActions}>
@@ -419,9 +527,7 @@ export default function SupportTicketScreen() {
                 activeOpacity={0.9}
               >
                 <Feather name="x" size={16} color="#fff" />
-                <Text style={st.modalBtnTextDanger}>
-                  {closing ? "Closing..." : "Close Ticket"}
-                </Text>
+                <Text style={st.modalBtnTextDanger}>{closing ? "Closing..." : "Close Ticket"}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -456,6 +562,17 @@ const st = StyleSheet.create({
   headerSubtitle: { fontSize: 12, color: MUTED, fontWeight: "500" },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
 
+  iconBtn: {
+    height: 38,
+    width: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: CARD,
+  },
+
   closeBtn: {
     backgroundColor: DANGER,
     borderRadius: 8,
@@ -484,11 +601,8 @@ const st = StyleSheet.create({
   emptySubtitle: { color: MUTED, fontSize: 14, textAlign: "center", lineHeight: 20 },
 
   msgRow: { flexDirection: "row", marginHorizontal: 10 },
-  // Sent (admin): right, blue
   bubbleMine: { backgroundColor: BRAND, borderColor: BRAND },
-  // Received (user): left, grey
   bubbleThem: { backgroundColor: "#f3f4f6", borderColor: BORDER },
-  // System: center, orange
   bubbleSystem: { backgroundColor: "#fff7ed", borderColor: "#fed7aa" },
   bubble: {
     maxWidth: "86%",

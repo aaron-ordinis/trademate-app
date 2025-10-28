@@ -40,13 +40,13 @@ export default function Login() {
   const [rememberMe, setRememberMe] = useState(true);
 
   // Inline message (no popups)
-  const [inlineMsg, setInlineMsg] = useState(""); // text
-  const [inlineKind, setInlineKind] = useState("info"); // "error" | "success" | "info"
-  const [showPwPanel, setShowPwPanel] = useState(false); // visibility of rules panel
+  const [inlineMsg, setInlineMsg] = useState("");
+  const [inlineKind, setInlineKind] = useState("info");
+  const [showPwPanel, setShowPwPanel] = useState(false);
 
   const normEmail = () => email.trim().toLowerCase();
 
-  // ---- Password requirements (live) ----
+  // ---- Password requirements ----
   const rules = useMemo(() => {
     const pw = password || "";
     return {
@@ -58,7 +58,8 @@ export default function Login() {
     };
   }, [password]);
 
-  const allRulesOk = rules.length && rules.upper && rules.lower && rules.digit && rules.special;
+  const allRulesOk =
+    rules.length && rules.upper && rules.lower && rules.digit && rules.special;
 
   // Load remembered prefs
   useEffect(() => {
@@ -74,7 +75,7 @@ export default function Login() {
     })();
   }, []);
 
-  // Auto-leave login if a valid session already exists
+  // Auto-leave login if session exists
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -85,7 +86,9 @@ export default function Login() {
         }
       } catch {}
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [router]);
 
   const mapSupabaseError = (err) => {
@@ -93,7 +96,8 @@ export default function Login() {
     const code = String(err?.code || "").toLowerCase();
     if (code === "invalid_credentials" || msg.includes("invalid login credentials"))
       return "Email or password is incorrect.";
-    if (msg.includes("email not confirmed")) return "Please confirm your email before signing in.";
+    if (msg.includes("email not confirmed"))
+      return "Please confirm your email before signing in.";
     return err?.message || "Something went wrong. Please try again.";
   };
 
@@ -132,13 +136,15 @@ export default function Login() {
       const e = normEmail();
       await persistRemember(e);
 
-      const { data, error } = await supabase.auth.signInWithPassword({ email: e, password });
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: e,
+        password,
+      });
       if (error) throw error;
 
-      // Go straight to tabs with cache-busting ts
       router.replace(`/(app)/(tabs)/quotes?t=${Date.now()}`);
     } catch (e) {
-      setShowPwPanel(true); // show requirements only on login fail
+      setShowPwPanel(true);
       setInlineKind("error");
       setInlineMsg(mapSupabaseError(e));
     } finally {
@@ -146,12 +152,11 @@ export default function Login() {
     }
   };
 
-  // ---- Register (same screen). Email confirmation is OFF. ----
+  // ---- Register ----
   const handleRegister = async () => {
     if (loading) return;
     if (!validateEmailPw()) return;
 
-    // Enforce strong password; show panel only on failure
     if (!allRulesOk) {
       setShowPwPanel(true);
       setInlineKind("error");
@@ -168,31 +173,65 @@ export default function Login() {
         email: e,
         password,
         options: {
-          // With confirm OFF a session is returned; this value is ignored but harmless.
           emailRedirectTo: "tradematequotes://auth/login",
           data: { plan_tier: "free" },
         },
       });
       if (error) throw error;
 
-      // With confirm OFF, we should get a session. Be defensive anyway.
+      // 🔔 Notify Admins (new registration)
+      try {
+        await supabase.functions.invoke("notify_admin", {
+          body: {
+            type: "new_user",
+            title: "New user registered",
+            message: e + " created an account",
+            user_id: data?.user?.id || null,
+            meta: { email: e },
+          },
+        });
+      } catch (notifyErr) {
+        console.log("notify_admin(new_user) failed:", notifyErr?.message || notifyErr);
+      }
+
       if (data?.session) {
         router.replace({
           pathname: "/(app)/onboarding",
-          params: { animation: 'none' }
+          params: { animation: "none" },
         });
       } else {
         setInlineKind("success");
         setInlineMsg("Account created. Signing you in…");
-        // Fallback: try password sign-in
-        const { error: e2 } = await supabase.auth.signInWithPassword({ email: e, password });
-        if (!e2) router.replace({
-          pathname: "/(app)/onboarding",
-          params: { animation: 'none' }
+
+        const { error: e2 } = await supabase.auth.signInWithPassword({
+          email: e,
+          password,
         });
+
+        // Optional: second notify if user row wasn’t ready yet
+        if (!e2) {
+          try {
+            const { data: who } = await supabase.auth.getUser();
+            await supabase.functions.invoke("notify_admin", {
+              body: {
+                type: "new_user",
+                title: "New user registered",
+                message: e + " created an account",
+                user_id: who?.user?.id || null,
+                meta: { email: e, via: "post-signin" },
+              },
+            });
+          } catch {}
+        }
+
+        if (!e2)
+          router.replace({
+            pathname: "/(app)/onboarding",
+            params: { animation: "none" },
+          });
       }
     } catch (e) {
-      setShowPwPanel(true); // show requirements only on register fail
+      setShowPwPanel(true);
       let nice = e?.message ?? "Please try again.";
       if (e?.message?.includes("User already registered")) {
         nice = "This email is already registered. Try logging in instead.";
@@ -250,7 +289,6 @@ export default function Login() {
         <Text style={styles.title}>TradeMate</Text>
         <Text style={styles.subtitle}>Sign in or register to get started</Text>
 
-        {/* Inline messages */}
         {!!inlineMsg && (
           <View
             style={[
@@ -271,7 +309,6 @@ export default function Login() {
           </View>
         )}
 
-        {/* Password rules panel */}
         {showPwPanel && (
           <View
             style={[
@@ -279,7 +316,12 @@ export default function Login() {
               allRulesOk ? styles.rulesOk : styles.rulesWarn,
             ]}
           >
-            <Text style={[styles.rulesTitle, { color: allRulesOk ? OK : DANGER }]}>
+            <Text
+              style={[
+                styles.rulesTitle,
+                { color: allRulesOk ? OK : DANGER },
+              ]}
+            >
               Password requirements
             </Text>
             <Rule ok={rules.length} label="At least 8 characters" />
@@ -289,7 +331,6 @@ export default function Login() {
           </View>
         )}
 
-        {/* Inputs */}
         <View style={styles.inputWrap}>
           <TextInput
             placeholder="Email"
@@ -333,11 +374,14 @@ export default function Login() {
             style={styles.eyeBtn}
             disabled={loading}
           >
-            {showPw ? <Eye color="#9aa0a6" size={20} /> : <EyeOff color="#9aa0a6" size={20} />}
+            {showPw ? (
+              <Eye color="#9aa0a6" size={20} />
+            ) : (
+              <EyeOff color="#9aa0a6" size={20} />
+            )}
           </TouchableOpacity>
         </View>
 
-        {/* Remember + Forgot */}
         <View style={styles.checksRowSingle}>
           <TouchableOpacity
             onPress={() => setRememberMe((v) => !v)}
@@ -350,12 +394,15 @@ export default function Login() {
             <Text style={styles.checkLabel}>Remember me</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={{ marginLeft: "auto" }} onPress={handleForgotPw} disabled={loading}>
+          <TouchableOpacity
+            style={{ marginLeft: "auto" }}
+            onPress={handleForgotPw}
+            disabled={loading}
+          >
             <Text style={styles.linkText}>Forgot password?</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Actions */}
         <View style={styles.row}>
           <TouchableOpacity
             style={[styles.primaryBtn, loading && { opacity: 0.7 }]}
@@ -365,7 +412,11 @@ export default function Login() {
             <Text style={styles.primaryBtnText}>Login</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.registerBtn} onPress={handleRegister} disabled={loading}>
+          <TouchableOpacity
+            style={styles.registerBtn}
+            onPress={handleRegister}
+            disabled={loading}
+          >
             <Text style={styles.registerBtnText}>Register</Text>
           </TouchableOpacity>
         </View>
@@ -378,8 +429,12 @@ export default function Login() {
 function Rule({ ok, label }) {
   return (
     <View style={ruleStyles.row}>
-      <Text style={[ruleStyles.dot, { color: ok ? OK : DANGER }]}>{ok ? "✓" : "•"}</Text>
-      <Text style={[ruleStyles.text, { color: ok ? OK : DANGER }]}>{label}</Text>
+      <Text style={[ruleStyles.dot, { color: ok ? OK : DANGER }]}>
+        {ok ? "✓" : "•"}
+      </Text>
+      <Text style={[ruleStyles.text, { color: ok ? OK : DANGER }]}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -391,12 +446,33 @@ const ruleStyles = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#ffffff", paddingHorizontal: 20, justifyContent: "center" },
-  card: { backgroundColor: "#ffffff", borderRadius: 18, padding: 22, alignItems: "center", elevation: 4 },
+  screen: {
+    flex: 1,
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 20,
+    justifyContent: "center",
+  },
+  card: {
+    backgroundColor: "#ffffff",
+    borderRadius: 18,
+    padding: 22,
+    alignItems: "center",
+    elevation: 4,
+  },
   logo: { width: 156, height: 156, marginBottom: 14 },
-  title: { color: TEXT, fontSize: 26, fontWeight: "800", marginBottom: 6, textAlign: "center" },
-  subtitle: { color: SUBTLE, fontSize: 14, marginBottom: 12, textAlign: "center" },
-
+  title: {
+    color: TEXT,
+    fontSize: 26,
+    fontWeight: "800",
+    marginBottom: 6,
+    textAlign: "center",
+  },
+  subtitle: {
+    color: SUBTLE,
+    fontSize: 14,
+    marginBottom: 12,
+    textAlign: "center",
+  },
   inlineBox: {
     width: "100%",
     borderRadius: 12,
@@ -409,7 +485,6 @@ const styles = StyleSheet.create({
   inlineBoxError: { backgroundColor: "#fdecec", borderColor: "#f7c8c8" },
   inlineBoxSuccess: { backgroundColor: "#ecfdf5", borderColor: "#bbf7d0" },
   inlineText: { fontSize: 14, color: TEXT },
-
   rulesBox: {
     width: "100%",
     borderRadius: 14,
@@ -420,18 +495,6 @@ const styles = StyleSheet.create({
   rulesWarn: { backgroundColor: "#fff1f2", borderColor: "#fecdd3" },
   rulesOk: { backgroundColor: "#ecfdf5", borderColor: "#bbf7d0" },
   rulesTitle: { fontWeight: "800", marginBottom: 6, fontSize: 14 },
-
-  errorText: {
-    width: "100%",
-    color: DANGER,
-    backgroundColor: "#fdecec",
-    borderColor: "#f7c8c8",
-    borderWidth: 1,
-    padding: 10,
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-
   inputWrap: { width: "100%", marginBottom: 12, position: "relative" },
   input: {
     width: "100%",
@@ -445,8 +508,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   inputHasIcon: { paddingRight: 46 },
-  eyeBtn: { position: "absolute", right: 10, top: 0, bottom: 0, justifyContent: "center" },
-
+  eyeBtn: {
+    position: "absolute",
+    right: 10,
+    top: 0,
+    bottom: 0,
+    justifyContent: "center",
+  },
   checksRowSingle: {
     width: "100%",
     flexDirection: "row",
@@ -469,10 +537,21 @@ const styles = StyleSheet.create({
   tick: { color: BRAND, fontWeight: "800", fontSize: 14, lineHeight: 14 },
   checkLabel: { color: SUBTLE, fontSize: 13 },
   linkText: { color: BRAND, fontWeight: "700" },
-
   row: { width: "100%", flexDirection: "row", gap: 12, marginTop: 10 },
-  primaryBtn: { flex: 1, backgroundColor: BRAND, borderRadius: 12, padding: 14, alignItems: "center" },
+  primaryBtn: {
+    flex: 1,
+    backgroundColor: BRAND,
+    borderRadius: 12,
+    padding: 14,
+    alignItems: "center",
+  },
   primaryBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
-  registerBtn: { flex: 1, backgroundColor: "#facc15", borderRadius: 12, padding: 14, alignItems: "center" },
+  registerBtn: {
+    flex: 1,
+    backgroundColor: "#facc15",
+    borderRadius: 12,
+    padding: 14,
+    alignItems: "center",
+  },
   registerBtnText: { color: "#1b1b1b", fontWeight: "800", fontSize: 16 },
 });

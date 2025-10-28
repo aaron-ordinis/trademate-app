@@ -1,307 +1,374 @@
-// app/_layout.js
-import '../polyfills/auth-session-shim';
-import 'react-native-gesture-handler';
-import 'react-native-reanimated';
+// app/_layout.js  (robust push setup, Android channel, safe routing, diagnostics)
+// No template literals anywhere.
 
-import React, { useEffect, useState, useRef } from 'react';
-import { StatusBar, View, Animated, Text, Image, StyleSheet, LogBox, Platform } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { Stack, useRouter, useSegments } from 'expo-router';
-import OnboardingCarousel from '../components/OnboardingCarousel';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from '../lib/supabase';
-import * as NavigationBar from 'expo-navigation-bar';
-import * as SystemUI from 'expo-system-ui';
+import "../polyfills/auth-session-shim";
+import "react-native-gesture-handler";
+import "react-native-reanimated";
 
-// Silence noisy RN dev warning triggered by animations in dev builds
-LogBox.ignoreLogs(['useInsertionEffect must not schedule updates']);
+import React, { useEffect, useState } from "react";
+import { View, StatusBar, Platform, LogBox, AppState, Alert } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { Stack, useRouter } from "expo-router";
+import * as NavigationBar from "expo-navigation-bar";
+import * as SystemUI from "expo-system-ui";
+import * as Notifications from "expo-notifications";
+import * as Device from "expo-device";
+import Constants from "expo-constants";
+import { supabase } from "../lib/supabase";
 
-// Consistent, soft backgrounds
-const BG_APP = '#EEF2F6';
-const BG_AUTH = '#FFFFFF';
-const ONBOARDING_KEY = 'onboarding_completed';
+/* ========================
+   DEBUG
+======================== */
+const TAG = "[PUSHDBG]";
+function dbg() {
+  try { console.warn.apply(console, [TAG].concat([].slice.call(arguments))); } catch (_) {}
+}
+LogBox.ignoreLogs(["Setting a timer", "AsyncStorage"]);
+dbg("FILE LOADED: app/_layout.js");
 
-// Theme colors for splash
-const BRAND = '#2a86ff';
-const TEXT = '#0b1220';
-const BG = '#ffffff';
+/* ========================
+   ANDROID CHANNEL
+======================== */
+const ANDROID_CHANNEL_ID = "alerts"; // must match server channelId
 
-// Simplified Splash Screen - no effects that could cause scheduling issues
-function SplashScreen({ onComplete }) {
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      Animated.sequence([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-        Animated.delay(2000),
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-      ]).start(onComplete);
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [fadeAnim, onComplete]);
-
-  return (
-    <View style={splashStyles.container}>
-      <Animated.View style={[splashStyles.content, { opacity: fadeAnim }]}>
-        <View style={splashStyles.logoContainer}>
-          <Image
-            source={require('../assets/images/trademate-login-logo.png')}
-            style={splashStyles.logo}
-            resizeMode="contain"
-          />
-        </View>
-
-        <View style={splashStyles.textContainer}>
-          <Text style={splashStyles.title}>TradeMate</Text>
-          <Text style={splashStyles.subtitle}>Professional Trade Quotes</Text>
-        </View>
-
-        <View style={splashStyles.loadingContainer}>
-          <View style={splashStyles.loadingDots}>
-            <View style={splashStyles.dot} />
-            <View style={splashStyles.dot} />
-            <View style={splashStyles.dot} />
-          </View>
-        </View>
-      </Animated.View>
-    </View>
-  );
+async function ensureAndroidChannel() {
+  if (Platform.OS !== "android") return;
+  try {
+    // Create or update high-importance channel. Do NOT delete existing channel in production.
+    dbg("ensureAndroidChannel: set channel 'alerts' (MAX)");
+    await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
+      name: "Alerts",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [150, 120, 150, 120, 220],
+      sound: "default",
+      enableVibrate: true,
+      lightColor: "#2a86ff",
+      showBadge: true,
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
+    const ch = await Notifications.getNotificationChannelAsync(ANDROID_CHANNEL_ID);
+    dbg("ensureAndroidChannel OK:", ch ? ch.id : "(null)");
+  } catch (e) {
+    dbg("ensureAndroidChannel ERROR:", e && e.message ? e.message : String(e));
+  }
 }
 
-export default function RootLayout() {
-  const router = useRouter();
-  const segments = useSegments();
-
-  const [showSplash, setShowSplash] = useState(true);
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [initOnboardingDone, setInitOnboardingDone] = useState(false);
-  const [guardReady, setGuardReady] = useState(false);
-  const [appFullyReady, setAppFullyReady] = useState(false);
-
-  const inAuth = segments[0] === '(auth)';
-  const inAdmin = segments[0] === '(admin)';
-
-  // Simple onboarding check
-  useEffect(() => {
-    const init = async () => {
-      try {
-        const completed = await AsyncStorage.getItem(ONBOARDING_KEY);
-        if (completed !== 'true') setShowOnboarding(true);
-      } catch (error) {
-        console.log('Onboarding check error:', error);
-      } finally {
-        setInitOnboardingDone(true);
-      }
+/* ========================
+   Notification handler
+======================== */
+Notifications.setNotificationHandler({
+  handleNotification: async function () {
+    dbg("handler() → {alert:true,sound:true,badge:false}");
+    return {
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
     };
-    init();
-  }, []);
+  },
+});
 
-  // Simple auth guard (hardened against invalid/expired refresh tokens)
-  useEffect(() => {
-    if (showSplash) return;
+/* ========================
+   Helpers
+======================== */
+function safeLower(s) {
+  return typeof s === "string" ? s.toLowerCase() : "";
+}
 
-    const checkAuth = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
+function routeForNotificationData(data) {
+  dbg("routeForNotificationData IN:", data);
+  if (!data || !data.type) return { pathname: "/quotes/index", params: {} };
 
-        // If there is no valid session (e.g. invalid refresh token in dev build), force a clean state.
-        if (!session) {
-          try { await supabase.auth.signOut(); } catch {}
-        }
+  const t = safeLower(String(data.type));
+  if (t === "support_message" && data.ticket_id) {
+    return { pathname: "/settings/help/[ticketid]", params: { ticketid: String(data.ticket_id) } };
+  }
+  if (t === "quote_created") {
+    if (data.quote_id) return { pathname: "/quotes/[id]", params: { id: String(data.quote_id) } };
+    return { pathname: "/quotes/index", params: {} };
+  }
+  return { pathname: "/quotes/index", params: {} };
+}
 
-        // Allow admin routes without redirects from this guard (admin gating happens inside admin code)
-        if (inAdmin) {
-          setGuardReady(true);
-          return;
-        }
+async function dumpNotificationState(where) {
+  try {
+    const perm = await Notifications.getPermissionsAsync();
+    const channels = Platform.OS === "android" ? await Notifications.getNotificationChannelsAsync() : [];
+    const activeCh = Platform.OS === "android" ? await Notifications.getNotificationChannelAsync(ANDROID_CHANNEL_ID) : null;
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    const presented = await Notifications.getPresentedNotificationsAsync();
 
-        if (session && inAuth) {
-          router.replace('/(app)/(tabs)/quotes'); // was '/(app)/quotes'
-        } else if (!session && !inAuth) {
-          router.replace('/(auth)/login');
-        }
-      } catch (e) {
-        console.log('[Guard] error:', e);
-      } finally {
-        setGuardReady(true);
-      }
-    };
+    dbg("=== NOTIF STATE DUMP @", where, "===");
+    dbg("Permissions:", perm);
+    if (Platform.OS === "android") {
+      dbg("All channels:", channels);
+      dbg("Active channel:", activeCh);
+    }
+    dbg("Scheduled local count:", scheduled && scheduled.length ? scheduled.length : 0);
+    dbg("Presented count:", presented && presented.length ? presented.length : 0);
+    if (presented && presented.length) {
+      const last = presented[presented.length - 1];
+      dbg("Last presented summary:", {
+        id: last && last.request ? last.request.identifier : null,
+        title: last && last.request && last.request.content ? last.request.content.title : null,
+        body: last && last.request && last.request.content ? last.request.content.body : null,
+        data: last && last.request && last.request.content ? last.request.content.data : null,
+      });
+    }
+    dbg("=== /NOTIF STATE DUMP ===");
+  } catch (e) {
+    dbg("dumpNotificationState ERROR:", e && e.message ? e.message : String(e));
+  }
+}
 
-    checkAuth();
+/**
+ * Mirror a received push to a local banner when app is foregrounded.
+ * Also adds Android DND/priority-mode fallback via Alert.
+ */
+async function mirrorForegroundBanner(content, data) {
+  const title = content && content.title ? content.title : null;
+  const body = content && content.body ? content.body : null;
+  const mirrored = data && data.__mirrored_local ? true : false;
+  if (mirrored) {
+    dbg("mirror: skip (already mirrored)");
+    return;
+  }
+  const typeText = String(data && data.type ? data.type : "update").replace(/_/g, " ");
 
-    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-      // Skip redirects while on admin routes to avoid flicker/loops
-      if (inAdmin) return;
+  // Detect Android DND / Priority Only
+  var inDnd = false;
+  try {
+    const perm = await Notifications.getPermissionsAsync();
+    // interruptionFilter: 2 === ALL (not in DND). Others mean DND/priority.
+    inDnd = Platform.OS === "android" && perm && perm.android && perm.android.interruptionFilter !== 2;
+  } catch (_) {}
 
-      if (!session || event === 'SIGNED_OUT') {
-        if (!inAuth) router.replace('/(auth)/login');
-        return;
-      }
-
-      if (inAuth) router.replace('/(app)/(tabs)/quotes'); // was '/(app)/quotes'
+  if (Platform.OS === "android") {
+    dbg("mirror: Android → schedule local banner on channel: alerts");
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: title || "TradeMate",
+        body: body || ("New " + typeText),
+        data: Object.assign({}, data || {}, { __mirrored_local: 1 }),
+        channelId: ANDROID_CHANNEL_ID,
+        priority: Notifications.AndroidNotificationPriority.MAX,
+        sound: "default",
+        sticky: false,
+      },
+      trigger: null,
     });
 
-    return () => {
-      try { sub.subscription.unsubscribe(); } catch {}
-    };
-  }, [router, inAuth, inAdmin, showSplash]);
-
-  const handleOnboardingClose = async () => {
-    try {
-      await AsyncStorage.setItem(ONBOARDING_KEY, 'true');
-    } catch (error) {
-      console.log('Failed to save onboarding:', error);
+    if (inDnd) {
+      dbg("mirror: DND active → show in-app Alert fallback");
+      Alert.alert(title || "TradeMate", body || ("New " + typeText));
     }
-    setShowOnboarding(false);
-  };
+    return;
+  }
 
-  const handleSplashComplete = () => {
-    setShowSplash(false);
-  };
+  // iOS: mirror only for silent (data-only) pushes
+  if (!title && !body) {
+    dbg("mirror: iOS data-only → schedule local banner");
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "TradeMate",
+        body: "New " + typeText,
+        data: Object.assign({}, data || {}, { __mirrored_local: 1 }),
+      },
+      trigger: null,
+    });
+  } else {
+    dbg("mirror: iOS system banner handled by setNotificationHandler()");
+  }
+}
 
-  // Force white theme globally
-  useEffect(() => {
-    const setGlobalWhiteTheme = async () => {
-      try {
-        // Force status bar white immediately
-        StatusBar.setBarStyle('dark-content', true);
-        
-        if (Platform.OS === 'android') {
-          StatusBar.setBackgroundColor('#ffffff', true);
-          
-          // Force navigation bar white
-          await NavigationBar.setBackgroundColorAsync('#ffffff');
-          await NavigationBar.setButtonStyleAsync('dark');
-          if (NavigationBar.setBorderColorAsync) {
-            await NavigationBar.setBorderColorAsync('#ffffff');
-          }
-        }
-        
-        // Force system UI white
-        await SystemUI.setBackgroundColorAsync('#ffffff');
-      } catch (error) {
-        console.log('Global white theme error:', error);
-      }
-    };
+/* ========================
+   Register Push + Save
+======================== */
+async function registerForPushAndSave() {
+  try {
+    const projectId =
+      (Constants && Constants.expoConfig && Constants.expoConfig.extra && Constants.expoConfig.extra.eas && Constants.expoConfig.extra.eas.projectId) ||
+      (Constants && Constants.easConfig && Constants.easConfig.projectId) ||
+      "57f55544-8d0b-4f50-b45e-57948ba02dfc";
 
-    setGlobalWhiteTheme();
+    dbg("registerForPushAndSave start", { platform: Platform.OS, projectId: projectId, isDevice: Device.isDevice });
+    if (!Device.isDevice) {
+      dbg("registerForPushAndSave: not a physical device");
+      return null;
+    }
+
+    // Permissions (include Android 13+)
+    const perm = await Notifications.getPermissionsAsync();
+    var status = (perm && perm.status) ? perm.status : "undetermined";
+    if (status !== "granted") {
+      const ask = await Notifications.requestPermissionsAsync({
+        ios: { allowAlert: true, allowBadge: true, allowSound: true },
+        android: { allowAlert: true, allowBadge: true, allowSound: true },
+      });
+      status = ask && ask.status ? ask.status : "denied";
+    }
+    if (status !== "granted") {
+      dbg("registerForPushAndSave: permission denied", status);
+      return null;
+    }
+
+    // Token
+    const tokenResp = await Notifications.getExpoPushTokenAsync({ projectId: projectId });
+    const token = tokenResp && tokenResp.data ? tokenResp.data : null;
+    dbg("registerForPushAndSave: token", token || "(none)");
+    if (!token) return null;
+
+    // Save to Supabase profile
+    const auth = await supabase.auth.getUser();
+    const userId = auth && auth.data && auth.data.user ? auth.data.user.id : null;
+    if (!userId) {
+      dbg("registerForPushAndSave: no user (saved only locally)");
+      return token;
+    }
+
+    const prof = await supabase.from("profiles").select("push_token").eq("id", userId).maybeSingle();
+    const current = prof && prof.data ? prof.data.push_token : null;
+    if (current !== token) {
+      await supabase.from("profiles").update({ push_token: token }).eq("id", userId);
+      dbg("registerForPushAndSave: token saved to profiles");
+    } else {
+      dbg("registerForPushAndSave: token unchanged");
+    }
+    return token;
+  } catch (e) {
+    dbg("registerForPushAndSave ERROR:", e && e.message ? e.message : String(e));
+    return null;
+  }
+}
+
+/* ========================
+   Root Layout
+======================== */
+export default function RootLayout() {
+  const router = useRouter();
+  const [appFullyReady] = useState(true);
+
+  useEffect(function () {
+    dbg("MOUNT RootLayout");
+    const sub = AppState.addEventListener("change", function (s) {
+      dbg("AppState:", s);
+      dumpNotificationState("AppState:" + String(s));
+    });
+    return function () { try { sub.remove(); } catch (_) {} };
   }, []);
 
-  // Wait for everything to be ready before showing the app
-  useEffect(() => {
-    if (!showSplash && initOnboardingDone && guardReady) {
-      // Increase delay to ensure tab structure is fully mounted
-      const timer = setTimeout(() => {
-        setAppFullyReady(true);
-      }, 200);
-      return () => clearTimeout(timer);
+  // Base UI styling
+  useEffect(function () {
+    StatusBar.setBarStyle("dark-content", false);
+    if (Platform.OS === "android") {
+      NavigationBar.setBackgroundColorAsync("#ffffff");
+      NavigationBar.setButtonStyleAsync("dark");
     }
-  }, [showSplash, initOnboardingDone, guardReady]);
+    SystemUI.setBackgroundColorAsync("#ffffff");
+  }, []);
 
-  // Show splash screen first
-  if (showSplash) {
-    return (
-      <View style={{ flex: 1, backgroundColor: BG }}>
-        <StatusBar backgroundColor={BG} barStyle="dark-content" translucent={false} />
-        <SplashScreen onComplete={handleSplashComplete} />
-      </View>
-    );
-  }
+  // Channel + diagnostics
+  useEffect(function () {
+    (async function () {
+      await ensureAndroidChannel();
+      await dumpNotificationState("after ensureAndroidChannel");
+    })();
+  }, []);
 
-  // Show blank screen until everything is ready
-  if (!appFullyReady) {
-    return (
-      <View style={{ flex: 1, backgroundColor: BG_APP }}>
-        <StatusBar backgroundColor={BG_APP} barStyle="dark-content" translucent={false} />
-      </View>
-    );
-  }
+  // Register push on boot
+  useEffect(function () {
+    if (!appFullyReady) return;
+    (async function () {
+      await registerForPushAndSave();
+      await dumpNotificationState("after registerForPushAndSave");
+    })();
+  }, [appFullyReady]);
 
-  // Main app - only shows when fully ready
+  // Re-register when auth changes
+  useEffect(function () {
+    const sub = supabase.auth.onAuthStateChange(async function (event, session) {
+      dbg("auth change:", { event: event, user: session && session.user ? true : false });
+      if (session && session.user) {
+        await registerForPushAndSave();
+        await dumpNotificationState("after auth change re-register");
+      }
+    });
+    return function () {
+      try { sub.data && sub.data.subscription && sub.data.subscription.unsubscribe(); } catch (_) {}
+    };
+  }, []);
+
+  // Foreground receipt
+  useEffect(function () {
+    const recv = Notifications.addNotificationReceivedListener(async function (notification) {
+      const req = notification && notification.request ? notification.request : null;
+      const content = req && req.content ? req.content : {};
+      const data = content && content.data ? content.data : {};
+      dbg("onReceive:", {
+        id: req && req.identifier ? req.identifier : null,
+        title: content.title,
+        body: content.body,
+        data: data,
+      });
+      await dumpNotificationState("onReceive BEFORE mirror");
+      await mirrorForegroundBanner(content, data);
+      await dumpNotificationState("onReceive AFTER mirror");
+    });
+    return function () { try { recv.remove(); } catch (_) {} };
+  }, []);
+
+  // Tap handler + cold start routing
+  useEffect(function () {
+    if (!appFullyReady) return;
+
+    const lastHandled = { current: null };
+
+    const tapSub = Notifications.addNotificationResponseReceivedListener(async function (response) {
+      const req = response && response.notification ? response.notification.request : null;
+      const id = req && req.identifier ? String(req.identifier) : "";
+      if (id && lastHandled.current === id) return;
+      lastHandled.current = id;
+
+      const content = req && req.content ? req.content : {};
+      const data = content && content.data ? content.data : {};
+      dbg("onTap content:", { title: content.title, body: content.body, data: data });
+
+      const target = routeForNotificationData(data);
+      dbg("onTap route:", target);
+      await dumpNotificationState("onTap BEFORE route");
+
+      if (target && target.pathname) {
+        router.replace({ pathname: target.pathname, params: target.params || {} });
+      }
+    });
+
+    (async function () {
+      await dumpNotificationState("cold start BEFORE last");
+      const last = await Notifications.getLastNotificationResponseAsync();
+      if (last && last.notification && last.notification.request) {
+        const req = last.notification.request;
+        const id = String(req.identifier || "");
+        if (id && lastHandled.current !== id) {
+          lastHandled.current = id;
+          const content = req.content || {};
+          const data = content.data || {};
+          const target = routeForNotificationData(data);
+          dbg("cold start → navigating", target);
+          if (target && target.pathname) {
+            router.replace({ pathname: target.pathname, params: target.params || {} });
+          }
+        }
+      }
+      await dumpNotificationState("cold start AFTER last");
+    })();
+
+    return function () { try { tapSub.remove(); } catch (_) {} };
+  }, [appFullyReady, router]);
+
   return (
-    <SafeAreaProvider style={{ backgroundColor: '#ffffff' }}>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" translucent={false} />
-      <Stack
-        screenOptions={{
-          animation: 'none',
-          headerShown: false,
-          gestureEnabled: false,
-        }}
-      >
-        <Stack.Screen
-          name="(auth)"
-          options={{
-            headerShown: false,
-            contentStyle: { backgroundColor: BG_AUTH },
-          }}
-        />
-        <Stack.Screen name="(app)" options={{ headerShown: false }} />
-        <Stack.Screen name="(admin)" options={{ headerShown: false }} />
-      </Stack>
-
-      <OnboardingCarousel visible={showOnboarding} onClose={handleOnboardingClose} />
+    <SafeAreaProvider>
+      <View style={{ flex: 1, backgroundColor: "#ffffff" }}>
+        <Stack screenOptions={{ headerShown: false }} />
+      </View>
     </SafeAreaProvider>
   );
 }
-
-const splashStyles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: BG,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  content: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logoContainer: {
-    marginBottom: 24,
-  },
-  logo: {
-    width: 120,
-    height: 120,
-  },
-  textContainer: {
-    alignItems: 'center',
-    marginBottom: 40,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '900',
-    color: TEXT,
-    marginBottom: 8,
-    letterSpacing: -1,
-  },
-  subtitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: BRAND,
-    letterSpacing: 0.5,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-  },
-  loadingDots: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: BRAND,
-    opacity: 0.6,
-  },
-});

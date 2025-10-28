@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "318541622147",
+    "project_id": "tradematepush",
+    "storage_bucket": "tradematepush.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:318541622147:android:09f60a267c1afcbc7a24b6",
+        "android_client_info": {
+          "package_name": "com.trademate.quotes"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBIWW4S0b0xnQjOaPjnsD2b5SKxrgZLHno"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

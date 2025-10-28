@@ -32,6 +32,7 @@ export default function AdminNotificationCreate() {
     }
     setSending(true);
     try {
+      // Fetch all user IDs
       const { data: users, error } = await supabase
         .from("profiles")
         .select("id");
@@ -41,20 +42,32 @@ export default function AdminNotificationCreate() {
         setSending(false);
         return;
       }
-      const batchSize = 1000;
+
+      // Send to all users via notify_user Edge Function
+      let sentCount = 0;
+      const batchSize = 100; // notify_user handles up to 100 tokens safely
+
       for (let i = 0; i < users.length; i += batchSize) {
         const batch = users.slice(i, i + batchSize);
-        const rows = batch.map((u) => ({
-          user_id: u.id,
-          title,
-          body,
-        }));
-        const { error: insError } = await supabase
-          .from("notifications")
-          .insert(rows);
-        if (insError) throw insError;
+
+        // Fire one Edge Function per batch
+        const { error: fnError } = await supabase.functions.invoke("notify_user", {
+          body: {
+            user_ids: batch.map((u) => u.id),
+            title,
+            body,
+            type: "admin_broadcast",
+          },
+        });
+
+        if (fnError) throw fnError;
+        sentCount += batch.length;
       }
-      Alert.alert("Success", "Notification sent to all users.");
+
+      Alert.alert(
+        "Success",
+        `Notification sent to ${sentCount} users successfully.`
+      );
       setTitle("");
       setBody("");
     } catch (e) {
@@ -67,15 +80,13 @@ export default function AdminNotificationCreate() {
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={() => router.back()}
-        >
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <Feather name="arrow-left" size={22} color={TEXT} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Send Notification</Text>
         <View style={{ width: 40 }} />
       </View>
+
       <View style={styles.card}>
         <Text style={styles.label}>Title</Text>
         <TextInput
@@ -94,6 +105,7 @@ export default function AdminNotificationCreate() {
           placeholderTextColor="#b0b4bb"
           multiline
         />
+
         <TouchableOpacity
           style={[styles.sendBtn, sending && { opacity: 0.6 }]}
           onPress={sendToAll}
@@ -103,7 +115,12 @@ export default function AdminNotificationCreate() {
           {sending ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Feather name="send" size={18} color="#fff" style={{ marginRight: 8 }} />
+            <Feather
+              name="send"
+              size={18}
+              color="#fff"
+              style={{ marginRight: 8 }}
+            />
           )}
           <Text style={styles.sendBtnText}>
             {sending ? "Sending..." : "Send to All Users"}
@@ -115,7 +132,11 @@ export default function AdminNotificationCreate() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, paddingTop: Platform.OS === "ios" ? 44 : 0 },
+  screen: {
+    flex: 1,
+    backgroundColor: BG,
+    paddingTop: Platform.OS === "ios" ? 44 : 0,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",

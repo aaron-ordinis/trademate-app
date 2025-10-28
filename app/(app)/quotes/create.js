@@ -1,3 +1,4 @@
+// app/(app)/quotes/create.js
 // 3-step wizard (Step 2 = Template chooser & preview) – using global TemplatePicker
 
 import React, { useEffect, useState, useCallback, useMemo } from "react";
@@ -30,11 +31,9 @@ import AddressEditor from "./components/AddressEditor";
 import CenteredEditor from "./components/CenteredEditor";
 import FancyBuilderLoader from "./components/FancyBuilderLoader";
 import { BRAND, CARD, BORDER, BG, TEXT, MUTED, styles as baseStyles } from "./components/ui";
-
-// NEW: app-wide template picker
 import TemplatePicker from "../../../components/TemplatePicker";
 
-/* ------------------ small utils ------------------ */
+/* ---------------- small utils ---------------- */
 const MAX_JOB_DETAILS = 250;
 const COUNTER_AMBER_AT = 200;
 
@@ -99,8 +98,7 @@ const haversineMiles = (lat1, lon1, lat2, lon2) => {
   return R_km * c * 0.621371;
 };
 
-/* ------------------ TEMPLATE HELPERS ------------------ */
-// Always persist/send the full template code with ".html"
+/* ---------------- template helpers ---------------- */
 const normalizeTemplateCode = (code) => {
   if (!code) return "clean-classic.html";
   let c = String(code).trim();
@@ -110,7 +108,7 @@ const normalizeTemplateCode = (code) => {
   return c.toLowerCase();
 };
 
-/* ------------------ screen ------------------ */
+/* ---------------- screen ---------------- */
 const TOTAL_STEPS = 3;
 const STEP_TITLES = ["Client & Location", "Choose Template", "Job Details"];
 
@@ -135,8 +133,7 @@ export default function CreateQuote() {
     };
     forceWhite();
   }, []);
-
-  // Steps
+// Steps
   const [step, setStep] = useState(1);
   const next = () => setStep((s) => { const n = Math.min(s + 1, TOTAL_STEPS); if (n !== s) Haptics.selectionAsync(); return n; });
   const back = () => setStep((s) => { const n = Math.max(s - 1, 1); if (n !== s) Haptics.selectionAsync(); return n; });
@@ -369,8 +366,23 @@ export default function CreateQuote() {
         total: travelCharge || null,
         template_code: tplCode,
       };
-      const { error: insErr } = await supabase.from("quotes").insert(draftRow);
+      const { data: inserted, error: insErr } = await supabase.from("quotes").insert(draftRow).select("id").maybeSingle();
       if (insErr) throw insErr;
+
+      // --- Notify via Edge Function (DB + Push) ---
+      if (inserted && inserted.id) {
+        await supabase.functions.invoke("notify_user", {
+          body: {
+            user_id: user.id,
+            type: "quote_created",
+            title: "Quote created",
+            body: "A new quote has been created.",
+            quote_id: inserted.id,
+          },
+        });
+      }
+      // --------------------------------------------
+
       showAlert("Saved", "Draft created.");
       router.replace(quotesListHref);
     } catch (e) {
@@ -565,6 +577,20 @@ export default function CreateQuote() {
         (pdfData?.quote_number
           ? ("QUO-" + (new Date().getFullYear()) + "-" + String(pdfData.quote_number).padStart(4, "0"))
           : "quote") + ".pdf";
+
+      // --- Notify via Edge Function if new quote created ---
+      if (!existing && effectiveQuoteId && user && user.id) {
+        await supabase.functions.invoke("notify_user", {
+          body: {
+            user_id: user.id,
+            type: "quote_created",
+            title: "Quote created",
+            body: "A new quote has been created.",
+            quote_id: effectiveQuoteId,
+          },
+        });
+      }
+      // -----------------------------------------------------
 
       router.replace({
         pathname: "/(app)/quotes/preview",

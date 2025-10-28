@@ -247,7 +247,7 @@ export default function HelpScreen() {
     );
   }, [load]);
 
-  // Separate open, pending, and closed tickets
+  // Restore pendingTickets logic
   const openTickets = useMemo(
     () => tickets.filter((t) => (t.status || "").toLowerCase() === "open"),
     [tickets]
@@ -400,16 +400,17 @@ export default function HelpScreen() {
         </View>
 
         {/* Open Tickets */}
-        {openTickets.length > 0 && (
+        {(openTickets.length > 0 || pendingTickets.length > 0) && (
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <Text style={styles.cardTitle}>
-                Open Tickets ({openTickets.length})
+                Support Tickets ({openTickets.length + pendingTickets.length})
               </Text>
               <InfoButton
-                title="Open Tickets"
+                title="Support Tickets"
                 tips={[
                   "Open: Waiting for a response or in progress.",
+                  "Pending: Waiting for your reply.",
                   "Tap to view or reply.",
                   "You can close a ticket when resolved.",
                 ]}
@@ -429,25 +430,6 @@ export default function HelpScreen() {
                 onDelete={deleteTicket}
               />
             ))}
-          </View>
-        )}
-
-        {/* Pending Tickets */}
-        {pendingTickets.length > 0 && (
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.cardTitle}>
-                Pending Tickets ({pendingTickets.length})
-              </Text>
-              <InfoButton
-                title="Pending Tickets"
-                tips={[
-                  "Pending: Waiting for your reply.",
-                  "Tap to view or reply.",
-                  "You can close a ticket when resolved.",
-                ]}
-              />
-            </View>
             {pendingTickets.map((ticket) => (
               <TicketItem
                 key={ticket.id}
@@ -522,65 +504,65 @@ function TicketItem({ ticket, onPress, dimmed = false, onClose, onDelete }) {
   const dateStr = new Date(
     ticket.last_message_at || ticket.created_at
   ).toLocaleDateString();
-  const unread = ticket.unread_user_count > 0 ? ticket.unread_user_count : 0;
+  // The unread bubble is shown if unread_user_count > 0.
+  // Backend should set unread_user_count=0 when the user opens/views the ticket.
+  const unread = ticket.unread_user_count > 0;
 
   return (
     <TouchableOpacity
-      style={[styles.ticketItem, dimmed && styles.dimmedItem]}
+      style={[
+        styles.ticketCard,
+        dimmed && styles.dimmedItem,
+      ]}
       onPress={onPress}
       activeOpacity={0.7}
     >
-      <View style={styles.ticketContent}>
+      <View style={{ flex: 1 }}>
         <Text
           style={[styles.ticketTitle, dimmed && styles.dimmedText]}
-          numberOfLines={1}
+          numberOfLines={2}
         >
           {ticket.subject || "No subject"}
         </Text>
         <Text style={[styles.ticketDate, dimmed && styles.dimmedText]}>
-          Last update: {dateStr}
+          {dateStr}
         </Text>
       </View>
-
-      <View style={styles.ticketActions}>
-        {/* Blue notification dot with unread count */}
-        {unread > 0 && (
-          <View style={styles.unreadDotWrap}>
-            <View style={styles.unreadDot}>
-              <Text style={styles.unreadDotText}>
-                {unread > 9 ? "9+" : unread}
-              </Text>
-            </View>
+      <View style={styles.ticketRightCol}>
+        <View style={styles.ticketRowTop}>
+          {/* Show blue notification dot only if there are new messages */}
+          {unread && (
+            <View style={styles.unreadDot} />
+          )}
+          <View style={[styles.statusBadge, { backgroundColor: statusColor }]}>
+            <Text style={styles.statusBadgeText}>
+              {(ticket.status || "open").toUpperCase()}
+            </Text>
           </View>
-        )}
-        <View style={[styles.statusBadge, { backgroundColor: statusColor }]}>
-          <Text style={styles.statusBadgeText}>
-            {(ticket.status || "open").toUpperCase()}
-          </Text>
         </View>
-        {/* Close button for open tickets */}
-        {onClose && (ticket.status || "").toLowerCase() === "open" && (
-          <TouchableOpacity
-            onPress={() => onClose(ticket.id)}
-            style={styles.closeBtn}
-            activeOpacity={0.7}
-          >
-            <Feather name="x-circle" size={18} color={WARNING} />
-          </TouchableOpacity>
-        )}
-        {/* Delete button for all tickets */}
-        {onDelete && (
-          <TouchableOpacity
-            onPress={() => onDelete(ticket.id)}
-            style={styles.deleteBtn}
-            activeOpacity={0.7}
-          >
-            <Feather name="trash-2" size={18} color="#dc2626" />
-          </TouchableOpacity>
-        )}
+        <View style={styles.ticketRowBtns}>
+          {/* Close button for open tickets */}
+          {onClose && (ticket.status || "").toLowerCase() === "open" && (
+            <TouchableOpacity
+              onPress={() => onClose(ticket.id)}
+              style={styles.iconBtnWarn}
+              activeOpacity={0.7}
+            >
+              <Feather name="x-circle" size={16} color={WARNING} />
+            </TouchableOpacity>
+          )}
+          {/* Delete button for all tickets */}
+          {onDelete && (
+            <TouchableOpacity
+              onPress={() => onDelete(ticket.id)}
+              style={styles.iconBtnDanger}
+              activeOpacity={0.7}
+            >
+              <Feather name="trash-2" size={16} color="#dc2626" />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
-
-      <Feather name="chevron-right" size={16} color={MUTED} />
     </TouchableOpacity>
   );
 }
@@ -698,25 +680,32 @@ const styles = StyleSheet.create({
   },
   textArea: { minHeight: 100, paddingTop: 12 },
 
-  ticketItem: {
+  // --- Compact ticket card styles (like expenses) ---
+  ticketCard: {
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 8,
     flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f8fafc",
-    gap: 12,
+    alignItems: "flex-start",
+    gap: 10,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0b1220",
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 2 },
+      },
+      android: { elevation: 2 },
+    }),
   },
-  dimmedItem: { opacity: 0.6 },
-  ticketContent: { flex: 1 },
-  ticketTitle: { color: TEXT, fontWeight: "700", fontSize: 14, marginBottom: 4 },
-  ticketDate: { color: MUTED, fontSize: 12 },
-  dimmedText: { color: MUTED },
-  ticketActions: { alignItems: "center", flexDirection: "row", gap: 4 },
-  unreadDotWrap: {
-    marginRight: 6,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  ticketTitle: { color: TEXT, fontWeight: "900", fontSize: 14 },
+  ticketDate: { color: MUTED, marginTop: 2, fontWeight: "700", fontSize: 12 },
+  ticketRightCol: { alignItems: "flex-end", gap: 6, minWidth: 110 },
+  ticketRowTop: { flexDirection: "row", alignItems: "center", gap: 6 },
+  ticketRowBtns: { flexDirection: "row", gap: 6, marginTop: 2 },
   unreadDot: {
     minWidth: 18,
     height: 18,
@@ -732,33 +721,32 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: "center",
   },
-  closeBtn: {
-    marginRight: 2,
-    padding: 2,
-    borderRadius: 6,
-    backgroundColor: "#fef9c3",
-  },
-  deleteBtn: {
-    marginRight: 2,
-    padding: 2,
-    borderRadius: 6,
-    backgroundColor: "#fee2e2",
-  },
-
   statusBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
-    marginRight: 8,
+    marginRight: 0,
   },
   statusBadgeText: { color: "#fff", fontWeight: "700", fontSize: 10 },
-
-  moreText: {
-    color: MUTED,
-    fontSize: 12,
-    fontStyle: "italic",
-    textAlign: "center",
-    marginTop: 8,
+  iconBtnWarn: {
+    height: 28,
+    width: 28,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#fef9c3",
+  },
+  iconBtnDanger: {
+    height: 28,
+    width: 28,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    backgroundColor: "#fee2e2",
   },
 
   emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: 60 },
