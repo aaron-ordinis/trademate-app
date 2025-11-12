@@ -1,0 +1,43 @@
+# Ignore VS Code and local editor settings
+.vscode/
+.idea/
+*.swp
+
+# Ignore local build outputs
+android/.gradle/
+android/app/build/
+ios/build/
+build/
+dist/
+
+# Ignore node_modules cache (EAS installs fresh)
+node_modules/
+
+# Ignore environment and secrets
+.env
+.env.*
+!.env.example
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore logs and temp files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+tmp/
+
+# Expo
+.expo/
+.expo-shared/
+
+# Exclude editor, OS and large folders from EAS build tarball
+.vscode/
+.git/
+node_modules/
+.env
+*.log
+.DS_Store
+Thumbs.db
