@@ -5,7 +5,7 @@ import {
   TouchableOpacity, Alert, TextInput, Pressable, StatusBar
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Settings, Trash2, CalendarDays, MapPin, Search, RefreshCcw, Bell } from "lucide-react-native";
+import { Settings, Trash2, CalendarDays, MapPin, Search, RefreshCcw, Bell, Plus } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import { supabase } from "../../../../lib/supabase";
 import { settingsHref } from "../../../../lib/nav";
@@ -353,6 +353,15 @@ export default function InvoicesHome() {
         }
       />
 
+      {/* Create Invoice FAB (circular, same as quotes list) */}
+      <TouchableOpacity
+        onPress={() => router.push("/(app)/invoices/wizard")}
+        style={styles.fab}
+        activeOpacity={0.9}
+      >
+        <Plus size={24} color="#fff" />
+      </TouchableOpacity>
+
       {/* AI Assistant FAB (bottom-left) + sheet */}
       <AssistantFab onPress={openAssistant} />
       <AssistantSheet
@@ -471,5 +480,21 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 10,
     fontWeight: "bold",
+  },
+  fab: {
+    position: "absolute",
+    right: 18,
+    bottom: 18,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: BRAND,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: BRAND,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
 });

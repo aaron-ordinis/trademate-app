@@ -16,7 +16,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
-import { supabase } from "../../../../lib/supabase";
+import { supabase } from "../../../lib/supabase";
 import {
   List as ListIcon,
   Calendar as CalendarIcon,
@@ -31,12 +31,12 @@ import {
   Bell,
   Plus, // <-- added for FAB
 } from "lucide-react-native";
-import { jobHref } from "../../../../lib/nav";
-import SharedCalendar from "../../../../components/SharedCalendar.js";
+import { jobHref, jobCreateHref } from "../../../lib/nav";
+import SharedCalendar from "../../../components/SharedCalendar.js";
 
 /* --- AI assistant --- */
-import AssistantFab from "../../../../components/AssistantFab";
-import AssistantSheet from "../../../../components/AssistantSheet";
+import AssistantFab from "../../../components/AssistantFab";
+import AssistantSheet from "../../../components/AssistantSheet";
 
 /* Theme */
 const BG = "#f5f7fb";
@@ -466,7 +466,7 @@ export default function JobsIndex() {
                   day.getDate()
                 );
                 const iso = d.toISOString().split("T")[0];
-                router.push({ pathname: "/(app)/jobs/create", params: { start: iso } });
+                router.push({ pathname: jobCreateHref, params: { start: iso } });
               }}
             />
           </View>
@@ -474,13 +474,28 @@ export default function JobsIndex() {
         </ScrollView>
       )}
 
-      {/* Create Job FAB (circular, same as quotes list) */}
+      {/* Floating "Create job" FAB (bottom-right, same pattern as quotes list) */}
+      <View pointerEvents="box-none" style={st.fabWrap}>
+        <TouchableOpacity
+          activeOpacity={0.92}
+          style={st.fab}
+          onPress={function () {
+            buzz();
+            router.push(jobCreateHref);
+          }}
+        >
+          <Plus size={20} color="#ffffff" />
+          <Text style={st.fabText}>New job</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Circular Create Job FAB (same as quotes list) */}
       <TouchableOpacity
         onPress={function () {
           buzz();
-          router.push("/(app)/jobs/create");
+          router.push(jobCreateHref);
         }}
-        style={st.fabCircle}
+        style={st.smallFab}
         activeOpacity={0.9}
       >
         <Plus size={24} color="#fff" />
@@ -670,8 +685,8 @@ const st = StyleSheet.create({
     fontSize: 14,
   },
 
-  /* Circular FAB (matches quotes list) */
-  fabCircle: {
+  /* Circular FAB like quotes list */
+  smallFab: {
     position: "absolute",
     right: 18,
     bottom: 18,

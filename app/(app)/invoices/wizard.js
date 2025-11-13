@@ -622,13 +622,6 @@ export default function InvoiceWizard() {
 
       setSubmitting(true);
 
-      const roClient = job ? {
-        name: job.client_name || fallbackClient.name || "",
-        email: job.client_email || fallbackClient.email || "",
-        phone: job.client_phone || fallbackClient.phone || "",
-        address: job.client_address || fallbackClient.address || ""
-      } : fallbackClient;
-
       // build IDs/URLs for payload
       const selectedExpenseIdsArr = expenses.filter(e => selectedExpenseIds.has(e.id)).map(e => e.id);
       const selectedDocUrlsArr = documents.filter(d => selectedDocIds.has(d.id)).map(d => d.url).filter(Boolean);
@@ -647,10 +640,10 @@ export default function InvoiceWizard() {
         attachment_paths: selectedDocUrlsArr,
         currency: currency || "GBP",
         client_snapshot: {
-          name: roClient.name || null,
-          email: roClient.email || null,
-          phone: roClient.phone || null,
-          address: roClient.address || null
+          name: clientName || null,
+          email: clientEmail || null,
+          phone: clientPhone || null,
+          address: clientAddress || null
         },
         cis: {
           enabled: totals.cis.enabled,
@@ -917,27 +910,36 @@ export default function InvoiceWizard() {
                 <View style={styles.cardHeader}>
                   <Text style={styles.cardTitle}>Client</Text>
                   <InfoButton title="Client" tips={[
-                    "Details come from the job or source quote.",
-                    "Update the job/client to change these.",
-                    "We save a snapshot for historical accuracy."
+                    "You can edit client details for this invoice snapshot.",
+                    "This won't change the saved client or job records.",
                   ]} />
                 </View>
-                <View style={styles.kvRow}>
-                  <Text style={styles.kvLabel}>Name</Text>
-                  <Text style={styles.kvValue}>{roClient.name || "—"}</Text>
-                </View>
-                <View style={styles.kvRow}>
-                  <Text style={styles.kvLabel}>Email</Text>
-                  <Text style={styles.kvValue}>{roClient.email || "—"}</Text>
-                </View>
-                <View style={styles.kvRow}>
-                  <Text style={styles.kvLabel}>Phone</Text>
-                  <Text style={styles.kvValue}>{roClient.phone || "—"}</Text>
-                </View>
-                <View style={styles.kvRow}>
-                  <Text style={styles.kvLabel}>Address</Text>
-                  <Text style={styles.kvValue}>{roClient.address || "—"}</Text>
-                </View>
+                <Label>Name</Label>
+                <Input value={clientName} onChangeText={setClientName} placeholder="Client name" />
+                <Label>Email</Label>
+                <Input
+                  value={clientEmail}
+                  onChangeText={setClientEmail}
+                  placeholder="email@example.com"
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                />
+                <Label>Phone</Label>
+                <Input
+                  value={clientPhone}
+                  onChangeText={setClientPhone}
+                  placeholder="+44…"
+                  keyboardType="phone-pad"
+                />
+                <Label>Address</Label>
+                <Input
+                  value={clientAddress}
+                  onChangeText={setClientAddress}
+                  placeholder="Address"
+                  multiline
+                  numberOfLines={4}
+                  style={{ minHeight: 96, textAlignVertical: "top" }}
+                />
                 {!job && <Text style={styles.hint}>Using details from the quote.</Text>}
               </View>
             )}
@@ -1031,18 +1033,18 @@ export default function InvoiceWizard() {
                 </View>
                 <View style={styles.reviewRow}>
                   <Text style={styles.reviewLabel}>Client</Text>
-                  <Text style={styles.reviewValue}>{roClient.name || "(none)"}</Text>
+                  <Text style={styles.reviewValue}>{clientName || "(none)"}</Text>
                 </View>
-                {!!roClient.email && (
+                {!!clientEmail && (
                   <View style={styles.reviewRow}>
                     <Text style={styles.reviewLabel}>Email</Text>
-                    <Text style={styles.reviewValue}>{roClient.email}</Text>
+                    <Text style={styles.reviewValue}>{clientEmail}</Text>
                   </View>
                 )}
-                {!!roClient.phone && (
+                {!!clientPhone && (
                   <View style={styles.reviewRow}>
                     <Text style={styles.reviewLabel}>Phone</Text>
-                    <Text style={styles.reviewValue}>{roClient.phone}</Text>
+                    <Text style={styles.reviewValue}>{clientPhone}</Text>
                   </View>
                 )}
                 <View style={styles.reviewRow}>
