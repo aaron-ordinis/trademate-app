@@ -15,14 +15,7 @@ try {
 }
 
 import React, { useEffect, useState, useRef } from 'react';
-import {
-  ActivityIndicator,
-  View,
-  Text,
-  Animated,
-  Easing,
-  Pressable,
-} from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { useAdminGate } from '../lib/useAdminGate';
@@ -38,60 +31,7 @@ export default function Index() {
   const redirectTimerRef = useRef(null);
   const didJumpRef = useRef(false);
 
-  // Logo animations
-  const logoOpacity = useRef(new Animated.Value(0)).current;
-  const logoScale = useRef(new Animated.Value(0.9)).current;
-
-  // Tagline animations (staggered)
-  const tagOpacity = useRef(new Animated.Value(0)).current;
-  const tagTranslate = useRef(new Animated.Value(6)).current; // subtle lift-up
-
-  useEffect(() => {
-    // Stage 1: fade in + start gentle pulse on logo
-    Animated.parallel([
-      Animated.timing(logoOpacity, {
-        toValue: 1,
-        duration: 800,
-        useNativeDriver: true,
-      }),
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(logoScale, {
-            toValue: 1.05,
-            duration: 900,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }),
-          Animated.timing(logoScale, {
-            toValue: 0.95,
-            duration: 900,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }),
-        ])
-      ),
-    ]).start();
-
-    // Stage 2 (staggered): tagline fades in & lifts
-    const taglineTimer = setTimeout(() => {
-      Animated.parallel([
-        Animated.timing(tagOpacity, {
-          toValue: 1,
-          duration: 500,
-          easing: Easing.out(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(tagTranslate, {
-          toValue: 0,
-          duration: 500,
-          easing: Easing.out(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ]).start();
-    }, 300); // ~300ms after logo begins
-
-    return () => clearTimeout(taglineTimer);
-  }, [logoOpacity, logoScale, tagOpacity, tagTranslate]);
+  // No logo/tag animations — splash should be quick and then redirect
 
   useEffect(() => {
     let unsub;
@@ -106,13 +46,14 @@ export default function Index() {
       }
 
       // Delay redirect slightly so you can long-press the logo if you want Admin.
+      // greatly shortened so we go straight to login after splash
       redirectTimerRef.current = setTimeout(() => {
         if (!didJumpRef.current) {
           const to = session ? `${quotesListHref}?t=${Date.now()}` : `${loginHref}?t=${Date.now()}`;
           router.replace(to); // add cache-busting ts
           setBooting(false);
         }
-      }, 900); // ~1s window to long-press
+      }, 200); // short window before redirect
 
       // Keep routing in sync with auth changes
       const sub = supabase.auth.onAuthStateChange((event, sess) => {
@@ -150,37 +91,9 @@ export default function Index() {
           backgroundColor: '#fff',
         }}
       >
-        {/* Secret long-press target around the logo */}
-        <Pressable onLongPress={openAdminIfAllowed} delayLongPress={450}>
-          {/* Animated logo */}
-          <Animated.Image
-            source={require('../assets/icon.png')} // 👈 your helmet logo file
-            style={{
-              width: 100,
-              height: 100,
-              marginBottom: 12,
-              opacity: logoOpacity,
-              transform: [{ scale: logoScale }],
-            }}
-            resizeMode="contain"
-          />
-        </Pressable>
-
-        {/* Staggered tagline */}
-        <Animated.Text
-          style={{
-            color: '#6f7076',
-            fontSize: 14,
-            marginBottom: 20,
-            opacity: tagOpacity,
-            transform: [{ translateY: tagTranslate }],
-          }}
-        >
-          Powered by AI
-        </Animated.Text>
-
-        {/* Blue spinner */}
-        <ActivityIndicator color="#2a86ff" size="large" />
+        {/* Secret long-press target (no icon/loader) */}
+        <Pressable onLongPress={openAdminIfAllowed} delayLongPress={450} style={{ width: 100, height: 100 }} />
+        {/* Minimal splash — no icon or loader so we redirect quickly */}
       </View>
     );
   }

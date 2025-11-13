@@ -31,7 +31,7 @@ import {
   Minus,
   Plus as PlusIcon,
   RefreshCcw,
-  Bell, // <-- add this import
+  Bell,
 } from "lucide-react-native";
 
 import SharedCalendar from "../../../components/SharedCalendar";
@@ -41,7 +41,9 @@ import { quoteCreateHref, quotePreviewHref, jobHref, loginHref } from "../../../
 
 /* ---------- tiny logger ---------- */
 const log = (tag, obj) => {
-  try { console.log("[quotes.list]", tag, obj || {}); } catch {}
+  try {
+    console.log("[quotes.list]", tag, obj || {});
+  } catch {}
 };
 
 /* ---------- theme ---------- */
@@ -78,14 +80,14 @@ const addWorkingDays = (startDate, days, includeWeekends) => {
   const cur = new Date(s);
   while (remaining > 0) {
     cur.setDate(cur.getDate() + 1);
-    if (includeWeekends || !isWeekend(cur)) remaining--;
+    if (includeWeekends || !isWeekend(cur)) remaining -= 1;
   }
   return cur;
 };
 
 const eachDay = (a, b, cb) => {
-  const cur = atMidnight(a),
-    end = atMidnight(b);
+  const cur = atMidnight(a);
+  const end = atMidnight(b);
   while (cur <= end) {
     cb(new Date(cur));
     cur.setDate(cur.getDate() + 1);
@@ -97,14 +99,27 @@ const num = (v, d = 0) => {
   const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
   return Number.isFinite(n) ? n : d;
 };
+
 const calcAmount = (it) => {
-  const direct = it.total ?? it.unit_total ?? it.line_total ?? it.amount;
+  const direct =
+    it.total != null
+      ? it.total
+      : it.unit_total != null
+      ? it.unit_total
+      : it.line_total != null
+      ? it.line_total
+      : it.amount;
   if (direct != null) return num(direct, 0);
-  return +(
-    num(it.unit_price ?? it.price ?? it.rate, 0) *
-    num(it.qty ?? it.quantity ?? 1, 1)
-  ).toFixed(2);
+  const rate =
+    it.unit_price != null
+      ? it.unit_price
+      : it.price != null
+      ? it.price
+      : it.rate;
+  const qty = it.qty != null ? it.qty : it.quantity != null ? it.quantity : 1;
+  return +(num(rate, 0) * num(qty, 1)).toFixed(2);
 };
+
 const flattenItems = (src) => {
   if (!src) return [];
   let data = src;
@@ -117,26 +132,41 @@ const flattenItems = (src) => {
   }
   if (Array.isArray(data)) return data;
   const flat = [];
-  for (const [k, v] of Object.entries(data || {})) {
-    if (Array.isArray(v)) flat.push(...v.map((x) => ({ ...x, group: k })));
+  const entries = Object.entries(data || {});
+  for (let i = 0; i < entries.length; i++) {
+    const pair = entries[i];
+    const k = pair[0];
+    const v = pair[1];
+    if (Array.isArray(v)) {
+      flat.push.apply(
+        flat,
+        v.map(function (x) {
+          return { ...x, group: k };
+        })
+      );
+    }
   }
   return flat;
 };
+
 const fingerprintOf = (txt) => {
   let h = 5381;
-  for (let i = 0; i < txt.length; i++) h = ((h << 5) + h) + txt.charCodeAt(i);
+  for (let i = 0; i < txt.length; i++) {
+    h = (h << 5) + h + txt.charCodeAt(i);
+  }
   return "fp_" + (h >>> 0).toString(16);
 };
 
 const displayQuoteId = (q) => {
-  const ref = String(q?.reference || "").trim();
+  const ref = String((q && q.reference) || "").trim();
   if (ref) {
     if (/^QUO-/i.test(ref)) return ref.toUpperCase();
   }
-  const numPart = q?.quote_number ?? 0;
-  const year = q?.created_at
-    ? new Date(q.created_at).getFullYear()
-    : new Date().getFullYear();
+  const numPart = q && q.quote_number != null ? q.quote_number : 0;
+  const year =
+    q && q.created_at
+      ? new Date(q.created_at).getFullYear()
+      : new Date().getFullYear();
   return "QUO-" + year + "-" + String(numPart).padStart(4, "0");
 };
 
@@ -158,9 +188,8 @@ export default function QuoteList() {
   // Assistant sheet
   const [assistantOpen, setAssistantOpen] = useState(false);
 
-  // Guarded open/close with logs
   const openAssistant = () => {
-    if (assistantOpen) return; // avoid double-tap spam
+    if (assistantOpen) return;
     setAssistantOpen(true);
     log("assistant.open", { screen: "quotes" });
   };
@@ -177,16 +206,19 @@ export default function QuoteList() {
     let mounted = true;
     async function fetchUnread() {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const res = await supabase.auth.getUser();
+        const data = res && res.data ? res.data : null;
+        const user = data && data.user ? data.user : null;
         if (!user) {
           if (mounted) setUnreadCount(0);
           return;
         }
-        const { count } = await supabase
+        const q = await supabase
           .from("notifications")
           .select("id", { count: "exact", head: true })
           .eq("user_id", user.id)
           .eq("read", false);
+        const count = q && q.count != null ? q.count : 0;
         if (mounted) setUnreadCount(count || 0);
       } catch {
         if (mounted) setUnreadCount(0);
@@ -194,60 +226,96 @@ export default function QuoteList() {
     }
     fetchUnread();
     const interval = setInterval(fetchUnread, 30000);
-    return () => { mounted = false; clearInterval(interval); };
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   /* Data */
-  const loadQuotes = useCallback(async () => {
-    try {
-      const { data: auth } = await supabase.auth.getUser();
-      const user = auth?.user;
-      if (!user) {
-        router.replace(loginHref);
-        return;
+  const loadQuotes = useCallback(
+    async () => {
+      try {
+        const resAuth = await supabase.auth.getUser();
+        const auth = resAuth && resAuth.data ? resAuth.data : null;
+        const user = auth && auth.user ? auth.user : null;
+        if (!user) {
+          router.replace(loginHref);
+          return;
+        }
+        setUserId(user.id);
+
+        // Only show quotes that have finished generating
+        const visibleStatuses = [
+          "generated",
+          "sent",
+          "accepted",
+          "declined",
+          "expired",
+          "archived",
+        ];
+
+        let q = supabase
+          .from("quotes")
+          .select(
+            "id, quote_number, reference, client_name, total, created_at, client_address, status, job_id"
+          )
+          .eq("user_id", user.id)
+          .in("status", visibleStatuses)
+          .order("created_at", { ascending: false });
+
+        if (query.trim()) {
+          const t = query.trim();
+          // no template literals: build with concatenation
+          const cond =
+            "client_name.ilike.%" +
+            t +
+            "%,quote_number.ilike.%" +
+            t +
+            "%,reference.ilike.%" +
+            t +
+            "%";
+          q = q.or(cond);
+        }
+
+        const res = await q.limit(400);
+        if (!res.error) {
+          const rows = res.data || [];
+          // hide quotes that have been converted to jobs
+          const filtered = rows.filter(function (x) {
+            return !x.job_id;
+          });
+          setQuotes(filtered);
+        }
+      } catch (error) {
+        console.warn("[QuoteList] loadQuotes error:", error);
       }
-      setUserId(user.id);
+    },
+    [router, query]
+  );
 
-      let q = supabase
-        .from("quotes")
-        .select(
-          "id, quote_number, reference, client_name, total, created_at, client_address, status, job_id"
-        )
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false });
-
-      if (query.trim()) {
-        const t = query.trim();
-        q = q.or(
-          "client_name.ilike.%"+t+"%,quote_number.ilike.%"+t+"%,reference.ilike.%"+t+"%"
-        );
+  const loadJobs = useCallback(
+    async () => {
+      if (!userId) return [];
+      try {
+        const res = await supabase
+          .from("jobs")
+          .select(
+            "id, title, start_date, end_date, status, include_weekends, user_id"
+          )
+          .eq("user_id", userId);
+        if (!res.error) {
+          const rows = res.data || [];
+          setJobs(rows);
+          return rows;
+        }
+      } catch (error) {
+        console.warn("[QuoteList] loadJobs error:", error);
       }
-
-      const res = await q.limit(400);
-      if (!res.error) setQuotes((res.data || []).filter((x) => !x.job_id));
-    } catch (error) {
-      console.warn('[QuoteList] loadQuotes error:', error);
-    }
-  }, [router, query]);
-
-  const loadJobs = useCallback(async () => {
-    if (!userId) return [];
-    try {
-      const { data, error } = await supabase
-        .from("jobs")
-        .select(
-          "id, title, start_date, end_date, status, include_weekends, user_id"
-        )
-        .eq("user_id", userId);
-      if (!error) {
-        setJobs(data || []);
-        return data || [];
-      }
-    } catch (error) {
-      console.warn('[QuoteList] loadJobs error:', error);
-    }
-    return [];
-  }, [userId]);
+      return [];
+    },
+    [userId]
+  );
 
   useEffect(() => {
     const loadAllData = async () => {
@@ -261,8 +329,14 @@ export default function QuoteList() {
 
   /* ---------- toggle expansion ---------- */
   const toggleExpansion = (quoteId) => {
-    setExpandedQuoteId((prev) => (prev === quoteId ? null : quoteId));
-    setSelectedQuote(quotes.find((q) => q.id === quoteId));
+    setExpandedQuoteId(function (prev) {
+      return prev === quoteId ? null : quoteId;
+    });
+    setSelectedQuote(
+      quotes.find(function (q) {
+        return q.id === quoteId;
+      }) || null
+    );
   };
 
   /* ---------- Create Job flow (trimmed) ---------- */
@@ -287,24 +361,30 @@ export default function QuoteList() {
     try {
       setCjBusy(true);
       setCjError("");
-      const { data: auth } = await supabase.auth.getUser();
-      const user = auth?.user;
+      const resAuth = await supabase.auth.getUser();
+      const auth = resAuth && resAuth.data ? resAuth.data : null;
+      const user = auth && auth.user ? auth.user : null;
       if (!user) {
         router.replace(loginHref);
         return;
       }
-      
-      const { data: full, error } = await supabase
+
+      const fullRes = await supabase
         .from("quotes")
         .select("*")
         .eq("id", selectedQuote.id)
         .maybeSingle();
-      if (error || !full) throw error || new Error("Quote not found");
+      const full = fullRes && fullRes.data ? fullRes.data : null;
+      const fullErr = fullRes && fullRes.error ? fullRes.error : null;
+      if (fullErr || !full) {
+        throw fullErr || new Error("Quote not found");
+      }
 
       const start = toYMD(cjStart);
-      const end = toYMD(addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends));
+      const end = toYMD(
+        addWorkingDays(cjStart, Math.max(1, cjDays), cjIncludeWeekends)
+      );
 
-      // Create job in the jobs table
       const ins = await supabase
         .from("jobs")
         .insert({
@@ -332,10 +412,9 @@ export default function QuoteList() {
         .single();
 
       if (ins.error) throw ins.error;
-      const jobId = ins.data.id;
+      const jobId = ins.data && ins.data.id ? ins.data.id : null;
 
-      // Update quote status
-      const { error: updateError } = await supabase
+      const upd = await supabase
         .from("quotes")
         .update({
           status: "accepted",
@@ -344,26 +423,55 @@ export default function QuoteList() {
         })
         .eq("id", full.id);
 
-      if (updateError) throw updateError;
+      if (upd.error) throw upd.error;
 
       setScheduleOpen(false);
-      // Remove from quotes list since it's now "accepted"
-      setQuotes((prev) => prev.filter((x) => x.id !== full.id));
-      
-      Alert.alert("Success", `Job created and scheduled!\n\nStart: ${start}\nEnd: ${end}`);
+      setQuotes(function (prev) {
+        return prev.filter(function (x) {
+          return x.id !== full.id;
+        });
+      });
+
+      Alert.alert(
+        "Success",
+        "Job created and scheduled!\n\nStart: " + start + "\nEnd: " + end
+      );
     } catch (e) {
-      setCjError(e?.message || "Create job failed");
+      const msg = e && e.message ? e.message : "Create job failed";
+      setCjError(msg);
     } finally {
       setCjBusy(false);
     }
   };
 
-  const jobCreateHref = (quoteId) => `/(app)/jobs/create?id=${quoteId}`;
+  const jobCreateHref = (quoteId) =>
+    "/(app)/jobs/create?id=" + String(quoteId);
 
   const renderCard = ({ item }) => {
-    const address = item.client_address || "";
+    const address = item && item.client_address ? item.client_address : "";
     const dispId = displayQuoteId(item);
     const isExpanded = expandedQuoteId === item.id;
+
+    const statusRaw = item && item.status != null ? String(item.status) : "";
+    const status = statusRaw.toLowerCase();
+
+    // Treat these as "ready" states
+    const isReady =
+      status === "generated" ||
+      status === "sent" ||
+      status === "accepted" ||
+      status === "declined" ||
+      status === "expired" ||
+      status === "archived";
+
+    let statusLabel = "Draft";
+    if (status === "generated") statusLabel = "Ready";
+    else if (status === "sent") statusLabel = "Sent";
+    else if (status === "accepted") statusLabel = "Accepted";
+    else if (status === "declined") statusLabel = "Declined";
+    else if (status === "expired") statusLabel = "Expired";
+    else if (status === "archived") statusLabel = "Archived";
+    else if (status === "generating") statusLabel = "Generating…";
 
     return (
       <View style={styles.cardContainer}>
@@ -375,20 +483,36 @@ export default function QuoteList() {
           <TouchableOpacity
             style={styles.binBtn}
             onPress={async () => {
-              Alert.alert("Delete quote?", "This will permanently delete this quote.", [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Delete",
-                  style: "destructive",
-                  onPress: async () => {
-                    const del = await supabase.from("quotes").delete().eq("id", item.id);
-                    if (!del.error)
-                      setQuotes((prev) => prev.filter((x) => x.id !== item.id));
-                    else
-                      Alert.alert("Delete failed", del.error.message || "Please try again.");
+              Alert.alert(
+                "Delete quote?",
+                "This will permanently delete this quote.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Delete",
+                    style: "destructive",
+                    onPress: async () => {
+                      const del = await supabase
+                        .from("quotes")
+                        .delete()
+                        .eq("id", item.id);
+                      if (!del.error) {
+                        setQuotes(function (prev) {
+                          return prev.filter(function (x) {
+                            return x.id !== item.id;
+                          });
+                        });
+                      } else {
+                        Alert.alert(
+                          "Delete failed",
+                          (del.error && del.error.message) ||
+                            "Please try again."
+                        );
+                      }
+                    },
                   },
-                },
-              ]);
+                ]
+              );
             }}
             activeOpacity={0.85}
           >
@@ -402,22 +526,35 @@ export default function QuoteList() {
           )}
 
           <View style={{ flexShrink: 1, paddingRight: 110 }}>
-            <Text style={styles.clientName} numberOfLines={1}>
-              {item.client_name || "—"}
-            </Text>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <Text style={styles.clientName} numberOfLines={1}>
+                {item.client_name || "—"}
+              </Text>
+            </View>
 
             <View style={styles.rowMini}>
               <CalendarDays size={16} color={MUTED} />
               <Text style={styles.rowMiniText}>
-                {"  "}{new Date(item.created_at).toLocaleDateString()}
+                {"  "}
+                {new Date(item.created_at).toLocaleDateString()}
               </Text>
             </View>
 
             {!!address && (
               <View style={styles.rowMini}>
                 <MapPin size={16} color={MUTED} />
-                <Text style={[styles.rowMiniText, { flexShrink: 1 }]} numberOfLines={1}>
-                  {"  "}{address}
+                <Text
+                  style={[styles.rowMiniText, { flexShrink: 1 }]}
+                  numberOfLines={1}
+                >
+                  {"  "}
+                  {address}
                 </Text>
               </View>
             )}
@@ -438,28 +575,46 @@ export default function QuoteList() {
           <View style={styles.expandedActions}>
             <View style={styles.actionRow}>
               <TouchableOpacity
-                style={[styles.actionBtn, styles.actionBtnPrimary]}
+                style={[
+                  styles.actionBtn,
+                  styles.actionBtnPrimary,
+                  !isReady && { opacity: 0.5 },
+                ]}
+                disabled={!isReady}
                 onPress={() => {
+                  if (!isReady) {
+                    Alert.alert(
+                      "Still generating",
+                      "This quote PDF is still being generated. You will get a notification when it is ready."
+                    );
+                    return;
+                  }
                   setExpandedQuoteId(null);
                   router.push(quotePreviewHref(item.id));
                 }}
                 activeOpacity={0.9}
               >
                 <Eye size={18} color="#fff" />
-                <Text style={[styles.actionBtnText, { color: "#fff" }]}>View</Text>
+                <Text
+                  style={[styles.actionBtnText, { color: "#fff" }]}
+                  numberOfLines={1}
+                >
+                  View
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={[styles.actionBtn, styles.actionBtnSecondary]}
                 onPress={() => {
                   setExpandedQuoteId(null);
-                  // Navigate to the proper create job screen instead of opening modal
                   router.push(jobCreateHref(item.id));
                 }}
                 activeOpacity={0.9}
               >
                 <CalendarPlus size={18} color={TEXT} />
-                <Text style={styles.actionBtnText}>Create job</Text>
+                <Text style={styles.actionBtnText} numberOfLines={1}>
+                  Create job
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -480,14 +635,39 @@ export default function QuoteList() {
           <View style={styles.header}>
             <Text style={styles.headerTitle}>Quotes</Text>
             <View style={styles.headerRight}>
-              <View style={[styles.iconBtn, { backgroundColor: '#f3f4f6' }]} />
-              <View style={[styles.iconBtn, { backgroundColor: '#f3f4f6' }]} />
+              <View
+                style={[
+                  styles.iconBtn,
+                  { backgroundColor: "#f3f4f6" },
+                ]}
+              />
+              <View
+                style={[
+                  styles.iconBtn,
+                  { backgroundColor: "#f3f4f6" },
+                ]}
+              />
             </View>
           </View>
         </SafeAreaView>
         <View style={styles.searchRow}>
-          <View style={{ width: 18, height: 18, backgroundColor: '#f3f4f6', borderRadius: 9 }} />
-          <View style={{ flex: 1, height: 18, backgroundColor: '#f3f4f6', borderRadius: 4, marginLeft: 8 }} />
+          <View
+            style={{
+              width: 18,
+              height: 18,
+              backgroundColor: "#f3f4f6",
+              borderRadius: 9,
+            }}
+          />
+          <View
+            style={{
+              flex: 1,
+              height: 18,
+              backgroundColor: "#f3f4f6",
+              borderRadius: 4,
+              marginLeft: 8,
+            }}
+          />
         </View>
       </View>
     );
@@ -516,7 +696,9 @@ export default function QuoteList() {
               <Bell size={18} color={MUTED} />
               {unreadCount > 0 && (
                 <View style={styles.bellBadge}>
-                  <Text style={styles.bellBadgeText}>{unreadCount > 9 ? "9+" : unreadCount}</Text>
+                  <Text style={styles.bellBadgeText}>
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -568,7 +750,9 @@ export default function QuoteList() {
         ListEmptyComponent={
           <View style={{ paddingTop: 40, alignItems: "center" }}>
             <PoundSterling size={28} color={MUTED} />
-            <Text style={{ color: MUTED, marginTop: 8 }}>No quotes found.</Text>
+            <Text style={{ color: MUTED, marginTop: 8 }}>
+              No quotes found.
+            </Text>
           </View>
         }
       />
@@ -616,7 +800,11 @@ export default function QuoteList() {
               selectedDate={cjStart}
               onSelectDate={(d) => setCjStart(atMidnight(d))}
               jobs={jobs}
-              span={{ start: cjStart, days: cjDays, includeWeekends: cjIncludeWeekends }}
+              span={{
+                start: cjStart,
+                days: cjDays,
+                includeWeekends: cjIncludeWeekends,
+              }}
               blockStarts
               onDayLongPress={() => {}}
             />
@@ -628,7 +816,11 @@ export default function QuoteList() {
             <View style={styles.spinRow}>
               <TouchableOpacity
                 style={styles.spinBtn}
-                onPress={() => setCjDays((d) => Math.max(1, d - 1))}
+                onPress={() =>
+                  setCjDays(function (d) {
+                    return Math.max(1, d - 1);
+                  })
+                }
               >
                 <Minus size={18} color={TEXT} />
               </TouchableOpacity>
@@ -637,7 +829,11 @@ export default function QuoteList() {
               </Text>
               <TouchableOpacity
                 style={styles.spinBtn}
-                onPress={() => setCjDays((d) => d + 1)}
+                onPress={() =>
+                  setCjDays(function (d) {
+                    return d + 1;
+                  })
+                }
               >
                 <PlusIcon size={18} color={TEXT} />
               </TouchableOpacity>
@@ -655,12 +851,20 @@ export default function QuoteList() {
 
           {/* Start/End */}
           <Text style={styles.endPreview}>
-            Start: <Text style={styles.bold}>{toYMD(cjStart)}</Text>  •  End:{" "}
+            Start:{" "}
+            <Text style={styles.bold}>{toYMD(cjStart)}</Text>
+            {"  •  "}
+            End:{" "}
             <Text style={styles.bold}>{toYMD(endDate)}</Text>
           </Text>
 
           {!!cjError && (
-            <Text style={[styles.blockedWarn, { marginTop: 6 }]}>{cjError}</Text>
+            <Text
+              style={[styles.blockedWarn, { marginTop: 6 }]}
+              numberOfLines={2}
+            >
+              {cjError}
+            </Text>
           )}
 
           <View style={styles.sheetBtns}>
@@ -669,7 +873,12 @@ export default function QuoteList() {
               onPress={() => setScheduleOpen(false)}
               activeOpacity={0.9}
             >
-              <Text style={[styles.sheetBtnText, { color: TEXT }]}>Cancel</Text>
+              <Text
+                style={[styles.sheetBtnText, { color: TEXT }]}
+                numberOfLines={1}
+              >
+                Cancel
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -683,7 +892,10 @@ export default function QuoteList() {
               onPress={createJobInternal}
             >
               <CalendarPlus size={18} color="#fff" />
-              <Text style={[styles.sheetBtnText, { color: "#fff" }]} numberOfLines={1}>
+              <Text
+                style={[styles.sheetBtnText, { color: "#fff" }]}
+                numberOfLines={1}
+              >
                 {cjBusy ? "Creating..." : "Create"}
               </Text>
             </TouchableOpacity>
@@ -838,7 +1050,12 @@ const styles = StyleSheet.create({
       android: { elevation: 8 },
     }),
   },
-  sheetTitle: { fontSize: 18, fontWeight: "900", color: TEXT, marginBottom: 6 },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: TEXT,
+    marginBottom: 6,
+  },
 
   durationBlock: { marginTop: 10 },
   controlHeader: { fontWeight: "900", color: TEXT, marginBottom: 6 },
@@ -852,10 +1069,25 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     alignSelf: "flex-start",
   },
-  spinBtn: { height: 36, width: 36, alignItems: "center", justifyContent: "center" },
-  spinValue: { minWidth: 96, textAlign: "center", fontWeight: "900", color: TEXT },
+  spinBtn: {
+    height: 36,
+    width: 36,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  spinValue: {
+    minWidth: 96,
+    textAlign: "center",
+    fontWeight: "900",
+    color: TEXT,
+  },
 
-  weekendRow: { marginTop: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  weekendRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   endPreview: { marginTop: 10, color: MUTED },
   bold: { fontWeight: "900", color: TEXT },
 
