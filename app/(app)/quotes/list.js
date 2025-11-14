@@ -17,6 +17,7 @@ import {
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../../lib/supabase";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   Search,
   Plus,
@@ -201,36 +202,110 @@ export default function QuoteList() {
   // Unread notifications state
   const [unreadCount, setUnreadCount] = useState(0);
 
-  // Fetch unread count from notifications table and update on interval
-  useEffect(() => {
-    let mounted = true;
-    async function fetchUnread() {
-      try {
-        const res = await supabase.auth.getUser();
-        const data = res && res.data ? res.data : null;
-        const user = data && data.user ? data.user : null;
-        if (!user) {
-          if (mounted) setUnreadCount(0);
-          return;
-        }
-        const q = await supabase
-          .from("notifications")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", user.id)
-          .eq("read", false);
-        const count = q && q.count != null ? q.count : 0;
-        if (mounted) setUnreadCount(count || 0);
-      } catch {
-        if (mounted) setUnreadCount(0);
+  // Fetch unread count helper (reused by realtime + focus + manual refresh)
+  const fetchUnread = useCallback(async () => {
+    try {
+      const res = await supabase.auth.getUser();
+      const uid =
+        userId || (res && res.data && res.data.user ? res.data.user.id : null);
+      if (!uid) {
+        setUnreadCount(0);
+        return;
       }
+      const q = await supabase
+        .from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", uid)
+        .eq("read", false);
+      const count = q && q.count != null ? q.count : 0;
+      setUnreadCount(count || 0);
+    } catch {
+      // ignore
     }
-    fetchUnread();
-    const interval = setInterval(fetchUnread, 30000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
+  }, [userId]);
+
+  // Realtime subscription to keep unread badge in sync instantly
+  useEffect(() => {
+    let channel;
+    let cancelled = false;
+
+    const start = async () => {
+      const res = await supabase.auth.getUser();
+      const uid =
+        userId || (res && res.data && res.data.user ? res.data.user.id : null);
+      if (!uid) {
+        setUnreadCount(0);
+        return;
+      }
+
+      // initial fetch
+      await fetchUnread();
+      if (cancelled) return;
+
+      channel = supabase
+        .channel("notifications_unread_" + uid)
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "notifications",
+            filter: "user_id=eq." + uid,
+          },
+          (payload) => {
+            const row = payload.new || {};
+            if (row.read === false) setUnreadCount((c) => c + 1);
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "notifications",
+            filter: "user_id=eq." + uid,
+          },
+          (payload) => {
+            const before = payload.old || {};
+            const after = payload.new || {};
+            if (before.read === false && after.read === true) {
+              setUnreadCount((c) => Math.max(0, c - 1));
+            } else if (before.read === true && after.read === false) {
+              setUnreadCount((c) => c + 1);
+            }
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "DELETE",
+            schema: "public",
+            table: "notifications",
+            filter: "user_id=eq." + uid,
+          },
+          (payload) => {
+            const row = payload.old || {};
+            if (row.read === false) setUnreadCount((c) => Math.max(0, c - 1));
+          }
+        )
+        .subscribe();
     };
-  }, []);
+
+    start();
+
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [userId, fetchUnread]);
+
+  // Refresh unread count whenever this screen regains focus
+  useFocusEffect(
+    useCallback(() => {
+      fetchUnread();
+      return () => {};
+    }, [fetchUnread])
+  );
 
   /* Data */
   const loadQuotes = useCallback(
@@ -706,6 +781,7 @@ export default function QuoteList() {
               style={styles.iconBtn}
               onPress={() => {
                 loadQuotes();
+                fetchUnread(); // refresh badge immediately on manual refresh
               }}
               activeOpacity={0.9}
             >

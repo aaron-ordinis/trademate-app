@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { View } from "react-native";
 import { Tabs, useRouter } from "expo-router";
-import { FileText, CalendarDays, ClipboardCheck } from "lucide-react-native";
+import { FileText, CalendarDays, ClipboardCheck, CreditCard, ClipboardList } from "lucide-react-native";
 import { supabase } from "../../../lib/supabase";
 import { getPremiumStatus } from "../../../lib/premium";
 
@@ -129,6 +129,24 @@ export default function TabsLayout() {
           tabBarIcon: ({ color, size }) => (
             <ClipboardCheck size={size} color={color} />
           ),
+        }}
+      />
+
+      {/* Payments tab */}
+      <Tabs.Screen
+        name="payments/index"
+        options={{
+          title: "Payments",
+          tabBarIcon: ({ color, size }) => <CreditCard color={color} size={size} />,
+        }}
+      />
+
+      {/* Forms tab */}
+      <Tabs.Screen
+        name="forms/index"
+        options={{
+          title: "Forms",
+          tabBarIcon: ({ color, size }) => <ClipboardList color={color} size={size} />,
         }}
       />
     </Tabs>
